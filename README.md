@@ -133,7 +133,7 @@ LayerNexus/
 │   ├── services/
 │   │   ├── moonraker.py    # Klipper/Moonraker API client
 │   │   ├── orcaslicer.py   # orca-slicer-api REST client
-│   │   ├── spoolman.py     # Spoolman API client
+│   │   └── spoolman.py     # Spoolman API client
 │   ├── templates/
 │   │   ├── base.html       # Base template with favicon, navbar, theme switcher
 │   │   ├── core/           # 46 app templates
