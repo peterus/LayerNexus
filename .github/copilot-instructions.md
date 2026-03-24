@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-LayerNexus is a Django 6.0+ web application for managing large-scale 3D printing projects. It integrates with OrcaSlicer API (slicing), Klipper/Moonraker (printer control), Spoolman (filament tracking), and InvenTree (inventory management).
+LayerNexus is a Django 6.0+ web application for managing large-scale 3D printing projects. It integrates with OrcaSlicer API (slicing), Klipper/Moonraker (printer control), and Spoolman (filament tracking).
 
 **Core Workflow:** STL Upload → OrcaSlicer API Slicing → G-code Upload to Klipper → Print Job Tracking
 
@@ -33,8 +33,7 @@ core/                  # Main Django app
 ├── services/          # External API clients
 │   ├── orcaslicer.py  # OrcaSlicer API integration
 │   ├── moonraker.py   # Klipper/Moonraker API
-│   ├── spoolman.py    # Filament management API
-│   └── inventree.py   # Inventory management API
+│   └── spoolman.py    # Filament management API
 ├── templates/         # Django templates (Bootstrap 5.3)
 └── templatetags/      # Custom template tags
 
@@ -400,9 +399,7 @@ logger.exception("Error with full traceback")
 - Track spools by ID and material type
 - Automatic color/material population in parts
 
-### InvenTree
-- Parts inventory and BOM management
-- Optional integration for production workflows
+
 
 ## Environment Variables
 

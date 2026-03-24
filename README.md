@@ -6,7 +6,7 @@
 
 ## Overview
 
-LayerNexus is a Django web application for managing large-scale 3D printing projects. It integrates with **OrcaSlicer** (via API) for slicing, **Klipper/Moonraker** for printer connectivity, **Spoolman** for filament tracking, and **InvenTree** for inventory management — giving you a single dashboard to go from STL files to finished prints.
+LayerNexus is a Django web application for managing large-scale 3D printing projects. It integrates with **OrcaSlicer** (via API) for slicing, **Klipper/Moonraker** for printer connectivity, and **Spoolman** for filament tracking — giving you a single dashboard to go from STL files to finished prints.
 
 ## Features
 
@@ -30,7 +30,6 @@ LayerNexus is a Django web application for managing large-scale 3D printing proj
 ### Filament & Inventory
 
 - 🧵 **Filament Selection via Spoolman** — Pick filament types and track inventory
-- 🏭 **InvenTree Integration** — Inventory management via the InvenTree API
 
 ### Queue & Cost Management
 
@@ -58,7 +57,7 @@ LayerNexus is a Django web application for managing large-scale 3D printing proj
 | **Static Files** | WhiteNoise with compressed manifest storage |
 | **Deployment** | Docker + Docker Compose, Gunicorn |
 | **CI/CD** | GitHub Actions (ruff lint/format, tests, pip-audit, Docker smoke test) |
-| **External Services** | orca-slicer-api, Klipper/Moonraker, Spoolman, InvenTree |
+| **External Services** | orca-slicer-api, Klipper/Moonraker, Spoolman |
 
 ## Quick Start
 
@@ -134,8 +133,7 @@ LayerNexus/
 │   ├── services/
 │   │   ├── moonraker.py    # Klipper/Moonraker API client
 │   │   ├── orcaslicer.py   # orca-slicer-api REST client
-│   │   ├── spoolman.py     # Spoolman API client
-│   │   └── inventree.py    # InvenTree API client
+│   │   └── spoolman.py     # Spoolman API client
 │   ├── templates/
 │   │   ├── base.html       # Base template with favicon, navbar, theme switcher
 │   │   ├── core/           # 46 app templates
@@ -186,11 +184,6 @@ LayerNexus uses [orca-slicer-api](https://github.com/AFKFelix/orca-slicer-api) �
 2. Set the `SPOOLMAN_URL` environment variable (e.g., `http://<host>:7912`).
 3. Spoolman is the primary source for filament data — materials are managed exclusively through Spoolman.
 
-### InvenTree
-
-1. Install and run [InvenTree](https://inventree.org/).
-2. Generate an API token in InvenTree's admin panel.
-3. Use the InvenTree integration views to browse parts and stock directly from LayerNexus.
 
 ## User Roles & Permissions
 
