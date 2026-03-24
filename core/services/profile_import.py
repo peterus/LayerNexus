@@ -3,10 +3,10 @@
 Handles importing hierarchical OrcaSlicer JSON profiles into the database.
 Profiles may use an ``inherits`` field referencing a parent profile; this
 service resolves the full inheritance chain and flattens the result into
-dedicated DB columns plus a catch-all ``extra_settings`` JSONField.
+a single ``settings`` JSONField on each profile model.
 
 OrcaSlicer stores **all** values as JSON strings (even numbers and booleans).
-This service parses them into native Python types for the DB columns.
+This service parses them into native Python types for the settings dict.
 
 Supports **machine** (printer), **filament**, and **process** (print preset)
 profile types.
@@ -528,7 +528,7 @@ def _resolve_profile_generic(
     orca_key_to_field: dict[str, str],
     profile_type_label: str,
 ) -> None:
-    """Extract settings from resolved data into DB columns (generic).
+    """Extract settings from resolved data into the settings JSONField (generic).
 
     Args:
         profile: The profile instance to populate.
@@ -537,6 +537,7 @@ def _resolve_profile_generic(
         orca_key_to_field: Reverse lookup from OrcaSlicer key to model field.
         profile_type_label: Human-readable label for logging.
     """
+    settings_dict: dict[str, Any] = {}
     extra: dict[str, Any] = {}
 
     for key, value in resolved_data.items():
@@ -548,18 +549,21 @@ def _resolve_profile_generic(
             _, type_tag = field_map[field_name]
             parsed = _parse_value(value, type_tag)
             if parsed is not None:
-                setattr(profile, field_name, parsed)
+                settings_dict[field_name] = parsed
         else:
             extra[key] = value
 
-    profile.extra_settings = extra
+    # Merge extra settings into the single settings dict
+    settings_dict.update(extra)
+    profile.settings = settings_dict
     profile.state = profile.__class__.STATE_RESOLVED
     profile.save()
 
+    known_count = len([k for k in settings_dict if k in set(field_map)])
+    extra_count = len(settings_dict) - known_count
     logger.info(
         f"Resolved {profile_type_label} profile '{profile.orca_name}' — "
-        f"{len(field_map) - len(extra)} columns + "
-        f"{len(extra)} extra settings."
+        f"{known_count} known + {extra_count} extra settings."
     )
 
 
@@ -625,11 +629,16 @@ def _get_resolved_settings_generic(
     settings: dict[str, Any] = {}
 
     for field_name, (orca_key, _type_tag) in field_map.items():
-        value = getattr(profile, field_name)
+        value = profile.settings.get(field_name)
         if value is not None and value != "" and value != []:
             settings[orca_key] = value
 
-    settings.update(profile.extra_settings)
+    # Include any extra settings (keys not in field_map)
+    known_fields = set(field_map.keys())
+    for key, value in profile.settings.items():
+        if key not in known_fields:
+            settings[key] = value
+
     return settings
 
 

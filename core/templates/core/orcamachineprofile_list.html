@@ -38,8 +38,8 @@
             {% if profile.bed_size_x and profile.bed_size_y %}
             <div><i class="bi bi-bounding-box me-1"></i>Bed: {{ profile.bed_size_x|floatformat:0 }} × {{ profile.bed_size_y|floatformat:0 }} mm</div>
             {% endif %}
-            {% if profile.gcode_flavor %}
-            <div><i class="bi bi-code-slash me-1"></i>{{ profile.gcode_flavor }}</div>
+            {% if profile.settings.gcode_flavor %}
+            <div><i class="bi bi-code-slash me-1"></i>{{ profile.settings.gcode_flavor }}</div>
             {% endif %}
           {% else %}
             <div class="text-warning">

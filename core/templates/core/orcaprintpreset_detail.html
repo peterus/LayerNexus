@@ -64,41 +64,41 @@
 
 {# ── Quick Overview ── #}
 <div class="row g-3 mb-4">
-  {% if profile.layer_height %}
+  {% if profile.settings.layer_height %}
   <div class="col-6 col-md-3">
     <div class="card text-center shadow-sm h-100">
       <div class="card-body">
-        <div class="display-6 text-primary">{{ profile.layer_height }}</div>
+        <div class="display-6 text-primary">{{ profile.settings.layer_height }}</div>
         <div class="text-body-secondary small">Layer Height (mm)</div>
       </div>
     </div>
   </div>
   {% endif %}
-  {% if profile.wall_loops %}
+  {% if profile.settings.wall_loops %}
   <div class="col-6 col-md-3">
     <div class="card text-center shadow-sm h-100">
       <div class="card-body">
-        <div class="display-6 text-primary">{{ profile.wall_loops }}</div>
+        <div class="display-6 text-primary">{{ profile.settings.wall_loops }}</div>
         <div class="text-body-secondary small">Wall Loops</div>
       </div>
     </div>
   </div>
   {% endif %}
-  {% if profile.sparse_infill_density %}
+  {% if profile.settings.sparse_infill_density %}
   <div class="col-6 col-md-3">
     <div class="card text-center shadow-sm h-100">
       <div class="card-body">
-        <div class="display-6 text-primary">{{ profile.sparse_infill_density }}</div>
+        <div class="display-6 text-primary">{{ profile.settings.sparse_infill_density }}</div>
         <div class="text-body-secondary small">Infill Density</div>
       </div>
     </div>
   </div>
   {% endif %}
-  {% if profile.outer_wall_speed %}
+  {% if profile.settings.outer_wall_speed %}
   <div class="col-6 col-md-3">
     <div class="card text-center shadow-sm h-100">
       <div class="card-body">
-        <div class="display-6 text-primary">{{ profile.outer_wall_speed }}</div>
+        <div class="display-6 text-primary">{{ profile.settings.outer_wall_speed }}</div>
         <div class="text-body-secondary small">Outer Wall Speed (mm/s)</div>
       </div>
     </div>
@@ -151,7 +151,7 @@
             <tr><th>Setting</th><th>Value</th></tr>
           </thead>
           <tbody>
-            {% for key, value in profile.extra_settings.items %}
+            {% for key, value in extra_settings.items %}
             <tr>
               <td><code>{{ key }}</code></td>
               <td>

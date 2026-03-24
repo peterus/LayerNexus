@@ -29,14 +29,14 @@
         <div class="small text-body-secondary">
           <div><i class="bi bi-tag me-1"></i>OrcaSlicer: {{ preset.orca_name }}</div>
           {% if preset.is_resolved %}
-            {% if preset.layer_height %}
-            <div><i class="bi bi-arrows-vertical me-1"></i>Layer height: {{ preset.layer_height }} mm</div>
+            {% if preset.settings.layer_height %}
+            <div><i class="bi bi-arrows-vertical me-1"></i>Layer height: {{ preset.settings.layer_height }} mm</div>
             {% endif %}
-            {% if preset.sparse_infill_density %}
-            <div><i class="bi bi-grid-3x3-gap me-1"></i>Infill: {{ preset.sparse_infill_density }}</div>
+            {% if preset.settings.sparse_infill_density %}
+            <div><i class="bi bi-grid-3x3-gap me-1"></i>Infill: {{ preset.settings.sparse_infill_density }}</div>
             {% endif %}
-            {% if preset.wall_loops %}
-            <div><i class="bi bi-border-outer me-1"></i>Walls: {{ preset.wall_loops }}</div>
+            {% if preset.settings.wall_loops %}
+            <div><i class="bi bi-border-outer me-1"></i>Walls: {{ preset.settings.wall_loops }}</div>
             {% endif %}
             <div>
               <i class="bi bi-columns-gap me-1"></i>Supports:
