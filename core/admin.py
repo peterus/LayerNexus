@@ -107,17 +107,15 @@ class OrcaMachineProfileAdmin(admin.ModelAdmin):
         "name",
         "orca_name",
         "state",
-        "gcode_flavor",
-        "printer_model",
         "first_nozzle_diameter",
         "created_by",
     )
-    list_filter = ("state", "gcode_flavor", "printer_structure", "created_by")
-    search_fields = ("name", "orca_name", "description", "printer_model")
+    list_filter = ("state", "created_by")
+    search_fields = ("name", "orca_name", "description")
     readonly_fields = (
         "state",
         "uploaded_json",
-        "extra_settings",
+        "settings",
         "created_at",
         "updated_at",
     )
@@ -139,7 +137,7 @@ class OrcaFilamentProfileAdmin(admin.ModelAdmin):
     readonly_fields = (
         "state",
         "uploaded_json",
-        "extra_settings",
+        "settings",
         "created_at",
         "updated_at",
     )
@@ -151,9 +149,8 @@ class OrcaPrintPresetAdmin(admin.ModelAdmin):
         "name",
         "orca_name",
         "state",
-        "layer_height",
-        "sparse_infill_density",
-        "enable_support",
+        "infill_density_display",
+        "supports_enabled",
         "created_by",
     )
     list_filter = ("state", "created_by")
@@ -161,7 +158,7 @@ class OrcaPrintPresetAdmin(admin.ModelAdmin):
     readonly_fields = (
         "state",
         "uploaded_json",
-        "extra_settings",
+        "settings",
         "created_at",
         "updated_at",
     )

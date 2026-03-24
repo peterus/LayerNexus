@@ -463,8 +463,8 @@ def _find_compatible_machine(
     Returns:
         A compatible OrcaMachineProfile, or None if none found.
     """
-    # Try to match via compatible_printers in the preset's extra_settings
-    compat_printers = print_preset.extra_settings.get("compatible_printers", [])
+    # Try to match via compatible_printers in the preset's settings
+    compat_printers = print_preset.settings.get("compatible_printers", [])
 
     if compat_printers:
         # Try exact orca_name match first
@@ -1748,7 +1748,7 @@ class OrcaMachineProfileDetailView(LoginRequiredMixin, DetailView):
 
             key_settings = []
             for field_name, (orca_key, _type_tag) in MACHINE_FIELD_MAP.items():
-                value = getattr(profile, field_name)
+                value = profile.settings.get(field_name)
                 if value is not None and value != "" and value != []:
                     key_settings.append(
                         {
@@ -1758,7 +1758,9 @@ class OrcaMachineProfileDetailView(LoginRequiredMixin, DetailView):
                         }
                     )
             context["key_settings"] = key_settings
-            context["extra_settings_count"] = len(profile.extra_settings)
+            known_fields = set(MACHINE_FIELD_MAP.keys())
+            context["extra_settings_count"] = len([k for k in profile.settings if k not in known_fields])
+            context["extra_settings"] = {k: v for k, v in profile.settings.items() if k not in known_fields}
         return context
 
 
@@ -1871,7 +1873,7 @@ class OrcaFilamentProfileDetailView(LoginRequiredMixin, DetailView):
 
             key_settings = []
             for field_name, (orca_key, _type_tag) in FILAMENT_FIELD_MAP.items():
-                value = getattr(profile, field_name)
+                value = profile.settings.get(field_name)
                 if value is not None and value != "" and value != []:
                     key_settings.append(
                         {
@@ -1881,7 +1883,9 @@ class OrcaFilamentProfileDetailView(LoginRequiredMixin, DetailView):
                         }
                     )
             context["key_settings"] = key_settings
-            context["extra_settings_count"] = len(profile.extra_settings)
+            known_fields = set(FILAMENT_FIELD_MAP.keys())
+            context["extra_settings_count"] = len([k for k in profile.settings if k not in known_fields])
+            context["extra_settings"] = {k: v for k, v in profile.settings.items() if k not in known_fields}
         return context
 
 
@@ -1994,7 +1998,7 @@ class OrcaPrintPresetDetailView(LoginRequiredMixin, DetailView):
 
             key_settings = []
             for field_name, (orca_key, _type_tag) in PROCESS_FIELD_MAP.items():
-                value = getattr(profile, field_name)
+                value = profile.settings.get(field_name)
                 if value is not None and value != "" and value != []:
                     key_settings.append(
                         {
@@ -2004,7 +2008,9 @@ class OrcaPrintPresetDetailView(LoginRequiredMixin, DetailView):
                         }
                     )
             context["key_settings"] = key_settings
-            context["extra_settings_count"] = len(profile.extra_settings)
+            known_fields = set(PROCESS_FIELD_MAP.keys())
+            context["extra_settings_count"] = len([k for k in profile.settings if k not in known_fields])
+            context["extra_settings"] = {k: v for k, v in profile.settings.items() if k not in known_fields}
         return context
 
 

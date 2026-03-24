@@ -94,11 +94,11 @@
     </div>
   </div>
   {% endif %}
-  {% if profile.extruders_count %}
+  {% if profile.settings.extruders_count %}
   <div class="col-6 col-md-3">
     <div class="card text-center shadow-sm h-100">
       <div class="card-body">
-        <div class="display-6 text-primary">{{ profile.extruders_count }}</div>
+        <div class="display-6 text-primary">{{ profile.settings.extruders_count }}</div>
         <div class="text-body-secondary small">Extruder(s)</div>
       </div>
     </div>
@@ -155,7 +155,7 @@
             <tr><th>Setting</th><th>Value</th></tr>
           </thead>
           <tbody>
-            {% for key, value in profile.extra_settings.items %}
+            {% for key, value in extra_settings.items %}
             <tr>
               <td><code>{{ key }}</code></td>
               <td>
