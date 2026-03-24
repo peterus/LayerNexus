@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install coverage
+
+      - name: Check for missing migrations
+        run: python manage.py makemigrations --check --dry-run --noinput
+
+      - name: Run Django system checks
+        run: python manage.py check --fail-level WARNING
+
+      - name: Run migrations
+        run: python manage.py migrate --noinput
+
+      - name: Collect static files
+        run: python manage.py collectstatic --noinput
+
+      - name: Run tests with coverage
+        run: |
+          coverage run manage.py test core -v 2
+          coverage report
+          coverage xml
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  security:
+    name: Security Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pip-audit
+
+      - name: Audit dependencies (pip-audit)
+        run: pip-audit
+        continue-on-error: true
+
+      - name: Django deployment checklist
+        run: |
+          DJANGO_SECRET_KEY=ci-audit-key \
+          DEBUG=0 \
+          ALLOWED_HOSTS=localhost \
+          python manage.py check --deploy --fail-level WARNING
+        continue-on-error: true
+
+  docker:
+    name: Docker Build & Smoke Test
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t layernexus:test .
+
+      - name: Run container smoke test
+        run: |
+          docker run -d --name ln-test \
+            -e DJANGO_SECRET_KEY=ci-test-key \
+            -e ALLOWED_HOSTS=localhost \
+            -p 8000:8000 \
+            layernexus:test
+          timeout 30 sh -c 'until curl -sf http://localhost:8000/accounts/login/; do sleep 1; done'
+          docker stop ln-test

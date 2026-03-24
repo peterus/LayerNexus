@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% load core_tags %}
+{% block title %}{% if is_edit %}Edit Hardware{% else %}Add Hardware{% endif %} — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
+    {% for ancestor in ancestors %}
+    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' ancestor.pk %}">{{ ancestor.name }}</a></li>
+    {% endfor %}
+    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' project.pk %}">{{ project.name }}</a></li>
+    <li class="breadcrumb-item active">{% if is_edit %}Edit Hardware{% else %}Add Hardware{% endif %}</li>
+  </ol>
+</nav>
+
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="card shadow-sm">
+      <div class="card-header">
+        <h4 class="mb-0">
+          <i class="bi bi-{% if is_edit %}pencil{% else %}plus-lg{% endif %} me-2"></i>
+          {% if is_edit %}Edit Hardware{% else %}Add Hardware to Project{% endif %}
+        </h4>
+      </div>
+      <div class="card-body">
+        <form method="post" novalidate>
+          {% csrf_token %}
+
+          {% if not is_edit %}
+          {# --- Mode toggle for create form --- #}
+          <ul class="nav nav-tabs mb-3" id="hwModeTab" role="tablist">
+            <li class="nav-item" role="presentation">
+              <button class="nav-link active" id="existing-tab" data-bs-toggle="tab" data-bs-target="#existing-pane" type="button" role="tab" aria-controls="existing-pane" aria-selected="true">
+                <i class="bi bi-search me-1"></i>Select Existing
+              </button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" id="new-tab" data-bs-toggle="tab" data-bs-target="#new-pane" type="button" role="tab" aria-controls="new-pane" aria-selected="false">
+                <i class="bi bi-plus-circle me-1"></i>Create New
+              </button>
+            </li>
+          </ul>
+
+          <div class="tab-content mb-3" id="hwModeTabContent">
+            {# Existing hardware part selection #}
+            <div class="tab-pane fade show active" id="existing-pane" role="tabpanel" aria-labelledby="existing-tab">
+              <div class="mb-3">
+                <label for="{{ form.hardware_part.id_for_label }}" class="form-label">Hardware Part</label>
+                <select name="{{ form.hardware_part.html_name }}" id="{{ form.hardware_part.id_for_label }}" class="form-select {% if form.hardware_part.errors %}is-invalid{% endif %}">
+                  <option value="">---------</option>
+                  {% for choice in form.hardware_part.field.queryset %}
+                  <option value="{{ choice.pk }}" {% if form.hardware_part.value|stringformat:"s" == choice.pk|stringformat:"s" %}selected{% endif %}>{{ choice }}</option>
+                  {% endfor %}
+                </select>
+                {% for error in form.hardware_part.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+              </div>
+            </div>
+
+            {# New hardware part fields #}
+            <div class="tab-pane fade" id="new-pane" role="tabpanel" aria-labelledby="new-tab">
+              <div class="mb-3">
+                <label for="{{ form.new_name.id_for_label }}" class="form-label">Name <span class="text-danger">*</span></label>
+                <input type="text" name="{{ form.new_name.html_name }}" id="{{ form.new_name.id_for_label }}" class="form-control {% if form.new_name.errors %}is-invalid{% endif %}" value="{{ form.new_name.value|default:'' }}" placeholder="e.g. M3x10 Socket Head Cap Screw">
+                {% for error in form.new_name.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+              </div>
+              <div class="mb-3">
+                <label for="{{ form.new_category.id_for_label }}" class="form-label">Category <span class="text-danger">*</span></label>
+                <select name="{{ form.new_category.html_name }}" id="{{ form.new_category.id_for_label }}" class="form-select {% if form.new_category.errors %}is-invalid{% endif %}">
+                  {% for value, label in form.new_category.field.choices %}
+                  <option value="{{ value }}" {% if form.new_category.value == value %}selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+                {% for error in form.new_category.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+              </div>
+              <div class="row">
+                <div class="col-md-6 mb-3">
+                  <label for="{{ form.new_url.id_for_label }}" class="form-label">URL</label>
+                  <input type="url" name="{{ form.new_url.html_name }}" id="{{ form.new_url.id_for_label }}" class="form-control {% if form.new_url.errors %}is-invalid{% endif %}" value="{{ form.new_url.value|default:'' }}" placeholder="https://...">
+                  {% for error in form.new_url.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+                </div>
+                <div class="col-md-6 mb-3">
+                  <label for="{{ form.new_unit_price.id_for_label }}" class="form-label">Unit Price</label>
+                  <div class="input-group">
+                    <input type="number" name="{{ form.new_unit_price.html_name }}" id="{{ form.new_unit_price.id_for_label }}" class="form-control {% if form.new_unit_price.errors %}is-invalid{% endif %}" value="{{ form.new_unit_price.value|default:'' }}" step="0.01" min="0">
+                    <span class="input-group-text">€</span>
+                    {% for error in form.new_unit_price.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+                  </div>
+                </div>
+              </div>
+              <div class="mb-3">
+                <label for="{{ form.new_notes.id_for_label }}" class="form-label">Hardware Notes</label>
+                <textarea name="{{ form.new_notes.html_name }}" id="{{ form.new_notes.id_for_label }}" class="form-control {% if form.new_notes.errors %}is-invalid{% endif %}" rows="2">{{ form.new_notes.value|default:'' }}</textarea>
+                {% for error in form.new_notes.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+              </div>
+            </div>
+          </div>
+
+          <hr>
+          {% endif %}
+
+          {# --- Common fields (create & edit) --- #}
+          {% if is_edit %}
+          {# Edit mode: show all fields from the update form #}
+          {% for field in form %}
+          <div class="mb-3">
+            <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}{% if field.field.required %} <span class="text-danger">*</span>{% endif %}</label>
+            {% if field.name == 'hw_category' or field.name == 'new_category' %}
+            <select name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-select {% if field.errors %}is-invalid{% endif %}">
+              {% for value, label in field.field.choices %}
+              <option value="{{ value }}" {% if field.value == value %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+            {% elif field.name == 'notes' or field.name == 'hw_notes' %}
+            <textarea name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-control {% if field.errors %}is-invalid{% endif %}" rows="2">{{ field.value|default:'' }}</textarea>
+            {% elif field.name == 'hw_unit_price' %}
+            <div class="input-group">
+              <input type="number" name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-control {% if field.errors %}is-invalid{% endif %}" value="{{ field.value|default:'' }}" step="0.01" min="0">
+              <span class="input-group-text">€</span>
+              {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+            </div>
+            {% elif field.name == 'hw_url' %}
+            <input type="url" name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-control {% if field.errors %}is-invalid{% endif %}" value="{{ field.value|default:'' }}" placeholder="https://...">
+            {% elif field.name == 'quantity' %}
+            <input type="number" name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-control {% if field.errors %}is-invalid{% endif %}" value="{{ field.value|default:'1' }}" min="1">
+            {% else %}
+            <input type="text" name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-control {% if field.errors %}is-invalid{% endif %}" value="{{ field.value|default:'' }}">
+            {% endif %}
+            {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+            {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+          </div>
+          {% endfor %}
+          {% else %}
+          {# Create mode: quantity + project notes below the tabs #}
+          <div class="row">
+            <div class="col-md-4 mb-3">
+              <label for="{{ form.quantity.id_for_label }}" class="form-label">Quantity <span class="text-danger">*</span></label>
+              <input type="number" name="{{ form.quantity.html_name }}" id="{{ form.quantity.id_for_label }}" class="form-control {% if form.quantity.errors %}is-invalid{% endif %}" value="{{ form.quantity.value|default:'1' }}" min="1">
+              {% for error in form.quantity.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+            </div>
+          </div>
+          <div class="mb-3">
+            <label for="{{ form.notes.id_for_label }}" class="form-label">Project-specific Notes</label>
+            <textarea name="{{ form.notes.html_name }}" id="{{ form.notes.id_for_label }}" class="form-control {% if form.notes.errors %}is-invalid{% endif %}" rows="2">{{ form.notes.value|default:'' }}</textarea>
+            {% for error in form.notes.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+          </div>
+          {% endif %}
+
+          {% if form.non_field_errors %}
+          <div class="alert alert-danger">{{ form.non_field_errors }}</div>
+          {% endif %}
+
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary">
+              <i class="bi bi-{% if is_edit %}check-lg{% else %}plus-lg{% endif %} me-1"></i>
+              {% if is_edit %}Save Changes{% else %}Add Hardware{% endif %}
+            </button>
+            <a href="{% url 'core:project_detail' project.pk %}" class="btn btn-outline-secondary">Cancel</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if not is_edit %}
+<script>
+// Clear the other pane's required fields when switching tabs
+document.addEventListener('DOMContentLoaded', function() {
+  var existingTab = document.getElementById('existing-tab');
+  var newTab = document.getElementById('new-tab');
+  var hwPartSelect = document.getElementById('{{ form.hardware_part.id_for_label }}');
+
+  if (existingTab && newTab) {
+    newTab.addEventListener('shown.bs.tab', function() {
+      if (hwPartSelect) hwPartSelect.value = '';
+    });
+  }
+});
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% load core_tags %}
+
+{% block title %}Materials &amp; Filaments — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="h3 mb-0"><i class="bi bi-moisture me-2"></i>Materials &amp; Filaments</h1>
+  {% if spoolman_url %}
+  <a href="{{ spoolman_url }}" target="_blank" rel="noopener" class="badge bg-secondary fs-6 text-decoration-none"><i class="bi bi-cloud me-1"></i>Spoolman <i class="bi bi-box-arrow-up-right ms-1 small"></i></a>
+  {% else %}
+  <span class="badge bg-secondary fs-6"><i class="bi bi-cloud me-1"></i>Spoolman</span>
+  {% endif %}
+</div>
+
+{% if spoolman_error %}
+<div class="alert alert-warning d-flex align-items-start gap-3" role="alert">
+  <i class="bi bi-exclamation-triangle-fill fs-4 mt-1 flex-shrink-0"></i>
+  <div>
+    <strong>Spoolman not available</strong><br>
+    {{ spoolman_error }}
+  </div>
+</div>
+{% else %}
+
+{# ── Spools ──────────────────────────────────────────────────────────────── #}
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <h5 class="mb-0"><i class="bi bi-record-circle me-2"></i>Spools</h5>
+    {% if spoolman_spools %}
+    <span class="badge bg-secondary">{{ spoolman_spools|length }}</span>
+    {% endif %}
+  </div>
+  {% if spoolman_spools %}
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th style="width:40px"></th>
+            <th>Filament</th>
+            <th>Vendor</th>
+            <th>Material</th>
+            <th class="text-end">Remaining</th>
+            <th>Location</th>
+            <th class="text-end">Spool&nbsp;#</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for spool in spoolman_spools %}
+          <tr{% if spool.archived %} class="text-body-secondary"{% endif %}>
+            <td class="text-center">
+              {% if spool.filament.color_hex %}
+              <span class="rounded-circle border d-inline-block"
+                style="width:16px;height:16px;background:#{{ spool.filament.color_hex }};"
+                title="#{{ spool.filament.color_hex }}"></span>
+              {% else %}
+              <span class="text-body-secondary">—</span>
+              {% endif %}
+            </td>
+            <td class="fw-medium">{{ spool.filament.name|default:"Unknown" }}</td>
+            <td>{{ spool.filament.vendor.name|default:"—" }}</td>
+            <td>
+              {% if spool.filament.material %}
+              <span class="badge bg-secondary bg-opacity-25 text-body">{{ spool.filament.material }}</span>
+              {% else %}—{% endif %}
+            </td>
+            <td class="text-end">
+              {% if spool.remaining_weight %}
+                {% if spool.remaining_weight < 50 %}
+                <span class="text-danger fw-medium">{{ spool.remaining_weight|floatformat:0 }}&nbsp;g</span>
+                {% elif spool.remaining_weight < 200 %}
+                <span class="text-warning">{{ spool.remaining_weight|floatformat:0 }}&nbsp;g</span>
+                {% else %}
+                {{ spool.remaining_weight|floatformat:0 }}&nbsp;g
+                {% endif %}
+              {% else %}—{% endif %}
+            </td>
+            <td>{{ spool.location|default:"—" }}</td>
+            <td class="text-end text-body-secondary">
+              {{ spool.id }}
+              {% if spool.archived %}<span class="badge bg-secondary ms-1">Archived</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card-body text-center text-body-secondary py-4">
+    <i class="bi bi-record-circle fs-3 d-block mb-1"></i>
+    No spools found in Spoolman.
+  </div>
+  {% endif %}
+</div>
+
+{# ── Filament Types ──────────────────────────────────────────────────────── #}
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <h5 class="mb-0"><i class="bi bi-droplet me-2"></i>Filament Types</h5>
+    {% if spoolman_filaments %}
+    <span class="badge bg-secondary">{{ spoolman_filaments|length }}</span>
+    {% endif %}
+  </div>
+  {% if spoolman_filaments %}
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th style="width:40px"></th>
+            <th>Name</th>
+            <th>Vendor</th>
+            <th>Material</th>
+            <th class="text-end">Diameter</th>
+            <th class="text-end">Density</th>
+            <th class="text-end">Cost&nbsp;/&nbsp;kg</th>
+            <th>Slicer Profile</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for filament in spoolman_filaments %}
+          <tr>
+            <td class="text-center">
+              {% if filament.color_hex %}
+              <span class="rounded border d-inline-block"
+                style="width:18px;height:18px;background:#{{ filament.color_hex }};"
+                title="#{{ filament.color_hex }}"></span>
+              {% else %}
+              <span class="text-body-secondary">—</span>
+              {% endif %}
+            </td>
+            <td class="fw-medium">{{ filament.name|default:"—" }}</td>
+            <td>{{ filament.vendor.name|default:"—" }}</td>
+            <td>
+              {% if filament.material %}
+              <span class="badge bg-secondary bg-opacity-25 text-body">{{ filament.material }}</span>
+              {% else %}—{% endif %}
+            </td>
+            <td class="text-end">{% if filament.diameter %}{{ filament.diameter }}&nbsp;mm{% else %}—{% endif %}</td>
+            <td class="text-end">{% if filament.density %}{{ filament.density }}&nbsp;g/cm³{% else %}—{% endif %}</td>
+            <td class="text-end">{% if filament.cost_per_kg %}{{ filament.cost_per_kg }}{% else %}—{% endif %}</td>
+            <td>
+              {% if perms.core.can_manage_filament_mappings %}
+              <form method="post" action="{% url 'core:save_filament_mapping' %}" class="d-flex align-items-center gap-1">
+                {% csrf_token %}
+                <input type="hidden" name="spoolman_filament_id" value="{{ filament.id }}">
+                <input type="hidden" name="filament_name"
+                  value="{% if filament.vendor.name %}{{ filament.vendor.name }} - {% endif %}{{ filament.name|default:'' }}">
+                <input type="hidden" name="filament_color" value="{{ filament.color_hex|default:'' }}">
+                {% with current_profile_id=mappings_by_filament_id|mapping_profile_id:filament.id %}
+                <select name="orca_filament_profile_id" class="form-select form-select-sm" style="min-width:160px;"
+                  onchange="this.form.submit()">
+                  <option value="">— none —</option>
+                  {% for profile in filament_profiles %}
+                  <option value="{{ profile.pk }}" {% if profile.pk == current_profile_id %}selected{% endif %}>{{ profile.name }}</option>
+                  {% endfor %}
+                </select>
+                {% endwith %}
+              </form>
+              {% else %}
+              {% with current_profile_id=mappings_by_filament_id|mapping_profile_id:filament.id %}
+                {% for profile in filament_profiles %}
+                  {% if profile.pk == current_profile_id %}{{ profile.name }}{% endif %}
+                {% endfor %}
+                {% if not current_profile_id %}<span class="text-body-secondary">—</span>{% endif %}
+              {% endwith %}
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <div class="card-body text-center text-body-secondary py-4">
+    <i class="bi bi-droplet fs-3 d-block mb-1"></i>
+    No filament types found in Spoolman.
+  </div>
+  {% endif %}
+</div>
+
+{% endif %}
+{% endblock %}

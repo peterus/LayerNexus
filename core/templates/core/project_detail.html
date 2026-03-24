@@ -1,0 +1,577 @@
+{% extends "base.html" %}
+{% load core_tags %}
+
+{% block title %}{{ project.name }} — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
+    {% for ancestor in ancestors %}
+    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' ancestor.pk %}">{{ ancestor.name }}</a></li>
+    {% endfor %}
+    <li class="breadcrumb-item active">{{ project.name }}</li>
+  </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-start mb-4">
+  <div class="d-flex gap-3 align-items-start">
+    {% if project.image %}
+    <a href="{{ project.image.url }}" target="_blank"><img src="{{ project.image.url }}" alt="{{ project.name }}" class="rounded shadow-sm" style="max-height:120px;max-width:180px;object-fit:cover;"></a>
+    {% endif %}
+    <div>
+      <h1 class="h3 mb-1">{{ project.name }}</h1>
+      {% if project.description %}
+      <div class="text-body-secondary mb-0">{{ project.description|markdown }}</div>
+      {% endif %}
+    </div>
+  </div>
+  <div class="d-flex gap-2">
+    <a href="{% url 'core:project_cost' project.pk %}" class="btn btn-outline-success"><i class="bi bi-currency-dollar me-1"></i>Cost Estimate</a>
+    {% if perms.core.can_manage_projects %}
+    <form method="post" action="{% url 'core:project_re_estimate' project.pk %}" class="d-inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-outline-info" title="Re-estimate all parts in this project">
+        <i class="bi bi-arrow-repeat me-1"></i>Re-Estimate All
+      </button>
+    </form>
+    {% endif %}
+    {% if perms.core.add_printjob %}
+    <form method="post" action="{% url 'core:project_create_jobs' project.pk %}" class="d-inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-outline-primary" title="Create draft print job(s) for all remaining parts">
+        <i class="bi bi-printer me-1"></i>Create Print Job(s)
+      </button>
+    </form>
+    {% endif %}
+    {% if perms.core.can_manage_projects %}
+    <a href="{% url 'core:project_update' project.pk %}" class="btn btn-outline-secondary"><i class="bi bi-pencil me-1"></i>Edit</a>
+    <a href="{% url 'core:project_delete' project.pk %}" class="btn btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-sm-6 col-lg-3">
+    <div class="card text-center">
+      <div class="card-body">
+        <div class="fs-4 fw-bold">{{ project.parts.count }}</div>
+        <small class="text-body-secondary">Parts</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card text-center">
+      <div class="card-body">
+        <div class="fs-4 fw-bold">{{ project.total_parts_count }}</div>
+        <small class="text-body-secondary">Total Quantity</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card text-center">
+      <div class="card-body">
+        <div class="fs-4 fw-bold">{{ project.progress_percent }}%</div>
+        <small class="text-body-secondary">Printed</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-6 col-lg-3">
+    <div class="card text-center">
+      <div class="card-body">
+        {% with status=project.aggregated_status %}
+        <div class="fs-4 fw-bold">
+          <span class="badge {% if status == 'error' %}bg-danger{% elif status == 'estimating' %}bg-info{% elif status == 'complete' %}bg-success{% elif status == 'in_progress' %}bg-primary{% elif status == 'ready' %}bg-success bg-opacity-50{% elif status == 'empty' %}bg-secondary bg-opacity-50{% else %}bg-secondary{% endif %}">
+            {% if status == 'error' %}<i class="bi bi-exclamation-triangle me-1"></i>{% elif status == 'estimating' %}<span class="spinner-border spinner-border-sm me-1" style="width:.6rem;height:.6rem;"></span>{% elif status == 'complete' %}<i class="bi bi-check-circle me-1"></i>{% elif status == 'in_progress' %}<i class="bi bi-printer me-1"></i>{% elif status == 'ready' %}<i class="bi bi-check2-all me-1"></i>{% elif status == 'pending' %}<i class="bi bi-hourglass me-1"></i>{% elif status == 'empty' %}<i class="bi bi-inbox me-1"></i>{% endif %}
+            {{ project.aggregated_status_display }}
+          </span>
+        </div>
+        {% endwith %}
+        <small class="text-body-secondary">Status</small>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="progress mb-4" style="height: 10px;">
+  <div class="progress-bar bg-success" role="progressbar" style="width: {{ project.progress_percent }}%;" aria-valuenow="{{ project.progress_percent }}" aria-valuemin="0" aria-valuemax="100"></div>
+</div>
+
+{% if effective_default_print_preset %}
+<div class="alert alert-light border d-flex align-items-center mb-4 py-2">
+  <i class="bi bi-sliders me-2"></i>
+  <span>
+    Print Preset:
+    <a href="{% url 'core:orcaprintpreset_detail' effective_default_print_preset.pk %}" class="text-decoration-none fw-medium">{{ effective_default_print_preset.name }}</a>
+    {% if preset_inherited %}
+    <span class="badge bg-info-subtle text-info-emphasis ms-1" title="Inherited from parent project"><i class="bi bi-arrow-up-short me-1"></i>inherited</span>
+    {% endif %}
+  </span>
+</div>
+{% endif %}
+
+{% if filament_requirements %}
+<h4 class="mb-3"><i class="bi bi-basket me-2"></i>Filament Requirements</h4>
+<div class="table-responsive mb-4">
+  <table class="table table-hover align-middle">
+    <thead>
+      <tr>
+        <th style="width:32px"></th>
+        <th>Filament</th>
+        <th class="text-end">Total</th>
+        <th class="text-end">Remaining</th>
+        <th class="text-center">Parts</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for req in filament_requirements %}
+      <tr>
+        <td class="text-center">
+          {% if req.colors %}
+            {% for c in req.colors %}
+            <span class="rounded-circle border d-inline-block" style="width:14px;height:14px;background:#{{ c }};" title="#{{ c }}"></span>
+            {% endfor %}
+          {% else %}
+            <span class="text-body-secondary">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if req.filament_name %}
+            {{ req.filament_name }}
+          {% elif req.filament_id %}
+            Filament #{{ req.filament_id }}
+          {% else %}
+            <span class="text-body-secondary fst-italic">Unassigned</span>
+          {% endif %}
+          {% if req.material and req.material != '—' %}
+            <span class="badge bg-secondary bg-opacity-25 text-body ms-1">{{ req.material }}</span>
+          {% endif %}
+        </td>
+        <td class="text-end">
+          {% if req.has_estimates %}
+            {{ req.total_grams|floatformat:0 }}&thinsp;g
+          {% else %}
+            <span class="text-body-secondary" title="Slice parts first to get estimates">—</span>
+          {% endif %}
+        </td>
+        <td class="text-end">
+          {% if req.has_estimates %}
+            {% if req.remaining_grams > 0 %}
+              <span class="fw-bold text-warning-emphasis">{{ req.remaining_grams|floatformat:0 }}&thinsp;g</span>
+            {% else %}
+              <span class="text-success"><i class="bi bi-check-circle me-1"></i>0&thinsp;g</span>
+            {% endif %}
+          {% else %}
+            <span class="text-body-secondary">—</span>
+          {% endif %}
+        </td>
+        <td class="text-center">{{ req.parts|length }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{# Sub-projects section #}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0"><i class="bi bi-diagram-3 me-2"></i>Sub-Projects</h4>
+  {% if perms.core.can_manage_projects %}
+  <a href="{% url 'core:subproject_create' project.pk %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Add Sub-Project</a>
+  {% endif %}
+</div>
+
+{% if subprojects %}
+<div class="table-responsive mb-4">
+  <table class="table table-hover align-middle">
+    <thead>
+      <tr>
+        <th style="width:50px;"></th>
+        <th>Name</th>
+        <th class="text-center">Quantity</th>
+        <th class="text-center">Parts</th>
+        <th class="text-center">Progress</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for sub in subprojects %}
+      <tr>
+        <td>
+          {% if sub.image %}
+          <a href="{% url 'core:project_detail' sub.pk %}"><img src="{{ sub.image.url }}" alt="{{ sub.name }}" class="rounded" style="width:40px;height:40px;object-fit:cover;"></a>
+          {% else %}
+          <span class="d-inline-block rounded bg-body-secondary text-center" style="width:40px;height:40px;line-height:40px;"><i class="bi bi-folder text-body-secondary"></i></span>
+          {% endif %}
+        </td>
+        <td>
+          <a href="{% url 'core:project_detail' sub.pk %}" class="text-decoration-none fw-medium">{{ sub.name }}</a>
+          {% if sub.description %}
+          <div class="text-body-secondary small">{{ sub.description|truncatechars:60 }}</div>
+          {% endif %}
+        </td>
+        <td class="text-center"><span class="badge bg-secondary">×{{ sub.quantity }}</span></td>
+        <td class="text-center">{{ sub.parts.count }}</td>
+        <td class="text-center">
+          {% with status=sub.aggregated_status %}
+          <span class="badge {% if status == 'error' %}bg-danger{% elif status == 'estimating' %}bg-info{% elif status == 'complete' %}bg-success{% elif status == 'in_progress' %}bg-primary{% elif status == 'ready' %}bg-success bg-opacity-50{% elif status == 'empty' %}bg-secondary bg-opacity-50{% else %}bg-secondary{% endif %} me-1">
+            {% if status == 'error' %}<i class="bi bi-exclamation-triangle"></i>{% elif status == 'estimating' %}<span class="spinner-border spinner-border-sm" style="width:.5rem;height:.5rem;"></span>{% elif status == 'complete' %}<i class="bi bi-check-circle"></i>{% elif status == 'in_progress' %}<i class="bi bi-printer"></i>{% elif status == 'ready' %}<i class="bi bi-check2-all"></i>{% elif status == 'pending' %}<i class="bi bi-hourglass"></i>{% elif status == 'empty' %}<i class="bi bi-inbox"></i>{% endif %}
+          </span>
+          {% endwith %}
+          <div class="progress d-inline-block align-middle" style="height:8px;min-width:60px;">
+            <div class="progress-bar bg-success" style="width:{{ sub.progress_percent }}%;"></div>
+          </div>
+          <small class="text-body-secondary ms-1">{{ sub.progress_percent }}%</small>
+        </td>
+        <td>
+          <a href="{% url 'core:project_detail' sub.pk %}" class="btn btn-sm btn-outline-secondary" title="View"><i class="bi bi-eye"></i></a>
+          {% if perms.core.can_manage_projects %}
+          <a href="{% url 'core:project_update' sub.pk %}" class="btn btn-sm btn-outline-secondary" title="Edit"><i class="bi bi-pencil"></i></a>
+          <a href="{% url 'core:project_delete' sub.pk %}" class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash"></i></a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="text-center py-4 text-body-secondary mb-4">
+  <i class="bi bi-diagram-3 display-4"></i>
+  <p class="mt-2">No sub-projects yet.</p>
+</div>
+{% endif %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0"><i class="bi bi-puzzle me-2"></i>Parts</h4>
+  {% if perms.core.can_manage_projects %}
+  <a href="{% url 'core:part_create' project.pk %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Add Part</a>
+  {% endif %}
+</div>
+
+{% if project.parts.all %}
+<div class="table-responsive">
+  <table class="table table-hover align-middle">
+    <thead>
+      <tr>
+        <th style="width:32px"></th>
+        <th>Name</th>
+        <th class="text-center">Quantity</th>
+        <th class="text-center">Printed</th>
+        <th>Status</th>
+        <th>STL</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for part in project.parts.all %}
+      <tr>
+        <td class="text-center">
+          {% if part.spoolman_filament_id and filament_colors|dict_get:part.spoolman_filament_id %}
+          <span class="rounded-circle border d-inline-block" style="width:14px;height:14px;background:#{{ filament_colors|dict_get:part.spoolman_filament_id }};" title="{{ filament_names|dict_get:part.spoolman_filament_id|default:part.material }}"></span>
+          {% elif part.color %}
+          <span class="rounded-circle border d-inline-block" style="width:14px;height:14px;background:#{{ part.color }};" title="{% if part.material %}{{ part.material }}{% else %}#{{ part.color }}{% endif %}"></span>
+          {% else %}
+          <span class="text-body-secondary">—</span>
+          {% endif %}
+        </td>
+        <td>
+          <a href="{% url 'core:part_detail' part.pk %}" class="text-decoration-none fw-medium">{{ part.name }}</a>
+          {% if part.material %}<span class="badge bg-secondary bg-opacity-25 text-body ms-1">{{ part.material }}</span>{% endif %}
+        </td>
+        <td class="text-center">{{ part.quantity }}</td>
+        <td class="text-center">{{ part.printed_quantity }}/{{ part.quantity }}</td>
+        <td>
+          {% if part.estimation_status == 'error' %}
+          <span class="badge bg-danger" title="{{ part.estimation_error }}"><i class="bi bi-exclamation-triangle me-1"></i>Estimation Error</span>
+          {% elif part.estimation_status == 'estimating' %}
+          <span class="badge bg-warning text-dark"><span class="spinner-border spinner-border-sm me-1" style="width:.65rem;height:.65rem;"></span>Estimating</span>
+          {% elif part.estimation_status == 'pending' %}
+          <span class="badge bg-info"><i class="bi bi-hourglass me-1"></i>Waiting</span>
+          {% elif part.is_complete %}
+          <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Complete</span>
+          {% elif part.printed_quantity > 0 %}
+          <span class="badge bg-primary"><i class="bi bi-printer me-1"></i>In Progress</span>
+          {% else %}
+          <span class="badge bg-secondary"><i class="bi bi-hourglass me-1"></i>Pending</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if part.stl_file %}
+          <i class="bi bi-file-earmark-check text-success" title="STL uploaded"></i>
+          {% else %}
+          <i class="bi bi-file-earmark-x text-body-secondary" title="No STL"></i>
+          {% endif %}
+        </td>
+        <td>
+          <a href="{% url 'core:part_detail' part.pk %}" class="btn btn-sm btn-outline-secondary" title="View"><i class="bi bi-eye"></i></a>
+          {% if perms.core.can_manage_projects %}
+          <a href="{% url 'core:part_update' part.pk %}" class="btn btn-sm btn-outline-secondary" title="Edit"><i class="bi bi-pencil"></i></a>
+          <a href="{% url 'core:part_delete' part.pk %}" class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash"></i></a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="text-center py-4 text-body-secondary">
+  <i class="bi bi-puzzle display-4"></i>
+  <p class="mt-2">No parts in this project yet.</p>
+</div>
+{% endif %}
+
+{# Documents section #}
+<div class="d-flex justify-content-between align-items-center mb-3 mt-4">
+  <h4 class="mb-0"><i class="bi bi-file-earmark-text me-2"></i>Documents</h4>
+  {% if perms.core.can_manage_projects %}
+  <a href="{% url 'core:document_create' project.pk %}" class="btn btn-primary btn-sm"><i class="bi bi-upload me-1"></i>Upload Document</a>
+  {% endif %}
+</div>
+
+{% if documents %}
+<div class="table-responsive mb-4">
+  <table class="table table-hover align-middle">
+    <thead>
+      <tr>
+        <th style="width:32px"></th>
+        <th>Name</th>
+        <th class="text-end">Uploaded</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for doc in documents %}
+      <tr>
+        <td class="text-center">
+          {% if doc.file_extension == 'pdf' %}
+          <i class="bi bi-file-earmark-pdf text-danger"></i>
+          {% elif doc.file_extension == 'txt' or doc.file_extension == 'md' %}
+          <i class="bi bi-file-earmark-text text-primary"></i>
+          {% elif doc.file_extension == 'png' or doc.file_extension == 'jpg' or doc.file_extension == 'jpeg' or doc.file_extension == 'svg' %}
+          <i class="bi bi-file-earmark-image text-success"></i>
+          {% elif doc.file_extension == 'step' or doc.file_extension == 'dxf' %}
+          <i class="bi bi-file-earmark-code text-info"></i>
+          {% else %}
+          <i class="bi bi-file-earmark text-secondary"></i>
+          {% endif %}
+        </td>
+        <td>
+          <a href="{% url 'core:document_download' doc.pk %}" class="text-decoration-none fw-medium" target="_blank" rel="noopener noreferrer">{{ doc.name }}</a>
+          <span class="badge bg-secondary bg-opacity-25 text-body ms-1">.{{ doc.file_extension }}</span>
+        </td>
+        <td class="text-end">
+          <small class="text-body-secondary">{{ doc.created_at|timesince }} ago</small>
+        </td>
+        <td>
+          <a href="{% url 'core:document_download' doc.pk %}" class="btn btn-sm btn-outline-secondary" title="Download" target="_blank" rel="noopener noreferrer"><i class="bi bi-download"></i></a>
+          {% if perms.core.can_manage_projects %}
+          <a href="{% url 'core:document_delete' doc.pk %}" class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash"></i></a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="text-center py-4 text-body-secondary mb-4">
+  <i class="bi bi-file-earmark-text display-4"></i>
+  <p class="mt-2">No documents yet.</p>
+</div>
+{% endif %}
+
+{# Show sub-project documents if any #}
+{% if all_documents %}
+{% with own_count=documents.count %}
+{% if all_documents|length > own_count %}
+<div class="mb-4">
+  <h6 class="text-body-secondary"><i class="bi bi-diagram-3 me-1"></i>Documents from Sub-Projects</h6>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover align-middle">
+      <thead>
+        <tr>
+          <th style="width:32px"></th>
+          <th>Name</th>
+          <th>Project</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for doc, proj in all_documents %}
+        {% if doc.project_id != project.pk %}
+        <tr>
+          <td class="text-center">
+            {% if doc.file_extension == 'pdf' %}
+            <i class="bi bi-file-earmark-pdf text-danger"></i>
+            {% elif doc.file_extension == 'txt' or doc.file_extension == 'md' %}
+            <i class="bi bi-file-earmark-text text-primary"></i>
+            {% elif doc.file_extension == 'png' or doc.file_extension == 'jpg' or doc.file_extension == 'jpeg' or doc.file_extension == 'svg' %}
+            <i class="bi bi-file-earmark-image text-success"></i>
+            {% else %}
+            <i class="bi bi-file-earmark text-secondary"></i>
+            {% endif %}
+          </td>
+          <td>
+            <a href="{% url 'core:document_download' doc.pk %}" class="text-decoration-none" target="_blank" rel="noopener noreferrer">{{ doc.name }}</a>
+            <span class="badge bg-secondary bg-opacity-25 text-body ms-1">.{{ doc.file_extension }}</span>
+          </td>
+          <td><span class="text-body-secondary">{{ proj.name }}</span></td>
+          <td>
+            <a href="{% url 'core:document_download' doc.pk %}" class="btn btn-sm btn-outline-secondary" title="Download" target="_blank" rel="noopener noreferrer"><i class="bi bi-download"></i></a>
+          </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endwith %}
+{% endif %}
+
+{# Hardware section #}
+<div class="d-flex justify-content-between align-items-center mb-3 mt-4">
+  <h4 class="mb-0"><i class="bi bi-nut me-2"></i>Hardware</h4>
+  {% if perms.core.can_manage_projects %}
+  <a href="{% url 'core:hardware_create' project.pk %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Add Hardware</a>
+  {% endif %}
+</div>
+
+{% if hardware_assignments %}
+<div class="table-responsive mb-4">
+  <table class="table table-hover align-middle">
+    <thead>
+      <tr>
+        <th>Category</th>
+        <th>Name</th>
+        <th class="text-center">Qty</th>
+        <th class="text-end">Unit Price</th>
+        <th class="text-end">Total</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for hw in hardware_assignments %}
+      <tr>
+        <td><span class="badge bg-secondary bg-opacity-25 text-body">{{ hw.hardware_part.get_category_display }}</span></td>
+        <td>
+          {{ hw.hardware_part.name }}
+          {% if hw.hardware_part.url %}
+          <a href="{{ hw.hardware_part.url }}" target="_blank" rel="noopener noreferrer" class="text-decoration-none ms-1" title="Open link"><i class="bi bi-box-arrow-up-right"></i></a>
+          {% endif %}
+          {% if hw.notes %}<div class="text-body-secondary small">{{ hw.notes|truncatechars:60 }}</div>{% endif %}
+        </td>
+        <td class="text-center">{{ hw.quantity }}</td>
+        <td class="text-end">
+          {% if hw.hardware_part.unit_price != None %}
+          {{ hw.hardware_part.unit_price }}&thinsp;€
+          {% else %}
+          <span class="text-body-secondary">—</span>
+          {% endif %}
+        </td>
+        <td class="text-end">
+          {% if hw.total_price != None %}
+          <strong>{{ hw.total_price|floatformat:2 }}&thinsp;€</strong>
+          {% else %}
+          <span class="text-body-secondary">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if perms.core.can_manage_projects %}
+          <a href="{% url 'core:hardware_update' hw.pk %}" class="btn btn-sm btn-outline-secondary" title="Edit"><i class="bi bi-pencil"></i></a>
+          <a href="{% url 'core:hardware_delete' hw.pk %}" class="btn btn-sm btn-outline-danger" title="Remove"><i class="bi bi-trash"></i></a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+    {% if total_hardware_cost > 0 %}
+    <tfoot>
+      <tr class="table-light">
+        <td colspan="4" class="text-end fw-bold">Hardware Total:</td>
+        <td class="text-end fw-bold">{{ total_hardware_cost|floatformat:2 }}&thinsp;€</td>
+        <td></td>
+      </tr>
+    </tfoot>
+    {% endif %}
+  </table>
+</div>
+{% else %}
+{% if not hardware_requirements %}
+<div class="text-center py-4 text-body-secondary mb-4">
+  <i class="bi bi-nut display-4"></i>
+  <p class="mt-2">No hardware items yet.</p>
+</div>
+{% endif %}
+{% endif %}
+
+{# Show aggregated hardware from sub-projects #}
+{% if hardware_requirements %}
+{% with own_count=hardware_assignments.count %}
+{% if hardware_requirements|length > own_count or hardware_requirements|length > 0 and subprojects %}
+<div class="mb-4">
+  <h6 class="text-body-secondary"><i class="bi bi-diagram-3 me-1"></i>Aggregated Hardware (incl. Sub-Projects)</h6>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover align-middle">
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th>Name</th>
+          <th class="text-center">Total Qty</th>
+          <th class="text-end">Total Cost</th>
+          <th>Used in</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for req in hardware_requirements %}
+        <tr>
+          <td><span class="badge bg-secondary bg-opacity-25 text-body">{{ req.hardware_part.get_category_display }}</span></td>
+          <td>
+            {{ req.hardware_part.name }}
+            {% if req.hardware_part.url %}
+            <a href="{{ req.hardware_part.url }}" target="_blank" rel="noopener noreferrer" class="text-decoration-none ms-1" title="Open link"><i class="bi bi-box-arrow-up-right"></i></a>
+            {% endif %}
+          </td>
+          <td class="text-center">{{ req.total_quantity }}</td>
+          <td class="text-end">
+            {% if req.total_price != None %}
+            {{ req.total_price|floatformat:2 }}&thinsp;€
+            {% else %}
+            <span class="text-body-secondary">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% for pname in req.projects %}
+            <span class="badge bg-info bg-opacity-25 text-info-emphasis">{{ pname }}</span>
+            {% endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      {% if total_hardware_cost > 0 %}
+      <tfoot>
+        <tr class="table-light">
+          <td colspan="3" class="text-end fw-bold">Total Hardware Cost:</td>
+          <td class="text-end fw-bold">{{ total_hardware_cost|floatformat:2 }}&thinsp;€</td>
+          <td></td>
+        </tr>
+      </tfoot>
+      {% endif %}
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endwith %}
+{% endif %}
+
+
+<div class="mt-3">
+  <small class="text-body-secondary">
+    <i class="bi bi-calendar me-1"></i>Created {{ project.created_at|timesince }} ago &middot;
+    Updated {{ project.updated_at|timesince }} ago
+  </small>
+</div>
+{% endblock %}

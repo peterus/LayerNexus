@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% load core_tags %}
+{% block title %}Print Queue — {{ APP_NAME }}{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="h3 mb-0"><i class="bi bi-list-ol me-2"></i>Print Queue</h1>
+  <div class="d-flex gap-2">
+    {% if perms.core.can_control_printer %}
+    <form method="post" action="{% url 'core:run_all_queues' %}" class="d-inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-success"><i class="bi bi-play-circle me-1"></i>Run All Printers</button>
+    </form>
+    {% endif %}
+    {% if perms.core.can_manage_print_queue %}
+    <a href="{% url 'core:printqueue_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg me-1"></i>Add to Queue</a>
+    {% endif %}
+  </div>
+</div>
+
+{% regroup queue_entries by printer as printer_groups %}
+{% if printer_groups %}
+{% for group in printer_groups %}
+{% with busy=group.list.0.is_printer_busy %}
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <h5 class="mb-0">
+      <i class="bi bi-cpu me-2"></i>{{ group.grouper.name }}
+      {% if group.grouper.moonraker_url %}
+      <a href="{{ group.grouper.moonraker_url|strip_port }}" target="_blank" rel="noopener" class="badge bg-dark bg-opacity-25 text-decoration-none ms-1" title="Open Fluidd / Mainsail"><i class="bi bi-box-arrow-up-right"></i></a>
+      {% endif %}
+      {% if busy %}<span class="badge bg-warning text-dark ms-2"><i class="bi bi-hourglass-split me-1"></i>Busy</span>{% endif %}
+    </h5>
+    {% if perms.core.can_control_printer %}
+    <form method="post" action="{% url 'core:run_queue' group.grouper.pk %}" class="d-inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-sm btn-success" {% if busy %}disabled{% endif %}>
+        <i class="bi bi-play-fill me-1"></i>Run Next Job
+      </button>
+    </form>
+    {% endif %}
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead><tr><th>#</th><th>Job</th><th>Plate</th><th class="text-end">Filament</th><th class="text-end">Print Time</th><th>Priority</th><th>Status</th><th>Added</th><th>Actions</th></tr></thead>
+        <tbody>
+        {% for entry in group.list %}
+        <tr data-entry-pk="{{ entry.pk }}" data-entry-status="{{ entry.status }}">
+          <td>{{ entry.position }}</td>
+          <td><a href="{% url 'core:printjob_detail' entry.print_job.pk %}">{{ entry.print_job }}</a></td>
+          <td>Plate {{ entry.plate.plate_number }}</td>
+          <td class="text-end"><small>{% if entry.plate.filament_used_grams %}{{ entry.plate.filament_used_grams|floatformat:1 }}&nbsp;g{% else %}—{% endif %}</small></td>
+          <td class="text-end"><small>{% if entry.plate.print_time_estimate %}{{ entry.plate.print_time_estimate|duration_format }}{% else %}—{% endif %}</small></td>
+          <td>
+            <span class="badge {% if entry.priority == 4 %}bg-danger{% elif entry.priority == 3 %}bg-warning text-dark{% elif entry.priority == 2 %}bg-info{% else %}bg-secondary{% endif %}">
+              {{ entry.get_priority_display }}
+            </span>
+          </td>
+          <td>
+            {% if entry.status == 'printing' %}
+              <span class="badge bg-primary"><i class="bi bi-printer me-1"></i>Printing</span>
+            {% elif entry.status == 'awaiting_review' %}
+              <span class="badge bg-warning text-dark"><i class="bi bi-clipboard-check me-1"></i>Awaiting Review</span>
+            {% else %}
+              <span class="badge bg-secondary">Waiting</span>
+            {% endif %}
+            {% if entry.retry_count > 0 %}
+              <small class="text-muted ms-1">(retry {{ entry.retry_count }}/{{ entry.max_retries }})</small>
+            {% endif %}
+          </td>
+          <td>{{ entry.added_at|date:"Y-m-d H:i" }}</td>
+          <td class="text-nowrap">
+            {% if entry.status == 'awaiting_review' and perms.core.can_control_printer %}
+              <a href="{% url 'core:printqueue_review' entry.pk %}" class="btn btn-sm btn-warning">
+                <i class="bi bi-clipboard-check me-1"></i>Review
+              </a>
+            {% elif entry.status == 'printing' and perms.core.can_control_printer %}
+              <form method="post" action="{% url 'core:printqueue_cancel' entry.pk %}" class="d-inline">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Cancel this print?')">
+                  <i class="bi bi-stop-circle me-1"></i>Cancel
+                </button>
+              </form>
+            {% elif entry.status == 'waiting' and perms.core.can_dequeue_job %}
+              <a href="{% url 'core:printqueue_delete' entry.pk %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endwith %}
+{% endfor %}
+{% else %}
+<div class="text-center text-body-secondary py-5">
+  <i class="bi bi-list-ol fs-1 d-block mb-2"></i>
+  <p>The print queue is empty.</p>
+</div>
+{% endif %}
+
+{# Poll Moonraker for entries that are currently printing #}
+<script>
+(function() {
+  const POLL_INTERVAL = 30000; // 30 seconds
+  function pollPrinting() {
+    document.querySelectorAll('tr[data-entry-status="printing"]').forEach(function(row) {
+      const pk = row.dataset.entryPk;
+      fetch('/api/queue/' + pk + '/check-status/')
+        .then(r => r.json())
+        .then(data => {
+          if (data.status === 'awaiting_review') {
+            // Reload the page to show the updated status
+            location.reload();
+          }
+        })
+        .catch(() => {});  // silently ignore poll errors
+    });
+  }
+  // Only poll if there are printing entries
+  if (document.querySelector('tr[data-entry-status="printing"]')) {
+    setInterval(pollPrinting, POLL_INTERVAL);
+  }
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,523 @@
+{% extends "base.html" %}
+{% load core_tags %}
+
+{% block title %}Admin Dashboard — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="h3 mb-0"><i class="bi bi-shield-lock me-2"></i>Admin Dashboard</h1>
+  <div class="d-flex align-items-center gap-2">
+    <small class="text-body-secondary" id="refresh-status"></small>
+    <select id="refresh-interval" class="form-select form-select-sm" style="width: auto;" title="Auto-refresh interval">
+      <option value="0">Off</option>
+      <option value="10">10s</option>
+      <option value="30" selected>30s</option>
+      <option value="60">1m</option>
+      <option value="120">2m</option>
+    </select>
+    <button id="refresh-btn" class="btn btn-sm btn-outline-secondary" title="Refresh now">
+      <i class="bi bi-arrow-clockwise"></i>
+    </button>
+  </div>
+</div>
+
+<div id="admin-content">
+<!-- System Statistics -->
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-4 col-xl-2">
+    <div class="card text-center h-100">
+      <div class="card-body py-3">
+        <div class="h2 mb-0 text-primary">{{ total_projects }}</div>
+        <small class="text-body-secondary">Projects</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-4 col-xl-2">
+    <div class="card text-center h-100">
+      <div class="card-body py-3">
+        <div class="h2 mb-0 text-primary">{{ total_parts }}</div>
+        <small class="text-body-secondary">Parts</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-4 col-xl-2">
+    <div class="card text-center h-100">
+      <div class="card-body py-3">
+        <div class="h2 mb-0 text-primary">{{ total_jobs }}</div>
+        <small class="text-body-secondary">Print Jobs</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-4 col-xl-2">
+    <div class="card text-center h-100">
+      <div class="card-body py-3">
+        <div class="h2 mb-0 text-info">{{ total_users }}</div>
+        <small class="text-body-secondary">Users</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-4 col-xl-2">
+    <div class="card text-center h-100">
+      <div class="card-body py-3">
+        <div class="h2 mb-0 text-info">{{ total_printers }}</div>
+        <small class="text-body-secondary">Printers</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-4 col-xl-2">
+    <div class="card text-center h-100">
+      <div class="card-body py-3">
+        <div class="h2 mb-0 text-secondary">{{ total_storage_mb }} MB</div>
+        <small class="text-body-secondary">Storage</small>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4">
+  <!-- Left column -->
+  <div class="col-lg-8">
+
+    <!-- OrcaSlicer Worker Queue -->
+    <div class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-cpu me-2"></i>OrcaSlicer Worker Queue</h5>
+        <div>
+          {% if queue_active_count %}
+          <span class="badge bg-warning text-dark">{{ queue_active_count }} active</span>
+          {% endif %}
+          {% if queue_waiting_count %}
+          <span class="badge bg-info">{{ queue_waiting_count }} queued</span>
+          {% endif %}
+          {% if queue_error_count %}
+          <span class="badge bg-danger">{{ queue_error_count }} errors</span>
+          {% endif %}
+          {% if not queue_active_count and not queue_waiting_count and not queue_error_count %}
+          <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Idle</span>
+          {% endif %}
+        </div>
+      </div>
+      <div class="card-body">
+        {% if queue_active %}
+        <h6 class="text-warning mb-2"><i class="bi bi-gear-wide-connected me-1"></i>Processing</h6>
+        <div class="table-responsive mb-3">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th style="width: 2rem;"></th>
+                <th>Item</th>
+                <th>Type</th>
+                <th>Detail</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in queue_active %}
+              <tr class="table-warning">
+                <td><span class="spinner-border spinner-border-sm text-warning" role="status"></span></td>
+                <td><a href="{{ item.url }}" class="text-decoration-none fw-semibold">{{ item.name }}</a></td>
+                <td>
+                  <span class="badge {% if item.type == 'estimation' %}bg-info-subtle text-info-emphasis{% else %}bg-warning-subtle text-warning-emphasis{% endif %}">
+                    <i class="bi {{ item.icon }} me-1"></i>{% if item.type == 'estimation' %}Estimation{% else %}Slicing{% endif %}
+                  </span>
+                </td>
+                <td>
+                  {% if item.detail_url %}
+                  <a href="{{ item.detail_url }}" class="text-decoration-none text-body-secondary">{{ item.detail }}</a>
+                  {% else %}
+                  <span class="text-body-secondary">{{ item.detail }}</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if item.type == 'estimation' %}
+                  <small>Estimating&hellip;</small>
+                  {% else %}
+                  <small>Slicing&hellip;{% if item.started_at %} ({{ item.started_at|timesince }}){% endif %}</small>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+
+        {% if queue_waiting %}
+        <h6 class="text-info mb-2">
+          <i class="bi bi-hourglass-split me-1"></i>Queued ({{ queue_waiting_count }})
+          {% if queue_waiting_count > 10 %}
+          <a class="btn btn-sm btn-outline-info ms-2" data-bs-toggle="collapse" href="#queue-waiting-list" role="button" aria-expanded="false" aria-controls="queue-waiting-list">
+            <i class="bi bi-chevron-down me-1"></i>Show all
+          </a>
+          {% endif %}
+        </h6>
+        {% if queue_waiting_count > 10 %}
+        <div class="table-responsive mb-3">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th style="width: 2rem;">#</th>
+                <th>Item</th>
+                <th>Type</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in queue_waiting %}
+              {% if forloop.counter <= 5 %}
+              <tr>
+                <td class="text-body-secondary">{{ forloop.counter }}</td>
+                <td><a href="{{ item.url }}" class="text-decoration-none">{{ item.name }}</a></td>
+                <td>
+                  <span class="badge {% if item.type == 'estimation' %}bg-info-subtle text-info-emphasis{% else %}bg-warning-subtle text-warning-emphasis{% endif %}">
+                    <i class="bi {{ item.icon }} me-1"></i>{% if item.type == 'estimation' %}Estimation{% else %}Slicing{% endif %}
+                  </span>
+                </td>
+                <td>
+                  {% if item.detail_url %}
+                  <a href="{{ item.detail_url }}" class="text-decoration-none text-body-secondary">{{ item.detail }}</a>
+                  {% else %}
+                  <span class="text-body-secondary">{{ item.detail }}</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endif %}
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="collapse" id="queue-waiting-list">
+          <div class="table-responsive mb-3">
+            <table class="table table-sm align-middle mb-0">
+              <thead>
+                <tr>
+                  <th style="width: 2rem;">#</th>
+                  <th>Item</th>
+                  <th>Type</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for item in queue_waiting %}
+                {% if forloop.counter > 5 %}
+                <tr>
+                  <td class="text-body-secondary">{{ forloop.counter }}</td>
+                  <td><a href="{{ item.url }}" class="text-decoration-none">{{ item.name }}</a></td>
+                  <td>
+                    <span class="badge {% if item.type == 'estimation' %}bg-info-subtle text-info-emphasis{% else %}bg-warning-subtle text-warning-emphasis{% endif %}">
+                      <i class="bi {{ item.icon }} me-1"></i>{% if item.type == 'estimation' %}Estimation{% else %}Slicing{% endif %}
+                    </span>
+                  </td>
+                  <td>
+                    {% if item.detail_url %}
+                    <a href="{{ item.detail_url }}" class="text-decoration-none text-body-secondary">{{ item.detail }}</a>
+                    {% else %}
+                    <span class="text-body-secondary">{{ item.detail }}</span>
+                    {% endif %}
+                  </td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {% else %}
+        <div class="table-responsive mb-3">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th style="width: 2rem;">#</th>
+                <th>Item</th>
+                <th>Type</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in queue_waiting %}
+              <tr>
+                <td class="text-body-secondary">{{ forloop.counter }}</td>
+                <td><a href="{{ item.url }}" class="text-decoration-none">{{ item.name }}</a></td>
+                <td>
+                  <span class="badge {% if item.type == 'estimation' %}bg-info-subtle text-info-emphasis{% else %}bg-warning-subtle text-warning-emphasis{% endif %}">
+                    <i class="bi {{ item.icon }} me-1"></i>{% if item.type == 'estimation' %}Estimation{% else %}Slicing{% endif %}
+                  </span>
+                </td>
+                <td>
+                  {% if item.detail_url %}
+                  <a href="{{ item.detail_url }}" class="text-decoration-none text-body-secondary">{{ item.detail }}</a>
+                  {% else %}
+                  <span class="text-body-secondary">{{ item.detail }}</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+        {% endif %}
+
+        {% if queue_errors %}
+        <h6 class="text-danger mb-2"><i class="bi bi-exclamation-triangle me-1"></i>Errors ({{ queue_error_count }})</h6>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th>Type</th>
+                <th>Error</th>
+                <th style="width: 3rem;">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in queue_errors %}
+              <tr>
+                <td><a href="{{ item.url }}" class="text-decoration-none">{{ item.name }}</a></td>
+                <td>
+                  <span class="badge {% if item.type == 'estimation' %}bg-info-subtle text-info-emphasis{% else %}bg-warning-subtle text-warning-emphasis{% endif %}">
+                    <i class="bi {{ item.icon }} me-1"></i>{% if item.type == 'estimation' %}Estimation{% else %}Slicing{% endif %}
+                  </span>
+                </td>
+                <td><small class="text-danger" title="{{ item.error }}">{{ item.error|truncatewords:10 }}</small></td>
+                <td>
+                  {% if item.retry_url %}
+                  <form method="post" action="{{ item.retry_url }}" class="d-inline">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-outline-warning" title="Retry">
+                      <i class="bi bi-arrow-repeat"></i>
+                    </button>
+                  </form>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+
+        {% if not queue_active and not queue_waiting and not queue_errors %}
+        <p class="text-body-secondary mb-0"><i class="bi bi-check-circle me-1"></i>No active, queued, or failed items. Worker is idle.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Estimation Breakdown -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-pie-chart me-2"></i>Estimation Breakdown</h5>
+      </div>
+      <div class="card-body">
+        <div class="row text-center">
+          <div class="col">
+            <div class="h4 mb-0 text-success">{{ parts_estimated }}</div>
+            <small class="text-body-secondary">Estimated</small>
+          </div>
+          <div class="col">
+            <div class="h4 mb-0 text-warning">{{ parts_estimating_count }}</div>
+            <small class="text-body-secondary">Estimating</small>
+          </div>
+          <div class="col">
+            <div class="h4 mb-0 text-info">{{ parts_pending_count }}</div>
+            <small class="text-body-secondary">Waiting</small>
+          </div>
+          <div class="col">
+            <div class="h4 mb-0 text-danger">{{ parts_error_count }}</div>
+            <small class="text-body-secondary">Failed</small>
+          </div>
+          <div class="col">
+            <div class="h4 mb-0 text-secondary">{{ parts_no_estimate }}</div>
+            <small class="text-body-secondary">No Estimate</small>
+          </div>
+        </div>
+        {% if total_parts > 0 %}
+        <div class="progress mt-3" style="height: 8px;">
+          {% widthratio parts_estimated total_parts 100 as pct_ok %}
+          {% widthratio parts_estimating_count total_parts 100 as pct_estimating %}
+          {% widthratio parts_pending_count total_parts 100 as pct_pending %}
+          {% widthratio parts_error_count total_parts 100 as pct_error %}
+          <div class="progress-bar bg-success" style="width: {{ pct_ok }}%"></div>
+          <div class="progress-bar bg-warning" style="width: {{ pct_estimating }}%"></div>
+          <div class="progress-bar bg-info" style="width: {{ pct_pending }}%"></div>
+          <div class="progress-bar bg-danger" style="width: {{ pct_error }}%"></div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Right column -->
+  <div class="col-lg-4">
+
+    <!-- Storage Breakdown -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-hdd me-2"></i>Storage Usage</h5>
+      </div>
+      <div class="card-body">
+        <dl class="row mb-0">
+          <dt class="col-7">STL Files</dt>
+          <dd class="col-5 text-end">{{ stl_storage_mb }} MB</dd>
+          <dt class="col-7">G-code Files</dt>
+          <dd class="col-5 text-end">{{ gcode_storage_mb }} MB</dd>
+          <dt class="col-7 border-top pt-2"><strong>Total</strong></dt>
+          <dd class="col-5 text-end border-top pt-2"><strong>{{ total_storage_mb }} MB</strong></dd>
+        </dl>
+      </div>
+    </div>
+
+    <!-- Recent Projects -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-clock-history me-2"></i>Recent Projects</h5>
+      </div>
+      <ul class="list-group list-group-flush">
+        {% for proj in recent_projects %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <a href="{% url 'core:project_detail' proj.pk %}" class="text-decoration-none text-truncate me-2">{{ proj.name }}</a>
+          <small class="text-body-secondary text-nowrap">{{ proj.updated_at|timesince }} ago</small>
+        </li>
+        {% empty %}
+        <li class="list-group-item text-body-secondary">No projects yet.</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <!-- Recent Parts -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-box me-2"></i>Recent Parts</h5>
+      </div>
+      <ul class="list-group list-group-flush">
+        {% for part in recent_parts %}
+        <li class="list-group-item">
+          <div class="d-flex justify-content-between">
+            <a href="{% url 'core:part_detail' part.pk %}" class="text-decoration-none text-truncate me-2">{{ part.name }}</a>
+            <small class="text-body-secondary text-nowrap">{{ part.updated_at|timesince }} ago</small>
+          </div>
+          <small class="text-body-secondary">{{ part.project.name }}</small>
+        </li>
+        {% empty %}
+        <li class="list-group-item text-body-secondary">No parts yet.</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <!-- Recent Jobs -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-list-task me-2"></i>Recent Jobs</h5>
+      </div>
+      <ul class="list-group list-group-flush">
+        {% for job in recent_jobs %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <div class="text-truncate me-2">
+            <a href="{% url 'core:printjob_detail' job.pk %}" class="text-decoration-none">{{ job }}</a>
+            <br>
+            <small class="text-body-secondary">{{ job.created_by|default:"—" }}</small>
+          </div>
+          <span class="badge {% if job.status == 'completed' %}bg-success{% elif job.status == 'failed' %}bg-danger{% elif job.status == 'printing' %}bg-primary{% elif job.status == 'slicing' %}bg-warning text-dark{% else %}bg-secondary{% endif %}">
+            {{ job.get_status_display }}
+          </span>
+        </li>
+        {% empty %}
+        <li class="list-group-item text-body-secondary">No jobs yet.</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+  </div>
+</div>
+</div><!-- /admin-content -->
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function() {
+  const STORAGE_KEY = 'admin_refresh_interval';
+  const select = document.getElementById('refresh-interval');
+  const btn = document.getElementById('refresh-btn');
+  const status = document.getElementById('refresh-status');
+  let timerId = null;
+
+  // Restore saved preference
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved !== null) {
+    select.value = saved;
+  }
+
+  function updateStatus(msg) {
+    status.textContent = msg;
+    setTimeout(() => { status.textContent = ''; }, 3000);
+  }
+
+  function doRefresh() {
+    const scrollY = window.scrollY;
+    const icon = btn.querySelector('i');
+    icon.classList.add('spin-animation');
+
+    // Save collapse states before refresh
+    const collapseStates = {};
+    document.querySelectorAll('#admin-content .collapse').forEach(el => {
+      collapseStates[el.id] = el.classList.contains('show');
+    });
+
+    fetch(window.location.href, {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    })
+    .then(r => r.text())
+    .then(html => {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(html, 'text/html');
+      const newContent = doc.querySelector('#admin-content');
+      const current = document.getElementById('admin-content');
+      if (newContent && current) {
+        current.innerHTML = newContent.innerHTML;
+      }
+      // Restore collapse states
+      for (const [id, wasOpen] of Object.entries(collapseStates)) {
+        const el = document.getElementById(id);
+        if (el && wasOpen) {
+          el.classList.add('show');
+        }
+      }
+      window.scrollTo({ top: scrollY, behavior: 'instant' });
+      updateStatus('Updated ' + new Date().toLocaleTimeString());
+    })
+    .catch(() => {
+      updateStatus('Refresh failed');
+    })
+    .finally(() => {
+      icon.classList.remove('spin-animation');
+    });
+  }
+
+  function scheduleRefresh() {
+    if (timerId) { clearInterval(timerId); timerId = null; }
+    const secs = parseInt(select.value, 10);
+    localStorage.setItem(STORAGE_KEY, secs);
+    if (secs > 0) {
+      timerId = setInterval(doRefresh, secs * 1000);
+    }
+  }
+
+  select.addEventListener('change', scheduleRefresh);
+  btn.addEventListener('click', doRefresh);
+  scheduleRefresh();
+
+  // Pause auto-refresh when tab is hidden
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (timerId) { clearInterval(timerId); timerId = null; }
+    } else {
+      scheduleRefresh();
+    }
+  });
+})();
+</script>
+<style>
+  .spin-animation { animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+{% endblock %}

@@ -1,0 +1,196 @@
+{% extends "base.html" %}
+{% load core_tags %}
+{% block title %}Statistics — {{ APP_NAME }}{% endblock %}
+{% block content %}
+<h1 class="h3 mb-4"><i class="bi bi-graph-up me-2"></i>Statistics &amp; Overview</h1>
+
+{# ── Top-level KPI cards ─────────────────────────────────────────────────── #}
+<div class="row g-3 mb-4">
+  <div class="col-6 col-lg-3">
+    <div class="card text-bg-primary h-100">
+      <div class="card-body text-center">
+        <h2 class="mb-0">{{ total_projects }}</h2>
+        <small>Projects</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="card text-bg-info h-100">
+      <div class="card-body text-center">
+        <h2 class="mb-0">{{ total_parts }}</h2>
+        <small>Total Parts</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="card text-bg-success h-100">
+      <div class="card-body text-center">
+        <h2 class="mb-0">{{ completed_jobs }}</h2>
+        <small>Completed Jobs</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-lg-3">
+    <div class="card text-bg-danger h-100">
+      <div class="card-body text-center">
+        <h2 class="mb-0">{{ failed_jobs }}</h2>
+        <small>Failed Jobs</small>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Secondary stats row ─────────────────────────────────────────────────── #}
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-4 col-lg-2">
+    <div class="card h-100">
+      <div class="card-body text-center">
+        <i class="bi bi-printer fs-3 text-primary"></i>
+        <h4 class="mt-1 mb-0">{{ active_jobs }}</h4>
+        <small class="text-body-secondary">Active Jobs</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-4 col-lg-2">
+    <div class="card h-100">
+      <div class="card-body text-center">
+        <i class="bi bi-moisture fs-3 text-info"></i>
+        <h4 class="mt-1 mb-0">{% if total_filament_grams %}{{ total_filament_grams|grams_to_kg }}{% else %}0 kg{% endif %}</h4>
+        <small class="text-body-secondary">Filament Used</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-4 col-lg-2">
+    <div class="card h-100">
+      <div class="card-body text-center">
+        <i class="bi bi-bullseye fs-3 text-success"></i>
+        <h4 class="mt-1 mb-0">{% if success_rate is not None %}{{ success_rate }}%{% else %}N/A{% endif %}</h4>
+        <small class="text-body-secondary">Success Rate</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-4 col-lg-2">
+    <div class="card h-100">
+      <div class="card-body text-center">
+        <i class="bi bi-clock-history fs-3 text-warning"></i>
+        <h4 class="mt-1 mb-0">{% if total_print_time %}{{ total_print_time|duration_format }}{% else %}&mdash;{% endif %}</h4>
+        <small class="text-body-secondary">Print Time</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-4 col-lg-2">
+    <div class="card h-100">
+      <div class="card-body text-center">
+        <i class="bi bi-boxes fs-3 text-primary"></i>
+        <h4 class="mt-1 mb-0">{{ total_quantity_completed }}/{{ total_quantity_to_print }}</h4>
+        <small class="text-body-secondary">Plates Done</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-4 col-lg-2">
+    <div class="card h-100">
+      <div class="card-body text-center">
+        <i class="bi bi-arrow-repeat fs-3 text-danger"></i>
+        <h4 class="mt-1 mb-0">{{ total_retries }}</h4>
+        <small class="text-body-secondary">Retries</small>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Queue & Printer Overview ────────────────────────────────────────────── #}
+<div class="row g-4 mb-4">
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header"><h5 class="mb-0"><i class="bi bi-list-ol me-2"></i>Queue Overview</h5></div>
+      <div class="card-body">
+        <div class="row text-center g-2">
+          <div class="col">
+            <h3 class="mb-0">{{ queue_total }}</h3>
+            <small class="text-body-secondary">Total</small>
+          </div>
+          <div class="col">
+            <h3 class="mb-0 text-secondary">{{ queue_waiting }}</h3>
+            <small class="text-body-secondary">Waiting</small>
+          </div>
+          <div class="col">
+            <h3 class="mb-0 text-primary">{{ queue_printing }}</h3>
+            <small class="text-body-secondary">Printing</small>
+          </div>
+          <div class="col">
+            <h3 class="mb-0 text-warning">{{ queue_review }}</h3>
+            <small class="text-body-secondary">Review</small>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header"><h5 class="mb-0"><i class="bi bi-building-gear me-2"></i>Printer Utilization</h5></div>
+      <div class="card-body">
+        <div class="row text-center g-2">
+          <div class="col">
+            <h3 class="mb-0">{{ total_printers }}</h3>
+            <small class="text-body-secondary">Total</small>
+          </div>
+          <div class="col">
+            <h3 class="mb-0 text-primary">{{ busy_printers }}</h3>
+            <small class="text-body-secondary">Busy</small>
+          </div>
+          <div class="col">
+            <h3 class="mb-0 text-success">{{ idle_printers }}</h3>
+            <small class="text-body-secondary">Idle</small>
+          </div>
+        </div>
+        {% if total_printers > 0 %}
+        <div class="progress mt-3" style="height: 8px;">
+          <div class="progress-bar bg-primary" role="progressbar"
+               style="width: {% widthratio busy_printers total_printers 100 %}%;"
+               aria-valuenow="{{ busy_printers }}" aria-valuemin="0" aria-valuemax="{{ total_printers }}"></div>
+        </div>
+        <small class="text-body-secondary">{% widthratio busy_printers total_printers 100 %}% utilization</small>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Material & Job breakdown ────────────────────────────────────────────── #}
+<div class="row g-4">
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header"><h5 class="mb-0"><i class="bi bi-pie-chart me-2"></i>Material Usage</h5></div>
+      <div class="card-body">
+        {% if material_breakdown %}
+        <div class="table-responsive">
+          <table class="table table-sm">
+            <thead><tr><th>Material</th><th>Parts</th><th>Total Qty</th></tr></thead>
+            <tbody>
+            {% for m in material_breakdown %}
+            <tr><td>{{ m.material }}</td><td>{{ m.count }}</td><td>{{ m.total_qty }}</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}<p class="text-body-secondary mb-0">No data yet.</p>{% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header"><h5 class="mb-0"><i class="bi bi-bar-chart me-2"></i>Jobs by Status</h5></div>
+      <div class="card-body">
+        {% if jobs_by_status %}
+        {% for item in jobs_by_status %}
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <span class="badge {% if item.status == 'completed' %}bg-success{% elif item.status == 'failed' %}bg-danger{% elif item.status == 'printing' %}bg-primary{% elif item.status == 'cancelled' %}bg-warning text-dark{% else %}bg-secondary{% endif %}">{{ item.status }}</span>
+          <span>{{ item.count }}</span>
+        </div>
+        {% endfor %}
+        {% else %}<p class="text-body-secondary mb-0">No jobs yet.</p>{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

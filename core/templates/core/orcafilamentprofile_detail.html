@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% load core_tags %}
+
+{% block title %}{{ profile.name }} — Filament Profile — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'core:orcafilamentprofile_list' %}">Filament Profiles</a></li>
+    <li class="breadcrumb-item active">{{ profile.name }}</li>
+  </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="h3 mb-0">
+    <i class="bi bi-palette me-2"></i>{{ profile.name }}
+  </h1>
+  {% if perms.core.can_manage_orca_profiles %}
+  <a href="{% url 'core:orcafilamentprofile_delete' profile.pk %}" class="btn btn-outline-danger btn-sm">
+    <i class="bi bi-trash me-1"></i>Delete
+  </a>
+  {% endif %}
+</div>
+
+{% if profile.description %}
+<div class="text-body-secondary">{{ profile.description|markdown }}</div>
+{% endif %}
+
+{# ── Metadata ── #}
+<div class="card shadow-sm mb-4">
+  <div class="card-header"><h5 class="mb-0"><i class="bi bi-info-circle me-2"></i>Profile Metadata</h5></div>
+  <div class="card-body">
+    <div class="row">
+      <div class="col-md-6">
+        <table class="table table-sm">
+          <tr><th>OrcaSlicer Name</th><td><code>{{ profile.orca_name }}</code></td></tr>
+          <tr><th>Status</th><td>
+            {% if profile.is_resolved %}
+              <span class="badge bg-success">Resolved</span>
+            {% else %}
+              <span class="badge bg-warning text-dark">Pending</span>
+            {% endif %}
+          </td></tr>
+          {% if profile.inherits_name %}
+          <tr><th>Inherits from</th><td><code>{{ profile.inherits_name }}</code></td></tr>
+          {% endif %}
+          {% if profile.setting_id %}
+          <tr><th>Setting ID</th><td><code>{{ profile.setting_id }}</code></td></tr>
+          {% endif %}
+        </table>
+      </div>
+      <div class="col-md-6">
+        <table class="table table-sm">
+          <tr><th>Instantiation</th><td>{{ profile.instantiation|yesno:"Selectable,Base/Template" }}</td></tr>
+          <tr><th>Created</th><td>{{ profile.created_at }}</td></tr>
+          <tr><th>Updated</th><td>{{ profile.updated_at }}</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% if profile.is_resolved %}
+
+{# ── Quick Overview ── #}
+<div class="row g-3 mb-4">
+  {% if profile.first_filament_type %}
+  <div class="col-6 col-md-3">
+    <div class="card text-center shadow-sm h-100">
+      <div class="card-body">
+        <div class="display-6 text-primary">{{ profile.first_filament_type }}</div>
+        <div class="text-body-secondary small">Material Type</div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+  {% if profile.first_nozzle_temperature %}
+  <div class="col-6 col-md-3">
+    <div class="card text-center shadow-sm h-100">
+      <div class="card-body">
+        <div class="display-6 text-primary">{{ profile.first_nozzle_temperature }}°</div>
+        <div class="text-body-secondary small">Nozzle Temp (°C)</div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+  {% if profile.first_bed_temperature %}
+  <div class="col-6 col-md-3">
+    <div class="card text-center shadow-sm h-100">
+      <div class="card-body">
+        <div class="display-6 text-primary">{{ profile.first_bed_temperature }}°</div>
+        <div class="text-body-secondary small">Bed Temp (°C)</div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+  {% if profile.first_max_volumetric_speed %}
+  <div class="col-6 col-md-3">
+    <div class="card text-center shadow-sm h-100">
+      <div class="card-body">
+        <div class="display-6 text-primary">{{ profile.first_max_volumetric_speed }}</div>
+        <div class="text-body-secondary small">Max Flow (mm³/s)</div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{# ── Key Settings ── #}
+<div class="card shadow-sm mb-4">
+  <div class="card-header"><h5 class="mb-0"><i class="bi bi-sliders me-2"></i>Key Settings</h5></div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm table-striped">
+        <thead>
+          <tr><th>Setting</th><th>Value</th></tr>
+        </thead>
+        <tbody>
+          {% for s in key_settings %}
+          <tr>
+            <td><code>{{ s.key }}</code></td>
+            <td>
+              {% if s.value|length > 200 %}
+                <details>
+                  <summary class="text-body-secondary">{{ s.value|truncatechars:80 }}</summary>
+                  <pre class="mb-0 mt-1" style="white-space: pre-wrap;">{{ s.value }}</pre>
+                </details>
+              {% else %}
+                {{ s.value }}
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{# ── Extra Settings ── #}
+{% if extra_settings_count > 0 %}
+<div class="card shadow-sm mb-4">
+  <div class="card-header">
+    <h5 class="mb-0">
+      <i class="bi bi-three-dots me-2"></i>Extra Settings
+      <span class="badge bg-secondary ms-1">{{ extra_settings_count }}</span>
+    </h5>
+  </div>
+  <div class="card-body">
+    <details>
+      <summary class="text-body-secondary">Click to expand {{ extra_settings_count }} additional settings</summary>
+      <div class="table-responsive mt-2">
+        <table class="table table-sm table-striped">
+          <thead>
+            <tr><th>Setting</th><th>Value</th></tr>
+          </thead>
+          <tbody>
+            {% for key, value in profile.extra_settings.items %}
+            <tr>
+              <td><code>{{ key }}</code></td>
+              <td>
+                {% if value|length > 200 %}
+                  <details>
+                    <summary class="text-body-secondary">{{ value|truncatechars:80 }}</summary>
+                    <pre class="mb-0 mt-1" style="white-space: pre-wrap;">{{ value }}</pre>
+                  </details>
+                {% else %}
+                  {{ value }}
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  </div>
+</div>
+{% endif %}
+
+{% else %}
+<div class="alert alert-warning">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  This profile is <strong>pending</strong> — it inherits from
+  <code>{{ profile.inherits_name }}</code> which has not been uploaded yet.
+  {% if perms.core.can_manage_orca_profiles %}
+  <a href="{% url 'core:orcafilamentprofile_import' %}" class="alert-link">Upload the parent profile</a>.
+  {% endif %}
+</div>
+{% endif %}
+
+{% endblock %}

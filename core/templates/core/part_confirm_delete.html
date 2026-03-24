@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block title %}Delete {{ part.name }} — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
+    {% for ancestor in ancestors %}
+    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' ancestor.pk %}">{{ ancestor.name }}</a></li>
+    {% endfor %}
+    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' part.project.pk %}">{{ part.project.name }}</a></li>
+    <li class="breadcrumb-item"><a href="{% url 'core:part_detail' part.pk %}">{{ part.name }}</a></li>
+    <li class="breadcrumb-item active">Delete</li>
+  </ol>
+</nav>
+
+<div class="row justify-content-center">
+  <div class="col-lg-6">
+    <div class="card border-danger shadow-sm">
+      <div class="card-header bg-danger text-white">
+        <h4 class="mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Delete Part</h4>
+      </div>
+      <div class="card-body">
+        <p>Are you sure you want to delete <strong>{{ part.name }}</strong>?</p>
+        <p class="text-body-secondary">This will also delete all print jobs associated with this part. This action cannot be undone.</p>
+        <form method="post">
+          {% csrf_token %}
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-1"></i>Delete Part</button>
+            <a href="{% url 'core:part_detail' part.pk %}" class="btn btn-outline-secondary">Cancel</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

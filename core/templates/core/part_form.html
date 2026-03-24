@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% load core_tags %}
+{% block title %}{% if form.instance.pk %}Edit Part{% else %}Add Part{% endif %} — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
+    {% for ancestor in ancestors %}
+    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' ancestor.pk %}">{{ ancestor.name }}</a></li>
+    {% endfor %}
+    {% if project %}
+    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' project.pk %}">{{ project.name }}</a></li>
+    {% elif form.instance.pk %}
+    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' form.instance.project.pk %}">{{ form.instance.project.name }}</a></li>
+    {% endif %}
+    <li class="breadcrumb-item active">{% if form.instance.pk %}Edit {{ form.instance.name }}{% else %}Add Part{% endif %}</li>
+  </ol>
+</nav>
+
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="card shadow-sm">
+      <div class="card-header">
+        <h4 class="mb-0">
+          <i class="bi bi-{% if form.instance.pk %}pencil{% else %}plus-lg{% endif %} me-2"></i>
+          {% if form.instance.pk %}Edit Part{% else %}Add New Part{% endif %}
+        </h4>
+      </div>
+      <div class="card-body">
+        <form method="post" enctype="multipart/form-data" novalidate>
+          {% csrf_token %}
+
+          {% for field in form %}
+            {# Hide color/material when Spoolman is configured (derived from filament type) #}
+            {% if field.name == 'color' or field.name == 'material' %}
+              {% if spoolman_configured %}
+              <input type="hidden" name="{{ field.html_name }}" value="{{ field.value|default:'' }}">
+              {% else %}
+              <div class="mb-3">
+                <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}{% if field.field.required %} <span class="text-danger">*</span>{% endif %}</label>
+                <input type="text" name="{{ field.html_name }}" id="{{ field.id_for_label }}" value="{{ field.value|default:'' }}" class="form-control {% if field.errors %}is-invalid{% endif %}">
+                {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+                {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+              </div>
+              {% endif %}
+
+            {# Spoolman filament dropdown — only shown when Spoolman is configured #}
+            {% elif field.name == 'spoolman_filament_id' %}
+              {% if spoolman_configured %}
+              <div class="mb-3">
+                <label for="{{ field.id_for_label }}" class="form-label">Filament Type (Spoolman)</label>
+                {% if 'Select' in field|widget_class %}
+                <div class="d-flex align-items-center gap-2">
+                  <span id="filament-color-dot" class="rounded-circle border d-inline-block flex-shrink-0" style="width:20px;height:20px;background:#ccc;"></span>
+                  <select name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-select {% if field.errors %}is-invalid{% endif %}" onchange="updateFilamentDot(this)">
+                    {% for val, label in field.field.widget.choices %}
+                    <option value="{{ val }}" {% if field.value|stringformat:"s" == val|stringformat:"s" %}selected{% endif %} {% if spoolman_colors %}data-color="{{ val|stringformat:'s' }}"{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <script>
+                var _filamentColors = JSON.parse('{{ spoolman_colors_json|escapejs }}');
+                function updateFilamentDot(sel) {
+                  var dot = document.getElementById("filament-color-dot");
+                  var hex = _filamentColors[sel.value] || "";
+                  if (hex) {
+                    dot.style.background = "#" + hex;
+                    dot.style.display = "";
+                  } else {
+                    dot.style.display = "none";
+                  }
+                }
+                (function() {
+                  var sel = document.getElementById("{{ field.id_for_label }}");
+                  if (sel) updateFilamentDot(sel);
+                })();
+                </script>
+                {% else %}
+                <input type="number" name="{{ field.html_name }}" id="{{ field.id_for_label }}" value="{{ field.value|default:'' }}" class="form-control {% if field.errors %}is-invalid{% endif %}">
+                {% endif %}
+                {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+                {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+              </div>
+              {% endif %}
+
+            {# File upload fields #}
+            {% elif field.field.widget.input_type == 'file' or 'FileInput' in field|widget_class or 'ClearableFileInput' in field|widget_class %}
+            <div class="mb-3">
+              <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}{% if field.field.required %} <span class="text-danger">*</span>{% endif %}</label>
+              <input type="file" name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-control {% if field.errors %}is-invalid{% endif %}">
+              {% if field.value %}<div class="form-text">Current: {{ field.value }}</div>{% endif %}
+              {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+              {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+            </div>
+
+            {# Checkbox fields #}
+            {% elif field.field.widget.input_type == 'checkbox' %}
+            <div class="mb-3">
+              <div class="form-check">
+                <input type="checkbox" name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-check-input {% if field.errors %}is-invalid{% endif %}" {% if field.value %}checked{% endif %}>
+                <label class="form-check-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+              </div>
+              {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+              {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+            </div>
+
+            {# Textarea fields #}
+            {% elif 'Textarea' in field|widget_class %}
+            <div class="mb-3">
+              <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}{% if field.field.required %} <span class="text-danger">*</span>{% endif %}</label>
+              <textarea name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-control {% if field.errors %}is-invalid{% endif %}" rows="{{ field.field.widget.attrs.rows|default:3 }}">{{ field.value|default:'' }}</textarea>
+              {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+              {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+            </div>
+
+            {# Select fields #}
+            {% elif 'Select' in field|widget_class %}
+            <div class="mb-3">
+              <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}{% if field.field.required %} <span class="text-danger">*</span>{% endif %}</label>
+              <select name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-select {% if field.errors %}is-invalid{% endif %}">
+                {% for val, label in field.field.choices %}
+                <option value="{{ val }}" {% if field.value|stringformat:"s" == val|stringformat:"s" %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+              {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+              {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+            </div>
+
+            {# Hidden fields #}
+            {% elif 'HiddenInput' in field|widget_class %}
+              {{ field }}
+
+            {# Default text input #}
+            {% else %}
+            <div class="mb-3">
+              <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}{% if field.field.required %} <span class="text-danger">*</span>{% endif %}</label>
+              <input type="{{ field.field.widget.input_type|default:'text' }}" name="{{ field.html_name }}" id="{{ field.id_for_label }}" value="{{ field.value|default:'' }}" class="form-control {% if field.errors %}is-invalid{% endif %}" {% if field.field.required %}required{% endif %}>
+              {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+              {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+            </div>
+            {% endif %}
+          {% endfor %}
+
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i>{% if form.instance.pk %}Update{% else %}Add Part{% endif %}</button>
+            {% if not form.instance.pk %}<button type="submit" name="_save_and_add_another" class="btn btn-outline-primary"><i class="bi bi-plus-circle me-1"></i>Save &amp; Add Another</button>{% endif %}
+            {% if project %}
+            <a href="{% url 'core:project_detail' project.pk %}" class="btn btn-outline-secondary">Cancel</a>
+            {% elif form.instance.pk %}
+            <a href="{% url 'core:part_detail' form.instance.pk %}" class="btn btn-outline-secondary">Cancel</a>
+            {% endif %}
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

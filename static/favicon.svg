@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Layer 1 (bottom) - top face -->
+  <polygon points="32,40 6,27 32,14 58,27" fill="#1a6b3c"/>
+  <!-- Layer 1 (bottom) - left face -->
+  <polygon points="6,27 6,33 32,46 32,40" fill="#145530"/>
+  <!-- Layer 1 (bottom) - right face -->
+  <polygon points="58,27 58,33 32,46 32,40" fill="#0f4024"/>
+  <!-- Layer 2 (middle) - top face -->
+  <polygon points="32,28 10,17 32,6 54,17" fill="#28a745"/>
+  <!-- Layer 2 (middle) - left face -->
+  <polygon points="10,17 10,23 32,34 32,28" fill="#1e8036"/>
+  <!-- Layer 2 (middle) - right face -->
+  <polygon points="54,17 54,23 32,34 32,28" fill="#176b2c"/>
+  <!-- Layer 3 (top) - top face -->
+  <polygon points="32,16 14,7 32,0 50,7" fill="#5dd879"/>
+  <!-- Layer 3 (top) - left face -->
+  <polygon points="14,7 14,13 32,22 32,16" fill="#3cc462"/>
+  <!-- Layer 3 (top) - right face -->
+  <polygon points="50,7 50,13 32,22 32,16" fill="#2db854"/>
+</svg>

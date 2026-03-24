@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Remove from Queue — {{ APP_NAME }}{% endblock %}
+{% block content %}
+<h1 class="h3 mb-4 text-danger"><i class="bi bi-trash me-2"></i>Remove from Queue</h1>
+<div class="card border-danger">
+  <div class="card-body">
+    <p>Remove <strong>{{ object.print_job }} — Plate {{ object.plate.plate_number }}</strong> from the print queue?</p>
+    <form method="post">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-1"></i>Remove</button>
+      <a href="{% url 'core:printqueue_list' %}" class="btn btn-outline-secondary ms-2">Cancel</a>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% load core_tags %}
+{% block title %}Add to Print Queue — {{ APP_NAME }}{% endblock %}
+{% block content %}
+<h1 class="h3 mb-4"><i class="bi bi-list-ol me-2"></i>Add to Print Queue</h1>
+<div class="card">
+  <div class="card-body">
+    {% if form.non_field_errors %}
+    <div class="alert alert-danger">
+      {% for error in form.non_field_errors %}
+      <p class="mb-0">{{ error }}</p>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <form method="post">
+      {% csrf_token %}
+      {% for field in form %}
+      <div class="mb-3">
+        <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}</label>
+        {% with wc=field|widget_class %}
+        {% if wc == 'Select' %}
+        <select name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-select {% if field.errors %}is-invalid{% endif %}">
+          {% for choice in field.field.choices %}<option value="{{ choice.0 }}" {% if field.value|stringformat:"s" == choice.0|stringformat:"s" %}selected{% endif %}>{{ choice.1 }}</option>{% endfor %}
+        </select>
+        {% else %}
+        <input type="text" name="{{ field.html_name }}" id="{{ field.id_for_label }}" value="{{ field.value|default:"" }}" class="form-control {% if field.errors %}is-invalid{% endif %}">
+        {% endif %}
+        {% endwith %}
+        {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+        {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+      </div>
+      {% endfor %}
+      <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i>Add to Queue</button>
+      <button type="submit" name="_save_and_add_another" class="btn btn-outline-primary ms-2"><i class="bi bi-plus-circle me-1"></i>Save &amp; Add Another</button>
+      <a href="{% url 'core:printqueue_list' %}" class="btn btn-outline-secondary ms-2">Cancel</a>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Dynamically filter printers based on selected plate's machine profile
+document.addEventListener('DOMContentLoaded', function() {
+  var plateSelect = document.getElementById('id_plate');
+  var printerSelect = document.getElementById('id_printer');
+  if (!plateSelect || !printerSelect) return;
+
+  var jobPrinterMap = {{ job_printer_map_json|safe }};
+  var allPrinterOptions = Array.from(printerSelect.options).map(function(opt) {
+    return { value: opt.value, text: opt.textContent, selected: opt.selected };
+  });
+
+  function filterPrinters() {
+    var platePk = plateSelect.value;
+    var compatiblePks = jobPrinterMap[platePk] || null;
+    var currentVal = printerSelect.value;
+    printerSelect.innerHTML = '';
+
+    allPrinterOptions.forEach(function(opt) {
+      if (!opt.value) {
+        // empty/placeholder option
+        printerSelect.appendChild(new Option(opt.text, opt.value));
+      } else if (!compatiblePks || compatiblePks.indexOf(parseInt(opt.value)) !== -1) {
+        printerSelect.appendChild(new Option(opt.text, opt.value));
+      }
+    });
+
+    // Try to restore previous selection
+    if (currentVal) {
+      printerSelect.value = currentVal;
+    }
+  }
+
+  plateSelect.addEventListener('change', filterPrinters);
+  // Apply filter on page load
+  filterPrinters();
+});
+</script>
+{% endblock %}

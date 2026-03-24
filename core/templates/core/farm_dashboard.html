@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% load core_tags %}
+{% block title %}Print Farm — {{ APP_NAME }}{% endblock %}
+{% block content %}
+
+{# ── Header with Run All button ──────────────────────────────────────────── #}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="h3 mb-0"><i class="bi bi-building-gear me-2"></i>Print Farm</h1>
+  <div class="d-flex gap-2">
+    {% if perms.core.can_control_printer %}
+    <form method="post" action="{% url 'core:run_all_queues' %}" class="d-inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-success" {% if idle_printers == 0 or total_waiting == 0 %}disabled{% endif %}>
+        <i class="bi bi-play-circle me-1"></i>Run All Printers
+      </button>
+    </form>
+    {% endif %}
+    <a href="{% url 'core:printqueue_list' %}" class="btn btn-outline-secondary">
+      <i class="bi bi-list-ol me-1"></i>Queue
+    </a>
+  </div>
+</div>
+
+{# ── Stats row ───────────────────────────────────────────────────────────── #}
+<div class="row g-3 mb-4">
+  <div class="col-6 col-md-3 col-xl-2">
+    <div class="card text-center h-100">
+      <div class="card-body py-3">
+        <div class="fs-2 fw-bold text-primary">{{ total_printers }}</div>
+        <small class="text-body-secondary">Printers</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3 col-xl-2">
+    <div class="card text-center h-100">
+      <div class="card-body py-3">
+        <div class="fs-2 fw-bold text-success">{{ idle_printers }}</div>
+        <small class="text-body-secondary">Idle</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3 col-xl-2">
+    <div class="card text-center h-100">
+      <div class="card-body py-3">
+        <div class="fs-2 fw-bold text-info">{{ total_printing }}</div>
+        <small class="text-body-secondary">Printing</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3 col-xl-2">
+    <div class="card text-center h-100">
+      <div class="card-body py-3">
+        <div class="fs-2 fw-bold text-warning">{{ total_awaiting_review }}</div>
+        <small class="text-body-secondary">Awaiting Review</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3 col-xl-2">
+    <div class="card text-center h-100">
+      <div class="card-body py-3">
+        <div class="fs-2 fw-bold text-secondary">{{ total_waiting }}</div>
+        <small class="text-body-secondary">Waiting</small>
+      </div>
+    </div>
+  </div>
+  <div class="col-6 col-md-3 col-xl-2">
+    <div class="card text-center h-100">
+      <div class="card-body py-3">
+        <div class="fs-2 fw-bold text-success">{{ completed_today }}</div>
+        <small class="text-body-secondary">Completed Today</small>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Printer Cards ───────────────────────────────────────────────────────── #}
+{% if printer_cards %}
+<div class="row g-3">
+  {% for card in printer_cards %}
+  <div class="col-sm-6 col-lg-4 col-xl-3">
+    <div class="card h-100 {% if card.state == 'printing' %}border-primary{% elif card.state == 'awaiting_review' %}border-warning{% endif %}"
+         {% if card.active_entry and card.state == 'printing' %}data-poll-entry="{{ card.active_entry.pk }}"{% endif %}>
+      {# Card header with status indicator #}
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span class="fw-semibold">
+          <i class="bi bi-cpu me-1"></i>{{ card.printer.name }}
+          {% if card.printer.moonraker_url %}
+          <a href="{{ card.printer.moonraker_url|strip_port }}" target="_blank" rel="noopener" class="badge bg-dark bg-opacity-25 text-decoration-none ms-1" title="Open Fluidd / Mainsail"><i class="bi bi-box-arrow-up-right"></i></a>
+          {% endif %}
+        </span>
+        {% if card.state == 'printing' %}
+          <span class="badge bg-primary"><i class="bi bi-printer me-1"></i>Printing</span>
+        {% elif card.state == 'awaiting_review' %}
+          <span class="badge bg-warning text-dark"><i class="bi bi-clipboard-check me-1"></i>Review</span>
+        {% elif card.has_moonraker %}
+          <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Idle</span>
+        {% else %}
+          <span class="badge bg-secondary"><i class="bi bi-wifi-off me-1"></i>No Moonraker</span>
+        {% endif %}
+      </div>
+
+      <div class="card-body">
+        {% if card.active_entry %}
+          {# Show current job info #}
+          {% with entry=card.active_entry job=card.active_entry.print_job %}
+          <h6 class="card-title mb-1">
+            <a href="{% url 'core:printjob_detail' job.pk %}" class="text-decoration-none">{{ job }}</a>
+          </h6>
+          <p class="text-body-secondary small mb-2">
+            Plate {{ entry.plate.plate_number }}
+          </p>
+
+          <div class="small mb-2">
+            {% if entry.plate.filament_used_grams %}
+              <span class="me-3"><i class="bi bi-droplet me-1"></i>{{ entry.plate.filament_used_grams|floatformat:1 }} g</span>
+            {% endif %}
+            {% if entry.plate.print_time_estimate %}
+              <span><i class="bi bi-clock me-1"></i>{{ entry.plate.print_time_estimate|duration_format }}</span>
+            {% endif %}
+          </div>
+
+          {% if entry.started_at %}
+          <div class="small text-body-secondary mb-2">
+            <i class="bi bi-play-circle me-1"></i>Started {{ entry.started_at|timesince }} ago
+          </div>
+          {% endif %}
+
+          {# Progress bar for printing entries (updated by JS) #}
+          {% if card.state == 'printing' %}
+          <div class="progress mb-2" style="height: 6px;" data-progress-bar="{{ entry.pk }}">
+            <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+          </div>
+          <div class="text-center small text-body-secondary" data-progress-text="{{ entry.pk }}">Polling…</div>
+          {% endif %}
+
+          {% if entry.retry_count > 0 %}
+          <div class="small text-warning">
+            <i class="bi bi-arrow-repeat me-1"></i>Retry {{ entry.retry_count }}/{{ entry.max_retries }}
+          </div>
+          {% endif %}
+          {% endwith %}
+        {% else %}
+          {# Idle printer #}
+          <p class="text-body-secondary mb-1">
+            {% if card.waiting_count > 0 %}
+              <i class="bi bi-hourglass me-1"></i>{{ card.waiting_count }} job{{ card.waiting_count|pluralize }} waiting
+            {% else %}
+              <i class="bi bi-inbox me-1"></i>Queue empty
+            {% endif %}
+          </p>
+          {% if card.printer.orca_machine_profile %}
+          <p class="small text-body-secondary mb-0">
+            <i class="bi bi-motherboard me-1"></i><a href="{% url 'core:orcamachineprofile_detail' card.printer.orca_machine_profile.pk %}" class="text-decoration-none text-body-secondary">{{ card.printer.orca_machine_profile.name }}</a>
+          </p>
+          {% endif %}
+        {% endif %}
+      </div>
+
+      {# Card footer with actions #}
+      <div class="card-footer bg-transparent text-center">
+        {% if card.state == 'awaiting_review' and perms.core.can_control_printer %}
+          <a href="{% url 'core:printqueue_review' card.active_entry.pk %}" class="btn btn-sm btn-warning w-100">
+            <i class="bi bi-clipboard-check me-1"></i>Review Print
+          </a>
+        {% elif card.state == 'idle' and card.has_moonraker and card.waiting_count > 0 and perms.core.can_control_printer %}
+          <form method="post" action="{% url 'core:run_queue' card.printer.pk %}" class="d-inline w-100">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm btn-success w-100">
+              <i class="bi bi-play-fill me-1"></i>Run Next Job
+            </button>
+          </form>
+        {% elif card.state == 'printing' and perms.core.can_control_printer %}
+          <form method="post" action="{% url 'core:printqueue_cancel' card.active_entry.pk %}" class="d-inline w-100">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm btn-outline-danger w-100" onclick="return confirm('Cancel this print?')">
+              <i class="bi bi-stop-circle me-1"></i>Cancel Print
+            </button>
+          </form>
+        {% else %}
+          <span class="text-body-secondary small">—</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="text-center text-body-secondary py-5">
+  <i class="bi bi-cpu fs-1 d-block mb-2"></i>
+  <p>No printers configured yet.</p>
+  {% if perms.core.can_manage_printers %}
+  <a href="{% url 'core:printerprofile_create' %}" class="btn btn-primary">
+    <i class="bi bi-plus-lg me-1"></i>Add Printer
+  </a>
+  {% endif %}
+</div>
+{% endif %}
+
+{# ── Moonraker polling for active prints ─────────────────────────────────── #}
+<script>
+(function() {
+  const POLL_INTERVAL = 15000; // 15 seconds – faster for the dashboard
+  const cards = document.querySelectorAll('[data-poll-entry]');
+  if (!cards.length) return;
+
+  function pollEntry(card) {
+    const pk = card.dataset.pollEntry;
+    fetch('/api/queue/' + pk + '/check-status/')
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'awaiting_review') {
+          location.reload();
+          return;
+        }
+        // Update progress bar
+        if (data.progress !== undefined) {
+          const pct = Math.round(data.progress * 100);
+          const bar = document.querySelector('[data-progress-bar="' + pk + '"] .progress-bar');
+          const txt = document.querySelector('[data-progress-text="' + pk + '"]');
+          if (bar) bar.style.width = pct + '%';
+          if (txt) txt.textContent = pct + '% complete';
+        }
+      })
+      .catch(() => {});
+  }
+
+  // Initial poll immediately
+  cards.forEach(pollEntry);
+  // Then every POLL_INTERVAL
+  setInterval(function() { cards.forEach(pollEntry); }, POLL_INTERVAL);
+})();
+</script>
+{% endblock %}

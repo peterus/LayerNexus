@@ -1,0 +1,22 @@
+{
+  // ── Django HTML templates ──────────────────────────────────────────
+  // Treat every .html file inside "templates/" as Django HTML so that
+  // VS Code uses the correct syntax highlighting and — more importantly —
+  // does NOT run the default HTML formatter on them (which breaks
+  // multi-line Django template tags like {% if … %}).
+  "files.associations": {
+    "**/templates/**/*.html": "django-html"
+  },
+  // Disable all formatting for django-html files.
+  // The built-in HTML formatter and Prettier both wrap long lines and
+  // split {% %} tags across lines, which produces invalid templates.
+  "[django-html]": {
+    "editor.formatOnSave": false,
+    "editor.formatOnPaste": false,
+    "editor.defaultFormatter": null
+  },
+  // Keep normal formatting for non-template HTML files if desired.
+  "[html]": {
+    "editor.formatOnSave": true
+  }
+}
