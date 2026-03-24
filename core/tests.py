@@ -2227,26 +2227,26 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
 
     def test_trigger_sets_pending_not_estimating(self):
         """_trigger_part_estimation sets status to PENDING, not ESTIMATING."""
-        from core.views import _trigger_part_estimation
+        from core.views.helpers import _trigger_part_estimation
 
         self.part.stl_file = SimpleUploadedFile("test.stl", b"solid test")
         self.part.print_preset = self.preset
         self.part.save()
 
-        with patch("core.views._start_orcaslicer_worker"):
+        with patch("core.views.helpers._start_orcaslicer_worker"):
             _trigger_part_estimation(self.part)
 
         self.part.refresh_from_db()
         self.assertEqual(self.part.estimation_status, Part.ESTIMATION_PENDING)
 
-    @patch("core.views._start_orcaslicer_worker")
+    @patch("core.views.helpers._start_orcaslicer_worker")
     def test_trigger_calls_start_worker(self, mock_start: "patch"):
         """_trigger_part_estimation calls _start_orcaslicer_worker."""
         self.part.stl_file = SimpleUploadedFile("test.stl", b"solid test")
         self.part.print_preset = self.preset
         self.part.save()
 
-        from core.views import _trigger_part_estimation
+        from core.views.helpers import _trigger_part_estimation
 
         _trigger_part_estimation(self.part)
 
@@ -2254,8 +2254,8 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
 
     def test_worker_does_not_start_duplicate(self):
         """Only one worker thread should be active at a time."""
-        import core.views as views_mod
-        from core.views import (
+        import core.views.helpers as views_mod
+        from core.views.helpers import (
             _orcaslicer_worker_lock,
             _start_orcaslicer_worker,
         )
@@ -2273,11 +2273,11 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
             with _orcaslicer_worker_lock:
                 views_mod._orcaslicer_worker_active = original
 
-    @patch("core.views._estimate_part_in_background")
+    @patch("core.views.helpers._estimate_part_in_background")
     def test_worker_loop_processes_pending_sequentially(self, mock_estimate: "patch"):
         """Worker loop picks pending parts one by one."""
-        import core.views as views_mod
-        from core.views import _orcaslicer_worker_loop
+        import core.views.helpers as views_mod
+        from core.views.helpers import _orcaslicer_worker_loop
 
         # Create two parts with PENDING status
         p1 = Part.objects.create(
@@ -2315,11 +2315,11 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
         self.assertEqual(first_call_pk, p1.pk)
         self.assertEqual(second_call_pk, p2.pk)
 
-    @patch("core.views._estimate_part_in_background")
+    @patch("core.views.helpers._estimate_part_in_background")
     def test_worker_loop_stops_when_no_pending(self, mock_estimate: "patch"):
         """Worker loop stops gracefully when no pending work exists."""
-        import core.views as views_mod
-        from core.views import _orcaslicer_worker_loop
+        import core.views.helpers as views_mod
+        from core.views.helpers import _orcaslicer_worker_loop
 
         # No pending parts or jobs
         with views_mod._orcaslicer_worker_lock:
@@ -2331,12 +2331,12 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
         # Worker should have set itself as inactive
         self.assertFalse(views_mod._orcaslicer_worker_active)
 
-    @patch("core.views._slice_job_in_background")
-    @patch("core.views._estimate_part_in_background")
+    @patch("core.views.helpers._slice_job_in_background")
+    @patch("core.views.helpers._estimate_part_in_background")
     def test_worker_loop_processes_slicing_before_estimations(self, mock_estimate: "patch", mock_slice: "patch"):
         """Worker processes slicing jobs before estimation parts."""
-        import core.views as views_mod
-        from core.views import _orcaslicer_worker_loop
+        import core.views.helpers as views_mod
+        from core.views.helpers import _orcaslicer_worker_loop
 
         # Create a pending estimation
         part = Part.objects.create(
@@ -2379,7 +2379,7 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
         self.assertEqual(call_order[0], ("slice", job.pk))
         self.assertEqual(call_order[1], ("estimate", part.pk))
 
-    @patch("core.views._start_orcaslicer_worker")
+    @patch("core.views.print_jobs._start_orcaslicer_worker")
     def test_slice_view_queues_job_as_pending(self, mock_start: "patch"):
         """PrintJobSliceView sets job to PENDING and starts worker."""
         from core.models import OrcaMachineProfile
