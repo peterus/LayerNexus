@@ -81,7 +81,6 @@ from .models import (
     ProjectHardware,
     SpoolmanFilamentMapping,
 )
-from .services.inventree import InvenTreeClient, InvenTreeError
 from .services.moonraker import MoonrakerClient, MoonrakerError
 from .services.orcaslicer import OrcaSlicerAPIClient, OrcaSlicerError
 from .services.spoolman import SpoolmanClient, SpoolmanError
@@ -3543,53 +3542,6 @@ class AdminDashboardView(AdminRequiredMixin, TemplateView):
         context["recent_jobs"] = PrintJob.objects.select_related("created_by").order_by("-updated_at")[:10]
 
         return context
-
-
-# ---------------------------------------------------------------------------
-# InvenTree integration views
-# ---------------------------------------------------------------------------
-
-
-class InvenTreePartsView(LoginRequiredMixin, View):
-    """API proxy to list parts from an InvenTree instance."""
-
-    def get(self, request, printer_pk):
-        printer = get_object_or_404(PrinterProfile, pk=printer_pk)
-        # Reuse spoolman_url field or add inventree-specific fields later.
-        # For now we use a query parameter.
-        inventree_url = request.GET.get("inventree_url", "")
-        inventree_token = request.GET.get("inventree_token", "")
-
-        if not inventree_url:
-            return JsonResponse({"error": "InvenTree URL required."}, status=400)
-
-        client = InvenTreeClient(inventree_url, inventree_token)
-        try:
-            parts = client.get_parts()
-            return JsonResponse({"parts": parts}, safe=False)
-        except InvenTreeError as exc:
-            logger.exception("InvenTree error for printer %s", printer.pk)
-            return JsonResponse({"error": str(exc)}, status=502)
-
-
-class InvenTreeStockView(LoginRequiredMixin, View):
-    """API proxy to get stock items from InvenTree."""
-
-    def get(self, request, printer_pk):
-        printer = get_object_or_404(PrinterProfile, pk=printer_pk)
-        inventree_url = request.GET.get("inventree_url", "")
-        inventree_token = request.GET.get("inventree_token", "")
-
-        if not inventree_url:
-            return JsonResponse({"error": "InvenTree URL required."}, status=400)
-
-        client = InvenTreeClient(inventree_url, inventree_token)
-        try:
-            stock = client.get_stock_items()
-            return JsonResponse({"stock": stock}, safe=False)
-        except InvenTreeError as exc:
-            logger.exception("InvenTree error for printer %s", printer.pk)
-            return JsonResponse({"error": str(exc)}, status=502)
 
 
 # ---------------------------------------------------------------------------

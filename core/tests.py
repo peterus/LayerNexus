@@ -1205,31 +1205,6 @@ class CostViewTests(TestDataMixin, TestCase):
         self.assertEqual(r.status_code, 200)
 
 
-@override_settings(ALLOWED_HOSTS=["testserver"])
-class InvenTreeClientTests(TestCase):
-    """Tests for InvenTreeClient initialization."""
-
-    def test_init_strips_trailing_slash(self):
-        from core.services.inventree import InvenTreeClient
-
-        c = InvenTreeClient("http://example.com:8000/")
-        self.assertEqual(c.base_url, "http://example.com:8000")
-
-    def test_init_with_token(self):
-        from core.services.inventree import InvenTreeClient
-
-        c = InvenTreeClient("http://example.com:8000", "mytoken")
-        headers = c._get_headers()
-        self.assertEqual(headers["Authorization"], "Token mytoken")
-
-    def test_init_without_token(self):
-        from core.services.inventree import InvenTreeClient
-
-        c = InvenTreeClient("http://example.com:8000")
-        headers = c._get_headers()
-        self.assertNotIn("Authorization", headers)
-
-
 # ===========================================================================
 # Template tag / filter tests
 # ===========================================================================

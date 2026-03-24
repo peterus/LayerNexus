@@ -280,17 +280,6 @@ urlpatterns = [
         views.UploadToPrinterView.as_view(),
         name="upload_to_printer",
     ),
-    # InvenTree integration
-    path(
-        "printers/<int:printer_pk>/inventree/parts/",
-        views.InvenTreePartsView.as_view(),
-        name="inventree_parts",
-    ),
-    path(
-        "printers/<int:printer_pk>/inventree/stock/",
-        views.InvenTreeStockView.as_view(),
-        name="inventree_stock",
-    ),
     # Auth
     path("register/", views.RegisterView.as_view(), name="register"),
     path("profile/", views.ProfileView.as_view(), name="profile"),
