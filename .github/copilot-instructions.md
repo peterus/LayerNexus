@@ -33,7 +33,7 @@ core/                  # Main Django app
 ├── services/          # External API clients
 │   ├── orcaslicer.py  # OrcaSlicer API integration
 │   ├── moonraker.py   # Klipper/Moonraker API
-│   ├── spoolman.py    # Filament management API
+│   └── spoolman.py    # Filament management API
 ├── templates/         # Django templates (Bootstrap 5.3)
 └── templatetags/      # Custom template tags
 
