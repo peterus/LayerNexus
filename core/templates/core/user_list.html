@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{% block title %}Users — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="h3 mb-0"><i class="bi bi-people me-2"></i>User Management</h1>
+  {% if perms.auth.change_user %}
+  <a href="{% url 'core:user_create' %}" class="btn btn-primary">
+    <i class="bi bi-person-plus me-1"></i>Add User
+  </a>
+  {% endif %}
+</div>
+
+<div class="card shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover mb-0">
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Role</th>
+          <th>Active</th>
+          <th>Last Login</th>
+          <th class="text-end">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td>
+            <i class="bi bi-person-circle me-1"></i>{{ u.username }}
+            {% if u == user %}<span class="badge bg-info ms-1">You</span>{% endif %}
+          </td>
+          <td>{{ u.get_full_name|default:"—" }}</td>
+          <td>{{ u.email|default:"—" }}</td>
+          <td>
+            {% for g in u.groups.all %}
+              {% if g.name == "Admin" %}
+                <span class="badge bg-danger">{{ g.name }}</span>
+              {% elif g.name == "Operator" %}
+                <span class="badge bg-warning text-dark">{{ g.name }}</span>
+              {% elif g.name == "Designer" %}
+                <span class="badge bg-primary">{{ g.name }}</span>
+              {% else %}
+                <span class="badge bg-secondary">{{ g.name }}</span>
+              {% endif %}
+            {% empty %}
+              <span class="text-body-secondary">No role</span>
+            {% endfor %}
+          </td>
+          <td>
+            {% if u.is_active %}
+              <span class="badge bg-success">Active</span>
+            {% else %}
+              <span class="badge bg-secondary">Inactive</span>
+            {% endif %}
+          </td>
+          <td>{{ u.last_login|timesince|default:"Never" }}</td>
+          <td class="text-end">
+            {% if perms.auth.change_user %}
+            <a href="{% url 'core:user_update' u.pk %}" class="btn btn-sm btn-outline-primary" title="Edit">
+              <i class="bi bi-pencil"></i>
+            </a>
+            {% if u != user %}
+            <a href="{% url 'core:user_delete' u.pk %}" class="btn btn-sm btn-outline-danger" title="Delete">
+              <i class="bi bi-trash"></i>
+            </a>
+            {% endif %}
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="7" class="text-center text-body-secondary py-4">No users found.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

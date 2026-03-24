@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% load core_tags %}
+
+{% block title %}Filament Profiles — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="h3 mb-0"><i class="bi bi-palette me-2"></i>Filament Profiles</h1>
+  {% if perms.core.can_manage_orca_profiles %}
+  <a href="{% url 'core:orcafilamentprofile_import' %}" class="btn btn-primary">
+    <i class="bi bi-upload me-1"></i>Import Profile
+  </a>
+  {% endif %}
+</div>
+
+{% if filament_profiles %}
+<div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+  {% for profile in filament_profiles %}
+  <div class="col">
+    <div class="card h-100 shadow-sm {% if not profile.is_resolved %}border-warning{% endif %}">
+      <div class="card-body">
+        <h5 class="card-title">
+          <i class="bi bi-{% if profile.is_resolved %}palette{% else %}hourglass-split text-warning{% endif %} me-1"></i>
+          {{ profile.name }}
+        </h5>
+        {% if profile.description %}
+        <p class="card-text text-body-secondary small">{{ profile.description|markdown|striptags|truncatewords:20 }}</p>
+        {% endif %}
+        <div class="small text-body-secondary">
+          <div><i class="bi bi-tag me-1"></i>OrcaSlicer: {{ profile.orca_name }}</div>
+          {% if profile.is_resolved %}
+            {% if profile.first_filament_type %}
+            <div><i class="bi bi-droplet me-1"></i>Type: {{ profile.first_filament_type }}</div>
+            {% endif %}
+            {% if profile.first_nozzle_temperature %}
+            <div><i class="bi bi-thermometer-half me-1"></i>Nozzle: {{ profile.first_nozzle_temperature }} °C</div>
+            {% endif %}
+            {% if profile.first_bed_temperature %}
+            <div><i class="bi bi-grid-3x3 me-1"></i>Bed: {{ profile.first_bed_temperature }} °C</div>
+            {% endif %}
+            {% if profile.first_max_volumetric_speed %}
+            <div><i class="bi bi-speedometer me-1"></i>Max flow: {{ profile.first_max_volumetric_speed }} mm³/s</div>
+            {% endif %}
+          {% else %}
+            <div class="text-warning">
+              <i class="bi bi-exclamation-triangle me-1"></i>Pending — needs parent: <strong>{{ profile.inherits_name }}</strong>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="card-footer d-flex gap-2">
+        {% if profile.is_resolved %}
+        <a href="{% url 'core:orcafilamentprofile_detail' profile.pk %}" class="btn btn-sm btn-outline-primary">
+          <i class="bi bi-eye me-1"></i>Details
+        </a>
+        {% endif %}
+        {% if perms.core.can_manage_orca_profiles %}
+        <a href="{% url 'core:orcafilamentprofile_delete' profile.pk %}" class="btn btn-sm btn-outline-danger">
+          <i class="bi bi-trash me-1"></i>Delete
+        </a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="text-center py-5">
+  <i class="bi bi-palette display-1 text-body-secondary"></i>
+  <h4 class="mt-3">No filament profiles yet</h4>
+  <p class="text-body-secondary">
+    Import an OrcaSlicer filament profile JSON file to get started.<br>
+    The system will guide you through uploading any required parent profiles.
+  </p>
+  {% if perms.core.can_manage_orca_profiles %}
+  <a href="{% url 'core:orcafilamentprofile_import' %}" class="btn btn-primary">
+    <i class="bi bi-upload me-1"></i>Import Profile
+  </a>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% load core_tags %}
+
+{% block title %}Print Presets — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="h3 mb-0"><i class="bi bi-sliders me-2"></i>Print Presets</h1>
+  {% if perms.core.can_manage_orca_profiles %}
+  <a href="{% url 'core:orcaprintpreset_import' %}" class="btn btn-primary">
+    <i class="bi bi-upload me-1"></i>Import Profile
+  </a>
+  {% endif %}
+</div>
+
+{% if print_presets %}
+<div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+  {% for preset in print_presets %}
+  <div class="col">
+    <div class="card h-100 shadow-sm {% if not preset.is_resolved %}border-warning{% endif %}">
+      <div class="card-body">
+        <h5 class="card-title">
+          <i class="bi bi-{% if preset.is_resolved %}sliders{% else %}hourglass-split text-warning{% endif %} me-1"></i>
+          {{ preset.name }}
+        </h5>
+        {% if preset.description %}
+        <p class="card-text text-body-secondary small">{{ preset.description|markdown|striptags|truncatewords:20 }}</p>
+        {% endif %}
+        <div class="small text-body-secondary">
+          <div><i class="bi bi-tag me-1"></i>OrcaSlicer: {{ preset.orca_name }}</div>
+          {% if preset.is_resolved %}
+            {% if preset.layer_height %}
+            <div><i class="bi bi-arrows-vertical me-1"></i>Layer height: {{ preset.layer_height }} mm</div>
+            {% endif %}
+            {% if preset.sparse_infill_density %}
+            <div><i class="bi bi-grid-3x3-gap me-1"></i>Infill: {{ preset.sparse_infill_density }}</div>
+            {% endif %}
+            {% if preset.wall_loops %}
+            <div><i class="bi bi-border-outer me-1"></i>Walls: {{ preset.wall_loops }}</div>
+            {% endif %}
+            <div>
+              <i class="bi bi-columns-gap me-1"></i>Supports:
+              {% if preset.supports_enabled %}
+              <span class="badge bg-success">Enabled</span>
+              {% else %}
+              <span class="badge bg-secondary">Disabled</span>
+              {% endif %}
+            </div>
+          {% else %}
+            <div class="text-warning">
+              <i class="bi bi-exclamation-triangle me-1"></i>Pending — needs parent: <strong>{{ preset.inherits_name }}</strong>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="card-footer d-flex gap-2">
+        {% if preset.is_resolved %}
+        <a href="{% url 'core:orcaprintpreset_detail' preset.pk %}" class="btn btn-sm btn-outline-primary">
+          <i class="bi bi-eye me-1"></i>Details
+        </a>
+        {% endif %}
+        {% if perms.core.can_manage_orca_profiles %}
+        <a href="{% url 'core:orcaprintpreset_delete' preset.pk %}" class="btn btn-sm btn-outline-danger">
+          <i class="bi bi-trash me-1"></i>Delete
+        </a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="text-center py-5">
+  <i class="bi bi-sliders display-1 text-body-secondary"></i>
+  <h4 class="mt-3">No print presets yet</h4>
+  <p class="text-body-secondary">
+    Import an OrcaSlicer process profile JSON file to get started.<br>
+    The system will guide you through uploading any required parent profiles.
+  </p>
+  {% if perms.core.can_manage_orca_profiles %}
+  <a href="{% url 'core:orcaprintpreset_import' %}" class="btn btn-primary">
+    <i class="bi bi-upload me-1"></i>Import Profile
+  </a>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% load core_tags %}
+{% block title %}{% if form.instance.pk %}Edit Sub-Project{% else %}New Sub-Project{% endif %} — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
+    {% for ancestor in ancestors %}
+    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' ancestor.pk %}">{{ ancestor.name }}</a></li>
+    {% endfor %}
+    <li class="breadcrumb-item active">{% if form.instance.pk %}Edit {{ form.instance.name }}{% else %}New Sub-Project{% endif %}</li>
+  </ol>
+</nav>
+
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="card shadow-sm">
+      <div class="card-header">
+        <h4 class="mb-0">
+          <i class="bi bi-{% if form.instance.pk %}pencil{% else %}diagram-3{% endif %} me-2"></i>
+          {% if form.instance.pk %}Edit Sub-Project{% else %}Add Sub-Project to {{ parent.name }}{% endif %}
+        </h4>
+      </div>
+      <div class="card-body">
+        <form method="post" enctype="multipart/form-data" novalidate>
+          {% csrf_token %}
+          {% for field in form %}
+          <div class="mb-3">
+            <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}{% if field.field.required %} <span class="text-danger">*</span>{% endif %}</label>
+            {% if field.field.widget.input_type == 'textarea' or 'Textarea' in field|widget_class %}
+            <textarea name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-control {% if field.errors %}is-invalid{% endif %}" rows="{{ field.field.widget.attrs.rows|default:4 }}" {% if field.field.required %}required{% endif %}>{{ field.value|default:'' }}</textarea>
+            {% elif 'Select' in field|widget_class %}
+            <select name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-select {% if field.errors %}is-invalid{% endif %}">
+              {% for val, label in field.field.choices %}
+              <option value="{{ val }}" {% if field.value|stringformat:"s" == val|stringformat:"s" %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+            {% elif 'ClearableFileInput' in field|widget_class or 'FileInput' in field|widget_class %}
+            {% if field.value %}
+            <div class="mb-2">
+              {% if 'image' in field.name %}
+              <img src="{{ field.value.url }}" alt="Current image" class="img-thumbnail" style="max-height:120px;">
+              {% endif %}
+              <div class="form-check mt-1">
+                <input type="checkbox" name="{{ field.html_name }}-clear" id="{{ field.html_name }}-clear" class="form-check-input">
+                <label class="form-check-label text-danger" for="{{ field.html_name }}-clear">Remove current file</label>
+              </div>
+            </div>
+            {% endif %}
+            <input type="file" name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-control {% if field.errors %}is-invalid{% endif %}" accept="image/*">
+            {% if field.name == 'image' %}
+            <div id="paste-zone" class="border rounded p-3 mt-2 text-center text-body-secondary" style="cursor:pointer;border-style:dashed !important;">
+              <i class="bi bi-clipboard me-1"></i>Paste image from clipboard (Ctrl+V) or click to select
+            </div>
+            <div id="paste-preview" class="mt-2 d-none">
+              <img id="paste-preview-img" class="img-thumbnail" style="max-height:120px;" alt="Pasted image preview">
+              <button type="button" id="paste-clear" class="btn btn-sm btn-outline-danger ms-2"><i class="bi bi-x-lg"></i> Remove</button>
+            </div>
+            {% endif %}
+            {% else %}
+            <input type="{{ field.field.widget.input_type|default:'text' }}" name="{{ field.html_name }}" id="{{ field.id_for_label }}" value="{{ field.value|default:'' }}" class="form-control {% if field.errors %}is-invalid{% endif %}" {% if field.field.required %}required{% endif %}>
+            {% endif %}
+            {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+            {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+          </div>
+          {% endfor %}
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i>{% if form.instance.pk %}Update{% else %}Create{% endif %}</button>
+            <a href="{% url 'core:project_detail' parent.pk %}" class="btn btn-outline-secondary">Cancel</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  const fileInput = document.getElementById("id_image");
+  const pasteZone = document.getElementById("paste-zone");
+  const preview = document.getElementById("paste-preview");
+  const previewImg = document.getElementById("paste-preview-img");
+  const clearBtn = document.getElementById("paste-clear");
+
+  if (!fileInput || !pasteZone) return;
+
+  let currentObjectUrl = null;
+
+  function revokeCurrentUrl() {
+    if (currentObjectUrl) {
+      URL.revokeObjectURL(currentObjectUrl);
+      currentObjectUrl = null;
+    }
+  }
+
+  function setFileFromBlob(blob, filename) {
+    const dt = new DataTransfer();
+    dt.items.add(new File([blob], filename || "pasted-image.png", { type: blob.type }));
+    fileInput.files = dt.files;
+    revokeCurrentUrl();
+    currentObjectUrl = URL.createObjectURL(blob);
+    previewImg.src = currentObjectUrl;
+    preview.classList.remove("d-none");
+    pasteZone.classList.add("border-success", "text-success");
+    pasteZone.innerHTML = '<i class="bi bi-check-circle me-1"></i>Image ready';
+  }
+
+  function resetPaste() {
+    const dt = new DataTransfer();
+    fileInput.files = dt.files;
+    revokeCurrentUrl();
+    preview.classList.add("d-none");
+    previewImg.src = "";
+    pasteZone.classList.remove("border-success", "text-success");
+    pasteZone.innerHTML = '<i class="bi bi-clipboard me-1"></i>Paste image from clipboard (Ctrl+V) or click to select';
+  }
+
+  document.addEventListener("paste", function (e) {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith("image/")) {
+        e.preventDefault();
+        setFileFromBlob(item.getAsFile(), "pasted-image.png");
+        return;
+      }
+    }
+  });
+
+  pasteZone.addEventListener("click", function () {
+    fileInput.click();
+  });
+
+  fileInput.addEventListener("change", function () {
+    if (fileInput.files && fileInput.files[0]) {
+      setFileFromBlob(fileInput.files[0], fileInput.files[0].name);
+    }
+  });
+
+  if (clearBtn) {
+    clearBtn.addEventListener("click", resetPaste);
+  }
+});
+</script>
+{% endblock %}

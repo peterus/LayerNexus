@@ -1,0 +1,335 @@
+{% extends "base.html" %}
+{% load core_tags %}
+
+{% block title %}{{ part.name }} — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
+    {% for ancestor in ancestors %}
+    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' ancestor.pk %}">{{ ancestor.name }}</a></li>
+    {% endfor %}
+    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' part.project.pk %}">{{ part.project.name }}</a>
+    </li>
+    <li class="breadcrumb-item active">{{ part.name }}</li>
+  </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-start mb-4">
+  <div>
+    <h1 class="h3 mb-1">{{ part.name }}</h1>
+    <p class="text-body-secondary mb-0">Part of <a href="{% url 'core:project_detail' part.project.pk %}">{{ part.project.name }}</a></p>
+  </div>
+  <div class="d-flex gap-2">
+    {% if perms.core.can_manage_projects %}
+    <a href="{% url 'core:part_update' part.pk %}" class="btn btn-outline-secondary"><i
+        class="bi bi-pencil me-1"></i>Edit</a>
+    <a href="{% url 'core:part_delete' part.pk %}" class="btn btn-outline-danger"><i
+        class="bi bi-trash me-1"></i>Delete</a>
+    {% endif %}
+    {% if part.stl_file and perms.core.can_manage_projects %}
+    <form method="post" action="{% url 'core:part_re_estimate' part.pk %}" class="d-inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-outline-info" title="Re-estimate filament usage and print time">
+        <i class="bi bi-arrow-repeat me-1"></i>Re-Estimate
+      </button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <!-- STL Viewer -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-box me-2"></i>3D Preview</h5>
+      </div>
+      <div class="card-body p-0">
+        <div id="viewer-container"
+          style="width: 100%; height: 400px; background: var(--bs-tertiary-bg); display: flex; align-items: center; justify-content: center;">
+          {% if part.stl_file %}
+          <span class="text-body-secondary">Loading 3D model…</span>
+          {% else %}
+          <span class="text-body-secondary"><i class="bi bi-file-earmark-x me-1"></i>No STL file uploaded</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Print Jobs for this Part -->
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-list-task me-2"></i>Print Jobs</h5>
+      </div>
+      <div class="card-body">
+        {% if part.print_jobs.all %}
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Job</th>
+                <th>Status</th>
+                <th class="text-center">Plates</th>
+                <th>Created</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for job in part.print_jobs.all %}
+              <tr>
+                <td><a href="{% url 'core:printjob_detail' job.pk %}" class="text-decoration-none">{{ job }}</a></td>
+                <td>
+                  <span
+                    class="badge {% if job.status == 'completed' %}bg-success{% elif job.status == 'failed' %}bg-danger{% elif job.status == 'cancelled' %}bg-warning text-dark{% elif job.status == 'printing' %}bg-primary{% elif job.status == 'slicing' or job.status == 'uploading' or job.status == 'uploaded' %}bg-info{% elif job.status == 'sliced' %}bg-info{% elif job.status == 'draft' %}bg-secondary{% else %}bg-secondary{% endif %}">
+                    {{ job.get_status_display }}
+                  </span>
+                </td>
+                <td class="text-center">{{ job.plate_count }}</td>
+                <td><small>{{ job.created_at|timesince }} ago</small></td>
+                <td><a href="{% url 'core:printjob_detail' job.pk %}" class="btn btn-sm btn-outline-primary" title="View"><i class="bi bi-eye"></i></a></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="text-body-secondary mb-0">No print jobs yet for this part.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <!-- Part Details -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-info-circle me-2"></i>Details</h5>
+      </div>
+      <div class="card-body">
+        <dl class="row mb-0">
+          <dt class="col-sm-5">Filament</dt>
+          <dd class="col-sm-7">
+            {% if part.color %}
+            <span class="rounded-circle border d-inline-block me-1" style="width:12px;height:12px;background:#{{ part.color }};vertical-align:middle;" title="#{{ part.color }}"></span>
+            {% endif %}
+            {% if spoolman_filament_name %}
+              {{ spoolman_filament_name }}
+            {% elif part.spoolman_filament_id %}
+              <code>#{{ part.spoolman_filament_id }}</code>
+            {% elif part.material %}
+              {{ part.material }}
+            {% else %}
+              —
+            {% endif %}
+            {% if part.material and spoolman_filament_name %}
+              <span class="badge bg-secondary bg-opacity-25 text-body ms-1">{{ part.material }}</span>
+            {% endif %}
+          </dd>
+          <dt class="col-sm-5">Quantity</dt>
+          <dd class="col-sm-7">{{ part.quantity }}</dd>
+          <dt class="col-sm-5">Printed</dt>
+          <dd class="col-sm-7">{{ part.printed_quantity }} / {{ part.quantity }}</dd>
+          <dt class="col-sm-5">Status</dt>
+          <dd class="col-sm-7">
+            {% if part.is_complete %}
+            <span class="badge bg-success">Complete</span>
+            {% elif part.printed_quantity > 0 %}
+            <span class="badge bg-primary">In Progress</span>
+            {% else %}
+            <span class="badge bg-secondary">Pending</span>
+            {% endif %}
+          </dd>
+        </dl>
+      </div>
+    </div>
+
+    <!-- Filament Info -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-palette me-2"></i>Filament Usage</h5>
+      </div>
+      <div class="card-body">
+        {% if part.estimation_status == 'error' %}
+        <div class="alert alert-danger mb-3">
+          <i class="bi bi-exclamation-triangle me-1"></i><strong>Estimation failed</strong>
+          {% if part.estimation_error %}<p class="mb-0 mt-1 small">{{ part.estimation_error }}</p>{% endif %}
+        </div>
+        {% elif part.estimation_status == 'estimating' %}
+        <div class="alert alert-warning mb-3">
+          <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+          Estimation in progress&hellip;
+        </div>
+        {% elif part.estimation_status == 'pending' %}
+        <div class="alert alert-info mb-3">
+          <i class="bi bi-hourglass me-1"></i>
+          Waiting for estimation&hellip;
+        </div>
+        {% endif %}
+        <dl class="row mb-0">
+          <dt class="col-sm-5">Weight</dt>
+          <dd class="col-sm-7">{% if part.filament_used_grams %}{{ part.filament_used_grams|floatformat:1 }} g{% else %}&mdash;{% endif %}</dd>
+          <dt class="col-sm-5">Length</dt>
+          <dd class="col-sm-7">{% if part.filament_used_meters %}{{ part.filament_used_meters|meters_format }}{% else %}&mdash;{% endif %}</dd>
+          <dt class="col-sm-5">Print Time</dt>
+          <dd class="col-sm-7">{% if part.estimated_print_time %}{{ part.estimated_print_time|duration_format }}{% else %}&mdash;{% endif %}</dd>
+        </dl>
+      </div>
+    </div>
+
+    <!-- Files -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-file-earmark me-2"></i>Files</h5>
+      </div>
+      <div class="card-body">
+        <dl class="row mb-0">
+          <dt class="col-sm-5">STL File</dt>
+          <dd class="col-sm-7">
+            {% if part.stl_file %}
+            <a href="{{ part.stl_file.url }}" class="text-decoration-none"><i
+                class="bi bi-download me-1"></i>Download</a>
+            {% else %}<span class="text-body-secondary">Not uploaded</span>{% endif %}
+          </dd>
+        </dl>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="card">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-lightning me-2"></i>Actions</h5>
+      </div>
+      <div class="card-body">
+        {% if part.stl_file and perms.core.add_printjob %}
+        <h6>Add to Print Job</h6>
+        <form method="post" action="{% url 'core:add_part_to_job' part.pk %}" class="mb-2">
+          {% csrf_token %}
+          <div class="mb-2">
+            <label for="id_job" class="form-label form-label-sm">Job</label>
+            <select name="job" id="id_job" class="form-select form-select-sm">
+              <option value="">— New draft job —</option>
+              {% for job in draft_jobs %}
+              <option value="{{ job.pk }}">{{ job }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-2">
+            <label for="id_qty" class="form-label form-label-sm">Quantity</label>
+            <input type="number" name="quantity" id="id_qty" value="{{ part.remaining_quantity|default:1 }}" min="1" class="form-control form-control-sm" style="max-width: 120px;">
+          </div>
+          <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Add to Job</button>
+        </form>
+        {% elif not part.stl_file %}
+        <div class="alert alert-warning mb-0">
+          <i class="bi bi-exclamation-triangle me-1"></i>
+          Upload an STL file to enable adding this part to a print job.
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if part.notes %}
+    <div class="card mt-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-sticky me-2"></i>Notes</h5>
+      </div>
+      <div class="card-body">{{ part.notes|linebreaks }}</div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{% if part.stl_file %}
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+  import * as THREE from 'three';
+  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+  import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+
+  const container = document.getElementById('viewer-container');
+  container.innerHTML = '';
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+
+  const scene = new THREE.Scene();
+  const isDark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+  scene.background = new THREE.Color(isDark ? 0x212529 : 0xf8f9fa);
+
+  const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 10000);
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(width, height);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  container.appendChild(renderer.domElement);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.1;
+
+  // Lighting — multiple lights to avoid black faces
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+  scene.add(ambientLight);
+
+  const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.8);
+  dirLight1.position.set(1, 1, 1);
+  scene.add(dirLight1);
+
+  const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.3);
+  dirLight2.position.set(-1, -1, -1);
+  scene.add(dirLight2);
+
+  const loader = new STLLoader();
+  loader.load('{{ part.stl_file.url }}', function (geometry) {
+    geometry.computeVertexNormals();
+    const material = new THREE.MeshStandardMaterial({
+      color: 0x4dabf7,
+      metalness: 0.1,
+      roughness: 0.6,
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    scene.add(mesh);
+
+    geometry.computeBoundingBox();
+    const bb = geometry.boundingBox;
+    const center = new THREE.Vector3();
+    bb.getCenter(center);
+    mesh.position.sub(center);
+
+    const size = new THREE.Vector3();
+    bb.getSize(size);
+    const maxDim = Math.max(size.x, size.y, size.z);
+    camera.position.set(maxDim * 1.2, maxDim * 0.8, maxDim * 1.5);
+    camera.lookAt(0, 0, 0);
+    controls.target.set(0, 0, 0);
+    controls.update();
+  }, undefined, function (err) {
+    container.innerHTML = '<span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>Failed to load 3D model</span>';
+  });
+
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  window.addEventListener('resize', function () {
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  });
+</script>
+{% endif %}
+{% endblock %}

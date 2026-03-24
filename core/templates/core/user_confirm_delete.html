@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}Delete User — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-6">
+    <div class="card shadow-sm border-danger">
+      <div class="card-header bg-danger text-white">
+        <h5 class="mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Delete User</h5>
+      </div>
+      <div class="card-body">
+        <p>Are you sure you want to delete the user <strong>{{ object.username }}</strong>?</p>
+        <p class="text-body-secondary mb-0">This action cannot be undone. All data created by this user will remain but lose its author reference.</p>
+      </div>
+      <div class="card-footer d-flex gap-2">
+        <form method="post">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-1"></i>Delete</button>
+        </form>
+        <a href="{% url 'core:user_list' %}" class="btn btn-outline-secondary">Cancel</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

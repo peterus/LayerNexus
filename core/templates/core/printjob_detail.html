@@ -1,0 +1,355 @@
+{% extends "base.html" %}
+{% load core_tags %}
+
+{% block title %}{{ job }} — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'core:printjob_list' %}">Print Jobs</a></li>
+    <li class="breadcrumb-item active">{{ job }}</li>
+  </ol>
+</nav>
+
+<div class="d-flex justify-content-between align-items-start mb-4">
+  <div>
+    <h1 class="h3 mb-1">{{ job }}</h1>
+    <p class="text-body-secondary mb-0">
+      <span class="badge {% if job.status == 'completed' %}bg-success{% elif job.status == 'failed' %}bg-danger{% elif job.status == 'cancelled' %}bg-warning text-dark{% elif job.status == 'printing' %}bg-primary{% elif job.status == 'slicing' %}bg-info{% elif job.status == 'sliced' %}bg-info{% elif job.status == 'draft' %}bg-secondary{% else %}bg-secondary{% endif %}">
+        {{ job.get_status_display }}
+      </span>
+      {% if job.machine_profile %}
+      · Machine: <a href="{% url 'core:orcamachineprofile_detail' job.machine_profile.pk %}" class="text-decoration-none">{{ job.machine_profile.name }}</a>
+      {% endif %}
+      {% if job.created_by %}
+      · Created by {{ job.created_by.username }}
+      {% endif %}
+    </p>
+  </div>
+  <div class="d-flex gap-2">
+    {% if job.status == 'draft' and perms.core.change_printjob %}
+    <a href="{% url 'core:printjob_update' job.pk %}" class="btn btn-outline-secondary"><i class="bi bi-pencil me-1"></i>Edit</a>
+    {% endif %}
+    {% if perms.core.delete_printjob %}
+    <a href="{% url 'core:printjob_delete' job.pk %}" class="btn btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</a>
+    {% endif %}
+  </div>
+</div>
+
+{% if job.status == 'slicing' %}
+<div class="alert alert-info" id="slicing-alert">
+  <i class="bi bi-hourglass-split me-1"></i>
+  Slicing in progress… This page will auto-refresh.
+  <div class="spinner-border spinner-border-sm ms-2" role="status"><span class="visually-hidden">Loading...</span></div>
+</div>
+{% endif %}
+
+{% if job.slicing_error %}
+<div class="alert alert-danger">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  <strong>Slicing Error:</strong> {{ job.slicing_error }}
+</div>
+{% endif %}
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <!-- Parts in this job -->
+    <div class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-box-seam me-2"></i>Parts ({{ job.total_part_count }} total)</h5>
+      </div>
+      <div class="card-body">
+        {% if job_parts %}
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Part</th>
+                <th>Project</th>
+                <th class="text-center">Quantity</th>
+                {% if job.status == 'draft' %}<th>Actions</th>{% endif %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for jp in job_parts %}
+              <tr>
+                <td><a href="{% url 'core:part_detail' jp.part.pk %}" class="text-decoration-none fw-medium">{{ jp.part.name }}</a></td>
+                <td><a href="{% url 'core:project_detail' jp.part.project.pk %}" class="text-decoration-none">{{ jp.part.project.name }}</a></td>
+                <td class="text-center">{{ jp.quantity }}</td>
+                {% if job.status == 'draft' %}
+                <td>
+                  {% if perms.core.change_printjob %}
+                  <form method="post" action="{% url 'core:printjob_remove_part' job_pk=job.pk job_part_pk=jp.pk %}" class="d-inline">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove" onclick="return confirm('Remove {{ jp.part.name }} from this job?')"><i class="bi bi-x-lg"></i></button>
+                  </form>
+                  {% endif %}
+                </td>
+                {% endif %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="text-body-secondary mb-0">No parts added yet. Use "Add to Job" from a part's detail page.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Plates -->
+    {% if plates %}
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-layers me-2"></i>Plates ({{ plates|length }})</h5>
+      </div>
+      <div class="card-body">
+        <div class="row g-3">
+          {% for plate in plates %}
+          <div class="col-6">
+            <div class="card h-100 border{% if plate.status == 'completed' %}-success{% elif plate.status == 'failed' %}-danger{% elif plate.status == 'printing' %}-primary{% endif %}">
+              {% if plate.gcode_file %}
+              <div class="card-img-top position-relative" style="height: 320px; background: var(--bs-tertiary-bg);">
+                <canvas class="gcode-preview-canvas w-100 h-100" data-gcode-url="{{ plate.gcode_file.url }}" style="display:block;"></canvas>
+                <div class="gcode-loading position-absolute top-50 start-50 translate-middle text-body-secondary">
+                  <div class="spinner-border spinner-border-sm me-1" role="status"></div>
+                  <small>Loading preview…</small>
+                </div>
+              </div>
+              {% else %}
+              <div class="card-img-top d-flex align-items-center justify-content-center text-body-secondary" style="height: 160px; background: var(--bs-tertiary-bg);">
+                <i class="bi bi-image" style="font-size: 2rem;"></i>
+              </div>
+              {% endif %}
+              <div class="card-body p-2">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                  <strong>Plate {{ plate.plate_number }}</strong>
+                  <span class="badge {% if plate.status == 'completed' %}bg-success{% elif plate.status == 'failed' %}bg-danger{% elif plate.status == 'printing' %}bg-primary{% else %}bg-secondary{% endif %}">
+                    {{ plate.get_status_display }}
+                  </span>
+                </div>
+                <div class="d-flex justify-content-between text-body-secondary">
+                  <small>
+                    {% if plate.print_time_estimate %}<i class="bi bi-clock me-1"></i>{{ plate.print_time_estimate|duration_format }}{% endif %}
+                  </small>
+                  <small>
+                    {% if plate.filament_used_grams %}<i class="bi bi-circle-fill me-1" style="font-size:.5rem;vertical-align:middle;"></i>{{ plate.filament_used_grams|floatformat:1 }}&nbsp;g{% endif %}
+                  </small>
+                </div>
+              </div>
+              <div class="card-footer p-2 d-flex gap-1">
+                {% if plate.gcode_file %}
+                <a href="{{ plate.gcode_file.url }}" class="btn btn-sm btn-outline-secondary flex-fill" title="Download G-code"><i class="bi bi-download me-1"></i>G-code</a>
+                {% endif %}
+                {% if plate.gcode_file and perms.core.can_manage_print_queue %}
+                <a href="{% url 'core:printqueue_create' %}?plate={{ plate.pk }}" class="btn btn-sm btn-outline-success flex-fill" title="Add to Queue"><i class="bi bi-list-ol me-1"></i>Queue</a>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="col-lg-5">
+    <!-- Job Info -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-info-circle me-2"></i>Job Info</h5>
+      </div>
+      <div class="card-body">
+        <dl class="row mb-0">
+          <dt class="col-sm-5">Status</dt>
+          <dd class="col-sm-7">{{ job.get_status_display }}</dd>
+          <dt class="col-sm-5">Machine</dt>
+          <dd class="col-sm-7">
+            {% if job.machine_profile %}
+            <a href="{% url 'core:orcamachineprofile_detail' job.machine_profile.pk %}" class="text-decoration-none">{{ job.machine_profile.name }}</a>
+            {% else %}—{% endif %}
+          </dd>
+          <dt class="col-sm-5">Print Preset</dt>
+          <dd class="col-sm-7">
+            {% if effective_print_preset %}
+            <a href="{% url 'core:orcaprintpreset_detail' effective_print_preset.pk %}" class="text-decoration-none">{{ effective_print_preset.name }}</a>
+            {% else %}—{% endif %}
+          </dd>
+          <dt class="col-sm-5">Filament</dt>
+          <dd class="col-sm-7">
+            {% if spoolman_filament_name %}
+            {{ spoolman_filament_name }}
+            {% elif filament_profile %}
+            {{ filament_profile.name }}
+            {% else %}—{% endif %}
+          </dd>
+          {% if filament_profile %}
+          <dt class="col-sm-5">Filament Profile</dt>
+          <dd class="col-sm-7">
+            <a href="{% url 'core:orcafilamentprofile_detail' filament_profile.pk %}" class="text-decoration-none">{{ filament_profile.name }}</a>
+          </dd>
+          {% endif %}
+          <dt class="col-sm-5">Filament Usage</dt>
+          <dd class="col-sm-7">{% if job.filament_used_grams %}{{ job.filament_used_grams|floatformat:1 }} g{% else %}—{% endif %}</dd>
+          <dt class="col-sm-5">Print Time</dt>
+          <dd class="col-sm-7">{% if job.print_time_estimate %}{{ job.print_time_estimate|duration_format }}{% else %}—{% endif %}</dd>
+          <dt class="col-sm-5">Plates</dt>
+          <dd class="col-sm-7">{{ job.plate_count }}</dd>
+          <dt class="col-sm-5">Created</dt>
+          <dd class="col-sm-7">{{ job.created_at|timesince }} ago</dd>
+          {% if job.started_at %}
+          <dt class="col-sm-5">Started</dt>
+          <dd class="col-sm-7">{{ job.started_at|timesince }} ago</dd>
+          {% endif %}
+          {% if job.completed_at %}
+          <dt class="col-sm-5">Completed</dt>
+          <dd class="col-sm-7">{{ job.completed_at|timesince }} ago</dd>
+          {% endif %}
+        </dl>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-lightning me-2"></i>Actions</h5>
+      </div>
+      <div class="card-body d-grid gap-2">
+        {% if can_slice and perms.core.change_printjob %}
+        <form method="post" action="{% url 'core:printjob_slice' job.pk %}">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-primary w-100">
+            <i class="bi bi-scissors me-1"></i>Slice Job ({{ job.total_part_count }} parts)
+          </button>
+        </form>
+        {% elif job.status == 'draft' and missing_machine_profile %}
+        <div class="alert alert-warning mb-0">
+          <i class="bi bi-exclamation-triangle me-1"></i>
+          Please set a <strong>machine profile</strong> before slicing.
+          <a href="{% url 'core:printjob_update' job.pk %}" class="alert-link">Edit job</a>
+        </div>
+        {% elif job.status == 'draft' and not job_parts %}
+        <div class="alert alert-info mb-0">
+          <i class="bi bi-info-circle me-1"></i>
+          Add parts to this job first, then you can slice them.
+        </div>
+        {% endif %}
+
+        {% if can_reslice and perms.core.change_printjob %}
+        <form method="post" action="{% url 'core:printjob_slice' job.pk %}">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-outline-primary w-100" onclick="return confirm('Re-slice this job? Existing plates will be replaced.')">
+            <i class="bi bi-arrow-clockwise me-1"></i>Re-Slice Job
+          </button>
+        </form>
+        {% endif %}
+
+        {% if job.status == 'sliced' and perms.core.can_manage_print_queue %}
+        <a href="{% url 'core:printqueue_create' %}?plate={{ plates.first.pk }}" class="btn btn-success w-100">
+          <i class="bi bi-list-ol me-1"></i>Add to Print Queue
+        </a>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if job.notes %}
+    <div class="card">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-sticky me-2"></i>Notes</h5>
+      </div>
+      <div class="card-body">{{ job.notes|linebreaks }}</div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{% if job.status == 'slicing' %}
+<script>
+// Poll slicing status and refresh page when done
+(function() {
+  var pollInterval = setInterval(function() {
+    fetch('{% url "core:slice_job_status" job.pk %}')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.status !== 'slicing') {
+          clearInterval(pollInterval);
+          location.reload();
+        }
+      })
+      .catch(function() { /* ignore network errors */ });
+  }, 3000);
+})();
+</script>
+{% endif %}
+
+{% if plates %}
+<script src="https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gcode-preview@2.18.0/dist/gcode-preview.min.js"></script>
+<script>
+(function() {
+  "use strict";
+
+  // Detect dark mode
+  function isDarkMode() {
+    return document.documentElement.getAttribute("data-bs-theme") === "dark"
+      || window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+
+  function initPreview(canvas) {
+    var url = canvas.getAttribute("data-gcode-url");
+    if (!url) return;
+
+    var container = canvas.parentElement;
+    var loadingEl = container.querySelector(".gcode-loading");
+
+    // Set canvas size to match container
+    var rect = container.getBoundingClientRect();
+    canvas.width = rect.width * window.devicePixelRatio;
+    canvas.height = rect.height * window.devicePixelRatio;
+
+    var dark = isDarkMode();
+    var preview = GCodePreview.init({
+      canvas: canvas,
+      extrusionColor: dark ? "#44bbff" : "#007bff",
+      backgroundColor: dark ? "#212529" : "#f8f9fa",
+      buildVolume: { x: 256, y: 256, z: 256 },
+      initialCameraPosition: [0, 400, 450],
+      lineWidth: 2,
+      renderExtrusion: true,
+      renderTravel: false,
+    });
+
+    fetch(url)
+      .then(function(r) { return r.text(); })
+      .then(function(gcode) {
+        preview.processGCode(gcode);
+        if (loadingEl) loadingEl.style.display = "none";
+      })
+      .catch(function(err) {
+        console.error("G-code preview error:", err);
+        if (loadingEl) {
+          loadingEl.innerHTML = '<i class="bi bi-exclamation-triangle"></i> <small>Preview failed</small>';
+        }
+      });
+  }
+
+  // Use IntersectionObserver for lazy loading
+  var observer = new IntersectionObserver(function(entries) {
+    entries.forEach(function(entry) {
+      if (entry.isIntersecting) {
+        observer.unobserve(entry.target);
+        initPreview(entry.target);
+      }
+    });
+  }, { rootMargin: "200px" });
+
+  document.querySelectorAll(".gcode-preview-canvas").forEach(function(canvas) {
+    observer.observe(canvas);
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

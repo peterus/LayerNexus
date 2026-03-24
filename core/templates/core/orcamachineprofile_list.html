@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% load core_tags %}
+
+{% block title %}Machine Profiles — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="h3 mb-0"><i class="bi bi-cpu me-2"></i>Machine Profiles</h1>
+  {% if perms.core.can_manage_orca_profiles %}
+  <a href="{% url 'core:orcamachineprofile_import' %}" class="btn btn-primary">
+    <i class="bi bi-upload me-1"></i>Import Profile
+  </a>
+  {% endif %}
+</div>
+
+{% if profiles %}
+<div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
+  {% for profile in profiles %}
+  <div class="col">
+    <div class="card h-100 shadow-sm {% if not profile.is_resolved %}border-warning{% endif %}">
+      <div class="card-body">
+        <h5 class="card-title">
+          <i class="bi bi-{% if profile.is_resolved %}cpu{% else %}hourglass-split text-warning{% endif %} me-1"></i>
+          {{ profile.name }}
+        </h5>
+        {% if profile.description %}
+        <p class="card-text text-body-secondary small">{{ profile.description|markdown|striptags|truncatewords:20 }}</p>
+        {% endif %}
+        <div class="small text-body-secondary">
+          <div><i class="bi bi-tag me-1"></i>OrcaSlicer: {{ profile.orca_name }}</div>
+          {% if profile.is_resolved %}
+            {% if profile.first_nozzle_diameter %}
+            <div><i class="bi bi-bullseye me-1"></i>Nozzle: {{ profile.first_nozzle_diameter }} mm</div>
+            {% endif %}
+            {% if profile.printable_height %}
+            <div><i class="bi bi-arrows-vertical me-1"></i>Height: {{ profile.printable_height }} mm</div>
+            {% endif %}
+            {% if profile.bed_size_x and profile.bed_size_y %}
+            <div><i class="bi bi-bounding-box me-1"></i>Bed: {{ profile.bed_size_x|floatformat:0 }} × {{ profile.bed_size_y|floatformat:0 }} mm</div>
+            {% endif %}
+            {% if profile.gcode_flavor %}
+            <div><i class="bi bi-code-slash me-1"></i>{{ profile.gcode_flavor }}</div>
+            {% endif %}
+          {% else %}
+            <div class="text-warning">
+              <i class="bi bi-exclamation-triangle me-1"></i>Pending — needs parent: <strong>{{ profile.inherits_name }}</strong>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="card-footer d-flex gap-2">
+        {% if profile.is_resolved %}
+        <a href="{% url 'core:orcamachineprofile_detail' profile.pk %}" class="btn btn-sm btn-outline-primary">
+          <i class="bi bi-eye me-1"></i>Details
+        </a>
+        {% endif %}
+        {% if perms.core.can_manage_orca_profiles %}
+        <a href="{% url 'core:orcamachineprofile_delete' profile.pk %}" class="btn btn-sm btn-outline-danger">
+          <i class="bi bi-trash me-1"></i>Delete
+        </a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="text-center py-5">
+  <i class="bi bi-cpu display-1 text-body-secondary"></i>
+  <h4 class="mt-3">No machine profiles yet</h4>
+  <p class="text-body-secondary">
+    Import an OrcaSlicer machine profile JSON file to get started.<br>
+    The system will guide you through uploading any required parent profiles.
+  </p>
+  {% if perms.core.can_manage_orca_profiles %}
+  <a href="{% url 'core:orcamachineprofile_import' %}" class="btn btn-primary">
+    <i class="bi bi-upload me-1"></i>Import Profile
+  </a>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% load core_tags %}
+{% block title %}Cost Estimate: {{ project.name }} — {{ APP_NAME }}{% endblock %}
+{% block content %}
+<nav aria-label="breadcrumb"><ol class="breadcrumb">
+  <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
+  {% for ancestor in ancestors %}
+  <li class="breadcrumb-item"><a href="{% url 'core:project_detail' ancestor.pk %}">{{ ancestor.name }}</a></li>
+  {% endfor %}
+  <li class="breadcrumb-item"><a href="{% url 'core:project_detail' project.pk %}">{{ project.name }}</a></li>
+  <li class="breadcrumb-item active">Cost Estimate</li>
+</ol></nav>
+<h1 class="h3 mb-4"><i class="bi bi-currency-dollar me-2"></i>Cost Estimate: {{ project.name }}</h1>
+
+<div class="alert alert-info"><i class="bi bi-info-circle me-1"></i>Cost estimates require parts to have filament and time data from slicing, and printers to have a cost profile configured.</div>
+
+<div class="card mb-4">
+  <div class="card-header"><h5 class="mb-0">Print Cost: <span class="text-success">{{ total_cost }}&thinsp;€</span></h5></div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle">
+        <thead><tr><th>Part</th><th>Qty</th><th>Filament</th><th>Electricity</th><th>Depreciation</th><th>Maintenance</th><th>Total</th></tr></thead>
+        <tbody>
+        {% for item in cost_breakdown %}
+        <tr>
+          <td>{{ item.part.name }}</td>
+          <td>{{ item.part.quantity }}</td>
+          {% if item.cost %}
+          <td>{{ item.cost.filament_cost }}</td>
+          <td>{{ item.cost.electricity_cost }}</td>
+          <td>{{ item.cost.depreciation_cost }}</td>
+          <td>{{ item.cost.maintenance_cost }}</td>
+          <td><strong>{{ item.cost.total_cost }}</strong></td>
+          {% else %}
+          <td colspan="5" class="text-body-secondary">Not enough data — slice the part and configure a cost profile</td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% if hardware_requirements %}
+<div class="card mb-4">
+  <div class="card-header"><h5 class="mb-0"><i class="bi bi-nut me-2"></i>Hardware Cost: <span class="text-success">{{ total_hardware_cost|floatformat:2 }}&thinsp;€</span></h5></div>
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-hover align-middle">
+        <thead><tr><th>Category</th><th>Name</th><th class="text-center">Qty</th><th class="text-end">Unit Price</th><th class="text-end">Total</th></tr></thead>
+        <tbody>
+        {% for req in hardware_requirements %}
+        <tr>
+          <td><span class="badge bg-secondary bg-opacity-25 text-body">{{ req.hardware_part.get_category_display }}</span></td>
+          <td>{{ req.hardware_part.name }}</td>
+          <td class="text-center">{{ req.total_quantity }}</td>
+          <td class="text-end">{% if req.hardware_part.unit_price != None %}{{ req.hardware_part.unit_price }}&thinsp;€{% else %}<span class="text-body-secondary">—</span>{% endif %}</td>
+          <td class="text-end">{% if req.total_price != None %}<strong>{{ req.total_price|floatformat:2 }}&thinsp;€</strong>{% else %}<span class="text-body-secondary">—</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card mb-4">
+  <div class="card-body text-center">
+    <h4>Grand Total: <span class="text-success fw-bold">{{ grand_total|floatformat:2 }}&thinsp;€</span></h4>
+    <small class="text-body-secondary">Print cost ({{ total_cost }}&thinsp;€) + Hardware ({{ total_hardware_cost|floatformat:2 }}&thinsp;€)</small>
+  </div>
+</div>
+
+<a href="{% url 'core:project_detail' project.pk %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back to Project</a>
+{% endblock %}

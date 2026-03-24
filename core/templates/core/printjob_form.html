@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% load core_tags %}
+{% block title %}{% if form.instance.pk %}Edit Print Job{% else %}New Print Job{% endif %} — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'core:printjob_list' %}">Print Jobs</a></li>
+    <li class="breadcrumb-item active">{% if form.instance.pk %}Edit Print Job{% else %}New Print Job{% endif %}</li>
+  </ol>
+</nav>
+
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="card shadow-sm">
+      <div class="card-header">
+        <h4 class="mb-0">
+          <i class="bi bi-{% if form.instance.pk %}pencil{% else %}plus-lg{% endif %} me-2"></i>
+          {% if form.instance.pk %}Edit Print Job{% else %}Create New Print Job{% endif %}
+        </h4>
+      </div>
+      <div class="card-body">
+        {% if not form.instance.pk %}
+        <div class="alert alert-info">
+          <i class="bi bi-info-circle me-1"></i>
+          Create a draft job first, then add parts from their detail pages, and finally trigger slicing.
+        </div>
+        {% endif %}
+        <form method="post" novalidate>
+          {% csrf_token %}
+          {% for field in form %}
+          <div class="mb-3">
+            <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}{% if field.field.required %} <span class="text-danger">*</span>{% endif %}</label>
+            {% if 'Select' in field|widget_class %}
+            <select name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-select {% if field.errors %}is-invalid{% endif %}">
+              {% for val, label in field.field.choices %}
+              <option value="{{ val }}" {% if field.value|stringformat:"s" == val|stringformat:"s" %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+            {% elif 'Textarea' in field|widget_class %}
+            <textarea name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-control {% if field.errors %}is-invalid{% endif %}" rows="{{ field.field.widget.attrs.rows|default:3 }}">{{ field.value|default:'' }}</textarea>
+            {% else %}
+            <input type="{{ field.field.widget.input_type|default:'text' }}" name="{{ field.html_name }}" id="{{ field.id_for_label }}" value="{{ field.value|default:'' }}" class="form-control {% if field.errors %}is-invalid{% endif %}" {% if field.field.required %}required{% endif %}>
+            {% endif %}
+            {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+            {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+          </div>
+          {% endfor %}
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i>{% if form.instance.pk %}Update{% else %}Create Draft{% endif %}</button>
+            {% if not form.instance.pk %}<button type="submit" name="_save_and_add_another" class="btn btn-outline-primary"><i class="bi bi-plus-circle me-1"></i>Save &amp; Add Another</button>{% endif %}
+            <a href="{% url 'core:printjob_list' %}" class="btn btn-outline-secondary">Cancel</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
