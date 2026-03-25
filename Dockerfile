@@ -4,7 +4,8 @@
 FROM python:3.14-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    DATABASE_PATH=/app/data/db.sqlite3
 
 WORKDIR /app
 

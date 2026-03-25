@@ -17,6 +17,7 @@ services:
     restart: unless-stopped
     depends_on:
       - orcaslicer
+      - spoolman
 
   orcaslicer:
     image: ghcr.io/afkfelix/orca-slicer-api:latest-orca2.3.1
@@ -26,7 +27,16 @@ services:
       - orcaslicer_data:/app/data
     restart: unless-stopped
 
+  spoolman:
+    image: ghcr.io/donkie/spoolman:latest
+    ports:
+      - "7912:8000"
+    volumes:
+      - spoolman_data:/home/app/.local/share/spoolman
+    restart: unless-stopped
+
 volumes:
   media_data:
   db_data:
   orcaslicer_data:
+  spoolman_data:
