@@ -71,11 +71,8 @@ services:
     volumes:
       - layernexus_data:/app/data
       - layernexus_media:/app/media
-    env_file:
-      - .env
     environment:
-      - ORCASLICER_API_URL=http://orcaslicer:3000
-      - SPOOLMAN_URL=http://spoolman:8000
+      - DJANGO_SECRET_KEY=your-long-random-secret-key
     restart: unless-stopped
     depends_on:
       - orcaslicer
@@ -99,14 +96,8 @@ volumes:
   spoolman_data:
 ```
 
-With a `.env` file:
-
-```bash
-DJANGO_SECRET_KEY=your-long-random-secret-key
-DEBUG=0
-ALLOWED_HOSTS=localhost,127.0.0.1
-ALLOW_REGISTRATION=true
-```
+!!! info "Sensible Defaults"
+    The Docker image already sets `ORCASLICER_API_URL=http://orcaslicer:3000` and `SPOOLMAN_URL=http://spoolman:8000` by default. As long as you name your services `orcaslicer` and `spoolman`, no extra configuration is needed.
 
 !!! note "Moonraker"
     Moonraker runs on your 3D printer itself, not as a Docker container alongside LayerNexus. You configure the Moonraker URL (e.g., `http://192.168.1.100:7125`) in the LayerNexus printer profile settings. See [Klipper / Moonraker](../integrations/moonraker.md).
@@ -115,7 +106,7 @@ ALLOW_REGISTRATION=true
 
 ## Running Without Docker Compose
 
-You can also run LayerNexus with a single `docker run` command, though you won't get OrcaSlicer integration this way:
+You can also run LayerNexus with a single `docker run` command, though you won't get OrcaSlicer or Spoolman integration this way:
 
 ```bash
 docker run -d \
@@ -130,7 +121,7 @@ docker run -d \
 ```
 
 !!! warning
-    Without the OrcaSlicer container, slicing features will not work. Use Docker Compose for the full experience.
+    Without the OrcaSlicer and Spoolman containers, slicing and filament tracking will not work. Use Docker Compose for the full experience.
 
 ---
 

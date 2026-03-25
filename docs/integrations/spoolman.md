@@ -8,16 +8,13 @@
 
 ### 1. Add Spoolman to Your Docker Compose
 
-Add the Spoolman service to your `docker-compose.yml`:
+If you haven't already (the [Quick Start](../quick-start.md) includes Spoolman by default), add the Spoolman service to your `docker-compose.yml`:
 
 ```yaml
 services:
   web:
     image: ghcr.io/peterus/layernexus:latest
     # ... your existing config ...
-    environment:
-      - SPOOLMAN_URL=http://spoolman:8000
-      # ... other environment variables ...
     depends_on:
       - spoolman
 
@@ -33,7 +30,7 @@ volumes:
   spoolman_data:
 ```
 
-For a complete full-stack example, see [Docker Details](../advanced/docker.md).
+The Docker image already defaults `SPOOLMAN_URL` to `http://spoolman:8000`, so as long as your Spoolman service is named `spoolman`, no extra configuration is needed.
 
 ### 2. Already Running Spoolman?
 
@@ -42,9 +39,6 @@ If you have Spoolman running elsewhere on your network, just set the environment
 ```bash
 SPOOLMAN_URL=http://192.168.1.50:7912
 ```
-
-!!! note
-    When `SPOOLMAN_URL` is empty or not set, Spoolman integration is disabled and filament selection won't be available.
 
 ---
 

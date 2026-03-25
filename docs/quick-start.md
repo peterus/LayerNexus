@@ -40,24 +40,34 @@ services:
       - layernexus_media:/app/media
     environment:
       - DJANGO_SECRET_KEY=change-me-to-something-random
-      - ALLOWED_HOSTS=localhost,127.0.0.1
-      - DEBUG=0
-      - ORCASLICER_API_URL=http://orcaslicer:3000
     restart: unless-stopped
     depends_on:
       - orcaslicer
+      - spoolman
 
   orcaslicer:
     image: ghcr.io/afkfelix/orca-slicer-api:latest-orca2.3.1
     restart: unless-stopped
 
+  spoolman:
+    image: ghcr.io/donkie/spoolman:latest
+    ports:
+      - "7912:8000"
+    volumes:
+      - spoolman_data:/home/app/.local/share/spoolman
+    restart: unless-stopped
+
 volumes:
   layernexus_data:
   layernexus_media:
+  spoolman_data:
 ```
 
 !!! tip "Secret Key"
     Replace `change-me-to-something-random` with any long, random string. This is used to keep your sessions secure. A password generator works great for this.
+
+!!! info "Sensible Defaults"
+    The Docker image already includes sensible defaults for `ALLOWED_HOSTS`, `ORCASLICER_API_URL`, `SPOOLMAN_URL`, and more. You only need to set `DJANGO_SECRET_KEY`. See [Configuration](configuration.md) for all available settings.
 
 ---
 

@@ -4,7 +4,8 @@
 FROM python:3.14-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    DATABASE_PATH=/app/data/db.sqlite3
 
 WORKDIR /app
 
@@ -31,6 +32,12 @@ FROM base AS release
 
 ARG APP_VERSION=dev
 ENV APP_VERSION=${APP_VERSION}
+
+# Production-ready defaults — override in docker-compose.yml or .env as needed
+ENV DEBUG=0 \
+    ALLOWED_HOSTS=localhost,127.0.0.1 \
+    ORCASLICER_API_URL=http://orcaslicer:3000 \
+    SPOOLMAN_URL=http://spoolman:8000
 
 LABEL org.opencontainers.image.title="LayerNexus" \
       org.opencontainers.image.description="The control center for your 3D print workflow" \

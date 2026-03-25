@@ -2,17 +2,17 @@
 
 LayerNexus is configured through environment variables. You set these in your `docker-compose.yml` file (under the `environment:` section) or in a separate `.env` file.
 
+!!! info "Docker Image Defaults"
+    The Docker image ships with sensible defaults for most settings. For a basic local setup, you only need to set `DJANGO_SECRET_KEY`. Override other values only when needed (e.g., when exposing LayerNexus to the internet).
+
 ---
 
 ## Essential Settings
 
-These are the settings you should always configure:
-
-| Variable | What It Does | Default |
+| Variable | What It Does | Docker Default |
 |---|---|---|
-| `DJANGO_SECRET_KEY` | A random string used to secure sessions and forms. **Keep it secret, keep it unique.** | Auto-generated (insecure) |
-| `ALLOWED_HOSTS` | The hostnames your server responds to, separated by commas. | `localhost,127.0.0.1` |
-| `DEBUG` | Set to `0` for normal use. Only set to `1` if you're troubleshooting. | `1` |
+| `DJANGO_SECRET_KEY` | A random string used to secure sessions and forms. **Keep it secret, keep it unique.** | Insecure placeholder — **always change this** |
+| `ALLOWED_HOSTS` | The hostnames your server responds to, separated by commas. Add your domain if you access LayerNexus from a different machine. | `localhost,127.0.0.1` |
 | `CSRF_TRUSTED_ORIGINS` | Required when using a reverse proxy with HTTPS. Set to your full URL (e.g., `https://layernexus.example.com`). | _(empty)_ |
 
 !!! warning "Always Change the Secret Key"
@@ -22,12 +22,15 @@ These are the settings you should always configure:
 
 ## Optional Settings
 
-| Variable | What It Does | Default |
+These have sensible defaults in the Docker image and usually don't need to be changed:
+
+| Variable | What It Does | Docker Default |
 |---|---|---|
-| `ORCASLICER_API_URL` | Where to find the OrcaSlicer API for slicing. If you use the docker-compose from the [Quick Start](quick-start.md), this is set automatically. | `http://localhost:3000` |
-| `SPOOLMAN_URL` | URL of your Spoolman instance for filament tracking. Leave empty to disable. | _(empty — disabled)_ |
+| `DEBUG` | Set to `1` to see detailed error pages for troubleshooting. | `0` (off) |
+| `ORCASLICER_API_URL` | Where to find the OrcaSlicer API for slicing. | `http://orcaslicer:3000` |
+| `SPOOLMAN_URL` | Where to find Spoolman for filament tracking. | `http://spoolman:8000` |
 | `ALLOW_REGISTRATION` | Whether new users can create accounts themselves. Set to `true` or `false`. | `true` |
-| `LOG_LEVEL` | How much detail to log. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`. | `INFO` (or `DEBUG` when `DEBUG=1`) |
+| `LOG_LEVEL` | How much detail to log. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`. | `INFO` |
 | `DATABASE_PATH` | Where to store the database file. You usually don't need to change this. | `/app/data/db.sqlite3` |
 
 ---
@@ -37,20 +40,14 @@ These are the settings you should always configure:
 Instead of listing every variable in `docker-compose.yml`, you can create a `.env` file in the same folder:
 
 ```bash
-# Essential
+# Required
 DJANGO_SECRET_KEY=your-long-random-secret-key-here
-DEBUG=0
-ALLOWED_HOSTS=localhost,127.0.0.1
 
-# If using a reverse proxy with HTTPS
+# Only needed if you access LayerNexus from other machines
+# ALLOWED_HOSTS=localhost,127.0.0.1,192.168.1.100
+
+# Only needed if using a reverse proxy with HTTPS
 # CSRF_TRUSTED_ORIGINS=https://layernexus.example.com
-
-# Integrations
-ORCASLICER_API_URL=http://orcaslicer:3000
-# SPOOLMAN_URL=http://spoolman:8000
-
-# User registration
-ALLOW_REGISTRATION=true
 ```
 
 Then reference it in your `docker-compose.yml`:
