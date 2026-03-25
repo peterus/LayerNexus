@@ -51,6 +51,8 @@ markdown_extensions:
   - pymdownx.emoji:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.tasklist:
+      custom_checkbox: true
 
 nav:
   - Home: index.md
@@ -70,6 +72,5 @@ nav:
       - Backup & Restore: advanced/backup.md
       - Docker Details: advanced/docker.md
   - Development:
-      - Building from Source: development/building.md
-      - Contributing: development/contributing.md
+      - Development Guide: development/contributing.md
       - Architecture: development/architecture.md

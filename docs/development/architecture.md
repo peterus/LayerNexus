@@ -253,5 +253,4 @@ GitHub Actions runs on every push to `main` and on pull requests:
 
 ## Next Steps
 
-- [Building from source](building.md)
-- [Contributing guide](contributing.md)
+- [Development Guide](contributing.md)

@@ -1,16 +1,20 @@
-# Contributing
+# Development Guide
 
-Contributions to LayerNexus are welcome! This guide covers the development setup, code style, and contribution workflow.
+This guide covers everything you need to contribute to LayerNexus — from setting up your development environment to submitting a pull request.
 
-## Development Setup
+If you just want to **run** LayerNexus, see the [Quick Start](../quick-start.md).
 
-### Prerequisites
+---
+
+## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/)
-- Python 3.10+ (for running linters locally)
-- Git
+- [Git](https://git-scm.com/)
+- Python 3.10+ (optional, for running linters locally)
 
-### Getting Started
+---
+
+## Getting Started
 
 ```bash
 # Clone the repository
@@ -23,7 +27,86 @@ docker compose up -d
 # The app is now running at http://localhost:8000
 ```
 
-The development `docker-compose.yml` mounts the project directory as a volume, so code changes are immediately reflected. Gunicorn runs with `--reload` for automatic reloading.
+The `docker-compose.yml` mounts the project directory as a volume, so code changes are immediately reflected. Gunicorn runs with `--reload` for automatic reloading.
+
+| Service | Description | Port |
+|---|---|---|
+| **web** | LayerNexus (built from local source, auto-reloads on code changes) | `8000` |
+| **orcaslicer** | OrcaSlicer API | `3000` |
+
+---
+
+## Building Docker Images
+
+### Release Build
+
+```bash
+docker build --target release -t layernexus .
+```
+
+This builds a production-ready image with static files baked in.
+
+### Debug Build
+
+```bash
+docker build --target debug -t layernexus:debug .
+```
+
+The debug image includes:
+
+- `debugpy` for remote debugging on port `5678`
+- `django-debug-toolbar`
+- Django's development server with auto-reload
+- `DEBUG=1` by default
+
+### Build Arguments
+
+| Argument | Description | Default |
+|---|---|---|
+| `APP_VERSION` | Version string baked into the image | `dev` |
+
+---
+
+## Debug Docker Compose
+
+For development with remote debugging support, build with the `debug` target:
+
+```yaml
+services:
+  web:
+    build:
+      context: .
+      target: debug
+    ports:
+      - "8000:8000"
+      - "5678:5678"
+    volumes:
+      - .:/app
+      - media_data:/app/media
+      - db_data:/app/data
+    environment:
+      - DJANGO_SECRET_KEY=dev-secret-key
+      - DEBUG=1
+      - ORCASLICER_API_URL=http://orcaslicer:3000
+    restart: unless-stopped
+    depends_on:
+      - orcaslicer
+
+  orcaslicer:
+    image: ghcr.io/afkfelix/orca-slicer-api:latest-orca2.3.1
+    ports:
+      - "3000:3000"
+    volumes:
+      - orcaslicer_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  media_data:
+  db_data:
+  orcaslicer_data:
+```
+
+Attach your IDE debugger (VS Code or PyCharm) to port `5678` for step-through debugging.
 
 ---
 
@@ -61,14 +144,11 @@ ruff check --fix .
 ruff format .
 ```
 
-### Ruff Configuration
-
-The Ruff configuration is in `pyproject.toml`:
+Ruff is configured in `pyproject.toml`:
 
 - **Line length:** 120 characters
 - **Target version:** Python 3.10
 - **Excluded:** `core/migrations/`
-- **Enabled rules:** pycodestyle, pyflakes, isort, flake8-bugbear, flake8-comprehensions, pyupgrade, flake8-simplify, flake8-django, flake8-bandit (security), flake8-print
 
 ---
 
@@ -186,7 +266,7 @@ All checks must pass before a PR can be merged.
 
 ---
 
-## Anti-Patterns to Avoid
+## Anti-Patterns
 
 | ❌ Avoid | ✅ Use Instead |
 |---|---|
@@ -204,5 +284,4 @@ All checks must pass before a PR can be merged.
 
 ## Next Steps
 
-- [Contributing guide](contributing.md)
 - [Architecture overview](architecture.md)
