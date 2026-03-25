@@ -168,4 +168,4 @@ Costs are aggregated recursively across sub-projects, respecting quantity multip
 
 - [Print jobs and queue management](printing.md)
 - [User roles and permissions](roles.md)
-- [OrcaSlicer integration for slicing](../integrations/orcaslicer.md)
+- [OrcaSlicer integration](../integrations/orcaslicer.md)

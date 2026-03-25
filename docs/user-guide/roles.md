@@ -1,108 +1,51 @@
-# User Roles & Permissions
+# Roles & Permissions
 
-LayerNexus uses a group-based **Role-Based Access Control (RBAC)** system with three built-in roles. Every user is assigned exactly one role that determines what they can do.
+LayerNexus has three built-in roles that control what each user can do. Every user gets exactly one role.
 
 ## Roles Overview
 
-| Role | Django Group | Description |
-|---|---|---|
-| **Admin** | `Admin` | Full access to all features, including user management |
-| **Operator** | `Operator` | Printer control, queue management, and slicer profile management |
-| **Designer** | `Designer` | Project and part management, print queue access |
+| Role | Who It's For |
+|---|---|
+| **Admin** | The person who runs LayerNexus — full access to everything, including managing other users |
+| **Operator** | People who manage the printers — can add printers, upload G-code, start prints, and manage slicer profiles |
+| **Designer** | People who design the parts — can create projects, upload STL files, and add jobs to the print queue |
+
+All roles can **view** everything (projects, parts, printers, queue). The differences are in what each role can **change**.
 
 ---
 
-## Role Assignment
+## How Roles Are Assigned
 
-### First User
-
-The **first user** to register is automatically assigned the **Admin** role with full permissions.
-
-### Subsequent Users
-
-All subsequent self-registered users receive the **Designer** role by default.
-
-### Changing Roles
-
-Admins can change any user's role through the **User Management** section:
-
-1. Go to **User Management** in the navigation bar (Admin only).
-2. Select the user.
-3. Change their role.
-4. Click **Save**.
+- The **first user** who registers automatically becomes an **Admin**.
+- Everyone who registers after that gets the **Designer** role.
+- Admins can change any user's role through the **User Management** page.
 
 !!! tip
-    You can disable self-registration by setting `ALLOW_REGISTRATION=false` in the environment variables. See [Configuration](../getting-started/configuration.md).
+    You can disable self-registration by setting `ALLOW_REGISTRATION=false` in your [configuration](../configuration.md). This is useful if you want to control exactly who has access.
 
 ---
 
-## Detailed Permissions
-
-### Admin
-
-Admins have **all permissions**, including:
-
-| Permission | Description |
-|---|---|
-| `auth.change_user` | Manage user accounts and roles |
-| `can_manage_projects` | Create, edit, and delete projects and parts |
-| `can_manage_printers` | Create, edit, and delete printer profiles and cost profiles |
-| `can_control_printer` | Upload G-code, start and cancel prints |
-| `can_manage_print_queue` | Add jobs to the print queue |
-| `can_dequeue_job` | Remove jobs from the print queue |
-| `can_manage_orca_profiles` | Import and delete OrcaSlicer profiles |
-| `can_manage_filament_mappings` | Manage Spoolman filament mappings |
-
-### Operator
-
-Operators focus on printer operations:
-
-| Permission | Description |
-|---|---|
-| `can_manage_printers` | Create, edit, and delete printer profiles and cost profiles |
-| `can_control_printer` | Upload G-code, start and cancel prints |
-| `can_manage_print_queue` | Add jobs to the print queue |
-| `can_dequeue_job` | Remove jobs from the print queue |
-| `can_manage_orca_profiles` | Import and delete OrcaSlicer profiles |
-| `can_manage_filament_mappings` | Manage Spoolman filament mappings |
-
-### Designer
-
-Designers focus on project design and management:
-
-| Permission | Description |
-|---|---|
-| `can_manage_projects` | Create, edit, and delete projects and parts |
-| `can_manage_print_queue` | Add jobs to the print queue |
-| `can_dequeue_job` | Remove jobs from the print queue |
-
----
-
-## Permission Matrix
+## What Each Role Can Do
 
 | Action | Admin | Operator | Designer |
 |---|---|---|---|
-| View projects & parts | ✅ | ✅ | ✅ |
-| Create/edit/delete projects | ✅ | ❌ | ✅ |
-| Create/edit/delete parts | ✅ | ❌ | ✅ |
-| Manage project documents | ✅ | ❌ | ✅ |
-| Manage hardware catalog | ✅ | ❌ | ✅ |
-| Create/edit/delete printers | ✅ | ✅ | ❌ |
-| Upload G-code / start prints | ✅ | ✅ | ❌ |
-| Cancel prints | ✅ | ✅ | ❌ |
-| Manage print queue | ✅ | ✅ | ✅ |
-| Import OrcaSlicer profiles | ✅ | ✅ | ❌ |
-| Manage filament mappings | ✅ | ✅ | ❌ |
-| Manage users | ✅ | ❌ | ❌ |
+| View projects, parts, printers | ✅ | ✅ | ✅ |
+| Create/edit/delete projects & parts | ✅ | | ✅ |
+| Manage project documents & hardware | ✅ | | ✅ |
+| Add/remove printers | ✅ | ✅ | |
+| Upload G-code & start/cancel prints | ✅ | ✅ | |
+| Import OrcaSlicer profiles | ✅ | ✅ | |
+| Manage filament mappings | ✅ | ✅ | |
+| Add/remove jobs from the print queue | ✅ | ✅ | ✅ |
+| Manage other users | ✅ | | |
 
 ---
 
-## Access Control Behavior
+## How It Works in Practice
 
-- **Unauthenticated users** are redirected to the login page.
-- **Authenticated users without permission** receive a `403 Forbidden` error. They are not redirected — this prevents confusion about why an action failed.
-- **All list and detail views** require authentication (`LoginRequiredMixin`) but no specific role.
-- **All write/delete operations** require the appropriate role-based permission.
+- **Can't see a button?** Your role probably doesn't allow that action. Ask an Admin to change your role if needed.
+- **Getting a "403 Forbidden" error?** You're logged in but your role doesn't have permission for that action.
+- **Not logged in?** You'll be redirected to the login page.
 
 ---
 

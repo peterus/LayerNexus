@@ -204,5 +204,5 @@ All checks must pass before a PR can be merged.
 
 ## Next Steps
 
-- [Technical architecture overview](architecture.md)
-- [User roles and permissions](../user-guide/roles.md)
+- [Contributing guide](contributing.md)
+- [Architecture overview](architecture.md)

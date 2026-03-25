@@ -2,6 +2,21 @@
 
 This page describes the internal architecture of LayerNexus for contributors and developers.
 
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| **Backend** | Django 6.0+ (Python 3.10+) |
+| **Frontend** | Bootstrap 5.3 with light/dark mode |
+| **Database** | SQLite |
+| **3D Viewer** | Three.js |
+| **Static Files** | WhiteNoise with compressed manifest storage |
+| **Deployment** | Docker + Docker Compose, Gunicorn |
+| **CI/CD** | GitHub Actions |
+| **External Services** | OrcaSlicer API, Klipper/Moonraker, Spoolman |
+
+---
+
 ## Package Structure
 
 ```
@@ -238,5 +253,5 @@ GitHub Actions runs on every push to `main` and on pull requests:
 
 ## Next Steps
 
+- [Building from source](building.md)
 - [Contributing guide](contributing.md)
-- [User roles and permissions](../user-guide/roles.md)

@@ -1,122 +1,80 @@
 # Klipper / Moonraker
 
-LayerNexus integrates with [Moonraker](https://github.com/Arksine/moonraker) — the API server for [Klipper](https://www.klipper3d.org/) — to upload G-code files and control 3D printers directly from the web interface.
-
-## What is Moonraker?
-
-Moonraker is a web API that sits alongside Klipper on your 3D printer. It exposes a REST API and WebSocket interface for:
-
-- Uploading G-code files
-- Starting, pausing, and canceling prints
-- Monitoring printer status (temperatures, position, progress)
-- Managing files on the printer
-
-LayerNexus communicates with Moonraker to provide seamless printer control from the project management interface.
+LayerNexus connects to your Klipper-based 3D printers through [Moonraker](https://github.com/Arksine/moonraker) — the API that runs alongside Klipper on your printer. This lets you upload G-code, start prints, and track progress right from LayerNexus.
 
 ---
 
-## Setting Up Printer Profiles
-
-To connect a printer to LayerNexus:
+## Adding a Printer
 
 1. Go to **Printers** in the navigation bar.
 2. Click **Add Printer**.
-3. Fill in the printer details:
+3. Fill in:
 
-| Field | Description | Example |
+| Field | What to Enter | Example |
 |---|---|---|
 | **Name** | A friendly name for the printer | `Voron 2.4 #1` |
-| **Moonraker URL** | The URL where Moonraker is accessible | `http://192.168.1.100:7125` |
-| **API Key** | Moonraker API key (if authentication is enabled) | _(optional)_ |
+| **Moonraker URL** | The URL where Moonraker is running | `http://192.168.1.100:7125` |
+| **API Key** | Only needed if your Moonraker requires authentication | _(leave empty if not needed)_ |
 
 4. Click **Save**.
 
-!!! important "Network Connectivity"
-    LayerNexus (or the Docker container running it) must be able to reach the Moonraker URL over your network. If running in Docker, ensure the container can access your local network. You may need to use `host` networking or configure Docker network settings.
-
----
-
-## Moonraker URL and API Key
-
 ### Finding Your Moonraker URL
 
-Moonraker typically runs on port `7125` on the same host as Klipper:
+Moonraker usually runs on port `7125` on the same device as Klipper. You can test if it's reachable by opening this in your browser:
 
 ```
-http://<printer-ip>:7125
+http://<your-printer-ip>:7125/server/info
 ```
 
-You can verify connectivity by visiting `http://<printer-ip>:7125/server/info` in your browser — it should return a JSON response with server information.
+If you see a JSON response, it's working.
 
-### API Key Authentication
-
-If your Moonraker instance requires authentication:
-
-1. Find the API key in Moonraker's configuration or web interface (e.g., Mainsail or Fluidd settings).
-2. Enter it in the **API Key** field when creating the printer profile in LayerNexus.
-
-!!! tip
-    For printers on a trusted local network, you can configure Moonraker to allow unauthenticated access from specific IP ranges using its `[authorization]` configuration section.
+!!! important "Network Access"
+    LayerNexus needs to be able to reach your printer's IP address. If LayerNexus runs in Docker, make sure the container can access your local network. On most setups this works out of the box.
 
 ---
 
-## G-code Upload
+## Printing Workflow
 
-After slicing a part (see [OrcaSlicer Integration](orcaslicer.md)), you can upload the resulting G-code to a printer:
+Once you have a printer set up and a part sliced (see [OrcaSlicer](orcaslicer.md)):
 
-1. Open the part detail page with a sliced G-code file.
-2. Click **Upload to Printer**.
-3. Select the target printer from the dropdown.
-4. The G-code file is uploaded to Moonraker's file storage.
+1. Open the part or print job detail page.
+2. Click **Upload to Printer** — the G-code file is sent to your printer.
+3. Click **Start Print** — the printer starts printing.
 
----
-
-## Print Control
-
-Once G-code is uploaded to a printer, you can:
-
-- **Start Print** — Begin printing the uploaded file
-- **Cancel Print** — Cancel a running print job
-
-Print status is tracked in LayerNexus and updated from Moonraker.
+You can also **cancel** a running print from LayerNexus.
 
 ---
 
-## Status Monitoring
+## Print Status
 
-LayerNexus monitors print status from Moonraker, tracking jobs through their lifecycle:
+LayerNexus tracks each print job through its lifecycle:
 
-| Status | Description |
+| Status | Meaning |
 |---|---|
 | **Pending** | Job created, not yet started |
 | **Printing** | Currently printing |
-| **Completed** | Print finished successfully |
+| **Completed** | Finished successfully |
 | **Failed** | Print failed or was cancelled |
 
 ---
 
 ## Troubleshooting
 
-### Cannot Connect to Moonraker
+**Can't connect to the printer?**
 
-- Verify the Moonraker URL is correct and accessible from the LayerNexus server/container.
-- Check that Moonraker is running: `curl http://<printer-ip>:7125/server/info`
-- If running LayerNexus in Docker, ensure the container can reach the printer's IP address.
+- Double-check the Moonraker URL in the printer profile.
+- Test connectivity: open `http://<printer-ip>:7125/server/info` in your browser.
+- Make sure no firewall is blocking port `7125`.
+- If LayerNexus runs in Docker, verify the container can reach your local network.
 
-### Upload Fails
+**Upload fails?**
 
-- Check that Moonraker's file upload endpoint is accessible.
-- Verify the API key (if authentication is enabled).
-- Check Moonraker logs for error details.
-
-### Connection Timeout
-
-- Ensure no firewall is blocking port `7125` between LayerNexus and the printer.
-- For Docker, verify network configuration allows outbound connections to your local network.
+- Check that Moonraker is running on the printer.
+- Verify the API key if authentication is enabled.
 
 ---
 
 ## Next Steps
 
 - [Track filament with Spoolman](spoolman.md)
-- [Manage print queue](../user-guide/printing.md)
+- [Manage the print queue](../user-guide/printing.md)

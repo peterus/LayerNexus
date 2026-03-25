@@ -54,23 +54,22 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Getting Started:
-      - Installation: getting-started/installation.md
-      - Configuration: getting-started/configuration.md
-      - First Steps: getting-started/first-steps.md
-  - Deployment:
-      - Docker Image: deployment/docker.md
-      - Docker Compose: deployment/docker-compose.md
-      - Reverse Proxy: deployment/reverse-proxy.md
-      - Backup & Restore: deployment/backup.md
+  - Quick Start: quick-start.md
+  - Configuration: configuration.md
+  - User Guide:
+      - First Steps: user-guide/first-steps.md
+      - Projects & Sub-Projects: user-guide/projects.md
+      - Print Jobs & Queue: user-guide/printing.md
+      - Roles & Permissions: user-guide/roles.md
   - Integrations:
       - OrcaSlicer: integrations/orcaslicer.md
       - Klipper / Moonraker: integrations/moonraker.md
       - Spoolman: integrations/spoolman.md
-  - User Guide:
-      - Roles & Permissions: user-guide/roles.md
-      - Projects & Sub-Projects: user-guide/projects.md
-      - Print Jobs & Queue: user-guide/printing.md
+  - Advanced:
+      - HTTPS & Reverse Proxy: advanced/reverse-proxy.md
+      - Backup & Restore: advanced/backup.md
+      - Docker Details: advanced/docker.md
   - Development:
+      - Building from Source: development/building.md
       - Contributing: development/contributing.md
       - Architecture: development/architecture.md
