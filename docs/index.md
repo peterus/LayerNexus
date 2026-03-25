@@ -17,7 +17,7 @@ LayerNexus connects to the tools you already use: [OrcaSlicer](https://github.co
 - :material-cube-outline: **Preview 3D Models** — Upload STL files and view them right in your browser
 - :material-content-cut: **Slice Automatically** — Send STL files to OrcaSlicer and get G-code back without leaving the app
 - :material-printer-3d: **Control Your Printers** — Upload G-code and start prints on Klipper printers via Moonraker
-- :material-spool: **Track Filament** — Pick spools from Spoolman and see how much filament each project needs
+- :material-palette-swatch: **Track Filament** — Pick spools from Spoolman and see how much filament each project needs
 - :material-format-list-numbered: **Manage a Print Queue** — Line up jobs across multiple printers with priorities
 - :material-currency-usd: **Estimate Costs** — See costs per project including filament, electricity, and hardware
 - :material-file-document-multiple: **Attach Documents** — Keep PDFs, images, CAD files, and notes with your projects

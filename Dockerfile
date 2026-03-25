@@ -32,6 +32,12 @@ FROM base AS release
 ARG APP_VERSION=dev
 ENV APP_VERSION=${APP_VERSION}
 
+# Production-ready defaults — override in docker-compose.yml or .env as needed
+ENV DEBUG=0 \
+    ALLOWED_HOSTS=localhost,127.0.0.1 \
+    ORCASLICER_API_URL=http://orcaslicer:3000 \
+    SPOOLMAN_URL=http://spoolman:8000
+
 LABEL org.opencontainers.image.title="LayerNexus" \
       org.opencontainers.image.description="The control center for your 3D print workflow" \
       org.opencontainers.image.source="https://github.com/peterus/LayerNexus" \
