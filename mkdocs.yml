@@ -1,0 +1,73 @@
+site_name: LayerNexus Documentation
+site_url: https://peterus.github.io/LayerNexus/
+site_description: The control center for your 3D print workflow
+repo_url: https://github.com/peterus/LayerNexus
+repo_name: peterus/LayerNexus
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - search.suggest
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+  - attr_list
+  - md_in_html
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Configuration: getting-started/configuration.md
+      - First Steps: getting-started/first-steps.md
+  - Deployment:
+      - Docker Image: deployment/docker.md
+      - Docker Compose: deployment/docker-compose.md
+      - Reverse Proxy: deployment/reverse-proxy.md
+      - Backup & Restore: deployment/backup.md
+  - Integrations:
+      - OrcaSlicer: integrations/orcaslicer.md
+      - Klipper / Moonraker: integrations/moonraker.md
+      - Spoolman: integrations/spoolman.md
+  - User Guide:
+      - Roles & Permissions: user-guide/roles.md
+      - Projects & Sub-Projects: user-guide/projects.md
+      - Print Jobs & Queue: user-guide/printing.md
+  - Development:
+      - Contributing: development/contributing.md
+      - Architecture: development/architecture.md
