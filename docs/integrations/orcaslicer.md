@@ -1,119 +1,69 @@
 # OrcaSlicer Integration
 
-LayerNexus integrates with [OrcaSlicer API](https://github.com/AFKFelix/orca-slicer-api) to provide automated slicing of STL files into G-code directly from the web interface.
-
-## What is OrcaSlicer API?
-
-[OrcaSlicer API](https://github.com/AFKFelix/orca-slicer-api) is a REST API wrapper around OrcaSlicer that runs as a separate Docker container. It accepts STL files and slicer profiles, performs the slicing operation, and returns the resulting G-code with metadata (print time estimates, filament usage, etc.).
+LayerNexus uses [OrcaSlicer API](https://github.com/AFKFelix/orca-slicer-api) to slice your STL files into G-code directly from the web interface — no need to open OrcaSlicer on your desktop.
 
 ---
 
 ## How It Works
 
-```
-┌─────────────┐    STL + Profiles    ┌──────────────────┐
-│  LayerNexus  │ ──────────────────► │  OrcaSlicer API  │
-│  (web)       │ ◄────────────────── │  (orcaslicer)    │
-└─────────────┘    G-code + Meta     └──────────────────┘
-```
+1. You upload an STL file to a part in LayerNexus.
+2. You pick a slicer profile and click **Slice**.
+3. LayerNexus sends the file to the OrcaSlicer API container running alongside it.
+4. OrcaSlicer slices the model and sends the G-code back.
+5. LayerNexus saves the G-code and shows you the estimated print time and filament usage.
 
-1. User uploads an STL file to a part in LayerNexus.
-2. User selects a slicer profile (machine + filament + print preset) and clicks **Slice**.
-3. LayerNexus sends the STL file and profile configuration to the OrcaSlicer API.
-4. OrcaSlicer API performs the slicing and returns the G-code file.
-5. LayerNexus stores the G-code and displays metadata (estimated print time, filament usage).
-
----
-
-## Configuration
-
-### Environment Variable
-
-| Variable | Description | Default |
-|---|---|---|
-| `ORCASLICER_API_URL` | URL of the OrcaSlicer API service | `http://localhost:3000` |
-
-When using Docker Compose, this is automatically set to `http://orcaslicer:3000` in the default configuration.
-
-### Docker Compose
-
-The OrcaSlicer API container is included in the default `docker-compose.yml`:
-
-```yaml
-orcaslicer:
-  image: ghcr.io/afkfelix/orca-slicer-api:latest-orca2.3.1
-  ports:
-    - "3000:3000"
-  volumes:
-    - orcaslicer_data:/app/data
-  restart: unless-stopped
-```
+If you followed the [Quick Start](../quick-start.md), the OrcaSlicer API container is already running and connected — no extra setup needed.
 
 ---
 
 ## Importing Profiles
 
-Before slicing, you need to import OrcaSlicer profiles into LayerNexus. Three types of profiles are required:
+Before you can slice, you need to import your OrcaSlicer profiles. Three types are required:
 
-### 1. Machine Profile
-
-Defines the printer hardware characteristics:
-
-- Build volume dimensions
-- Nozzle diameter
-- Heated bed capability
-- Printer type (FDM)
-
-### 2. Filament Profile
-
-Defines filament-specific settings:
-
-- Extrusion temperature
-- Bed temperature
-- Flow ratio
-- Cooling settings
-- Material type (PLA, PETG, ABS, etc.)
-
-### 3. Print Preset
-
-Defines print quality and speed settings:
-
-- Layer height
-- Print speed
-- Infill pattern and density
-- Support settings
-- Wall count
+- **Machine profile** — your printer hardware settings (build volume, nozzle size, etc.)
+- **Filament profile** — filament settings (temperature, flow, cooling)
+- **Print preset** — quality and speed settings (layer height, infill, speed)
 
 ### How to Import
 
-1. Open **OrcaSlicer** desktop application.
-2. Export your profiles as JSON files.
-3. In LayerNexus, go to **OrcaSlicer Profiles**.
-4. Click **Import** and upload the profile files.
-5. The profiles are now available for slicing operations.
+1. In **OrcaSlicer desktop**, export your profiles as JSON files (from the profile editor).
+2. In **LayerNexus**, go to **OrcaSlicer Profiles** in the navigation bar.
+3. Click **Import** and upload the three profile files.
+4. The profiles are now available when slicing parts.
 
 !!! tip
-    You can set a default slicer profile on a project. All parts in that project will use the default profile unless overridden.
+    You can set a default slicer profile on a project. All parts in that project will use the default profile unless you pick a different one.
 
 ---
 
-## Slicing Workflow
+## Slicing a Part
 
-1. Navigate to a part that has an STL file uploaded.
-2. Select the slicer profile combination (machine + filament + print preset).
+1. Open a part that has an STL file uploaded.
+2. Select the slicer profile (machine + filament + print preset).
 3. Click **Slice**.
-4. Wait for the OrcaSlicer API to process the file.
-5. Once complete, the G-code is stored and slicing metadata is displayed:
+4. Wait a moment for OrcaSlicer to process the file.
+5. When done, you'll see:
     - Estimated print time
     - Filament usage (grams and meters)
     - Layer count
 
-!!! warning "OrcaSlicer API Availability"
-    If the OrcaSlicer API container is not running or not reachable, slicing will fail with an error message. Check that the `orcaslicer` service is running:
+From here, you can [upload the G-code to a printer](moonraker.md) and start printing.
 
-    ```bash
-    docker compose ps orcaslicer
-    ```
+---
+
+## Troubleshooting
+
+If slicing fails, check that the OrcaSlicer container is running:
+
+```bash
+docker compose ps orcaslicer
+```
+
+If it's not running, restart it:
+
+```bash
+docker compose restart orcaslicer
+```
 
 ---
 

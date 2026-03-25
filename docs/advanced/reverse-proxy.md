@@ -1,19 +1,25 @@
-# Reverse Proxy / HTTPS
+# HTTPS & Reverse Proxy
 
-In production, you should place LayerNexus behind a reverse proxy to provide HTTPS termination, better security, and proper hostname handling.
+A reverse proxy sits between your users and LayerNexus. You'd want one if you need:
 
-## Why a Reverse Proxy?
+- **HTTPS** — Encrypt traffic so passwords and data are safe
+- **Custom domain** — Access LayerNexus at `https://prints.example.com` instead of `http://192.168.1.50:8000`
+- **Remote access** — Reach LayerNexus from outside your home network
 
-- **HTTPS/TLS** — Encrypt traffic between users and the server
-- **Domain routing** — Serve LayerNexus on a custom domain
-- **Rate limiting** — Protect against abuse
-- **Static file caching** — Improve performance (though WhiteNoise handles this well)
+If you're only using LayerNexus on your local network, you can skip this.
 
-!!! important "Required Environment Variables"
-    When behind a reverse proxy, you **must** set:
+---
 
-    - `ALLOWED_HOSTS` — include your domain (e.g., `layernexus.example.com`)
-    - `CSRF_TRUSTED_ORIGINS` — include the full origin URL (e.g., `https://layernexus.example.com`)
+## Required Settings
+
+When running behind a reverse proxy, you **must** set these environment variables:
+
+```bash
+ALLOWED_HOSTS=layernexus.example.com
+CSRF_TRUSTED_ORIGINS=https://layernexus.example.com
+```
+
+See [Configuration](../configuration.md) for details.
 
 ---
 
@@ -52,9 +58,11 @@ server {
 ```
 
 !!! tip "File Upload Size"
-    LayerNexus allows file uploads up to 75 MB (project documents). Set `client_max_body_size` to at least `100M` to allow headroom for STL and G-code files.
+    LayerNexus allows uploads up to 75 MB. Set `client_max_body_size` to at least `100M` to give some headroom for large STL and G-code files.
 
 ### Nginx in Docker Compose
+
+You can add Nginx to your `docker-compose.yml`:
 
 ```yaml
 services:
@@ -81,9 +89,7 @@ services:
 
 ## Traefik
 
-### Docker Labels Configuration
-
-If you use Traefik as your reverse proxy, add these labels to the `web` service in your `docker-compose.yml`:
+If you use [Traefik](https://traefik.io/) as your reverse proxy, add these labels to the `web` service:
 
 ```yaml
 services:
@@ -98,8 +104,8 @@ services:
       - "traefik.http.routers.layernexus.tls.certresolver=letsencrypt"
       - "traefik.http.services.layernexus.loadbalancer.server.port=8000"
     volumes:
-      - db_data:/app/data
-      - media_data:/app/media
+      - layernexus_data:/app/data
+      - layernexus_media:/app/media
     environment:
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - ALLOWED_HOSTS=layernexus.example.com
@@ -110,25 +116,25 @@ services:
 ```
 
 !!! note
-    Make sure your Traefik instance is on the same Docker network as the LayerNexus service. You may need to add a `networks` section to your configuration.
+    Make sure your Traefik instance is on the same Docker network as the LayerNexus service.
 
 ---
 
 ## Checklist
 
-Before deploying behind a reverse proxy, verify:
+Before going live, verify:
 
-- [ ] `DJANGO_SECRET_KEY` is set to a unique, secure value
+- [ ] `DJANGO_SECRET_KEY` is set to a unique, random value
 - [ ] `DEBUG=0`
 - [ ] `ALLOWED_HOSTS` includes your domain
-- [ ] `CSRF_TRUSTED_ORIGINS` includes the full origin (e.g., `https://layernexus.example.com`)
+- [ ] `CSRF_TRUSTED_ORIGINS` includes the full URL with `https://`
 - [ ] Reverse proxy forwards `X-Forwarded-Proto` and `X-Forwarded-For` headers
-- [ ] Upload size limit is set high enough (`100M+`)
-- [ ] HTTPS is configured with a valid certificate
+- [ ] Upload size limit is at least `100M`
+- [ ] HTTPS is set up with a valid certificate
 
 ---
 
 ## Next Steps
 
-- [Backup & restore procedures](backup.md)
-- [Docker Compose examples](docker-compose.md)
+- [Backup & Restore](backup.md)
+- [Docker Details](docker.md)

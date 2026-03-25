@@ -1,10 +1,10 @@
 # First Steps
 
-This guide walks you through the essential tasks to get started with LayerNexus after [installation](installation.md).
+This guide walks you through the essential tasks after you've got LayerNexus running (see [Quick Start](../quick-start.md)).
 
 ## 1. Create Your First Project
 
-1. Log in with the account you created during installation.
+1. Log in with the account you created during setup.
 2. Click **Projects** in the navigation bar.
 3. Click **New Project**.
 4. Fill in the project name and an optional description.
@@ -12,7 +12,7 @@ This guide walks you through the essential tasks to get started with LayerNexus 
 6. Click **Save**.
 
 !!! tip
-    Projects can contain sub-projects with quantity multipliers. For example, a "Quadcopter" project might have a sub-project "Motor Mount" with quantity 4.
+    Projects can contain sub-projects with quantity multipliers. For example, a "Quadcopter" project might have a sub-project "Motor Mount" with quantity 4. See [Projects & Sub-Projects](projects.md) for more.
 
 ---
 
@@ -24,13 +24,13 @@ This guide walks you through the essential tasks to get started with LayerNexus 
 4. Upload the STL file.
 5. Click **Save**.
 
-After uploading, you can preview the 3D model directly in the browser using the built-in Three.js viewer.
+After uploading, you can preview the 3D model directly in the browser using the built-in viewer.
 
 ---
 
 ## 3. Set Up Printer Profiles
 
-Before you can send G-code to a printer, you need to create a printer profile.
+Before you can send G-code to a printer, create a printer profile:
 
 1. Go to **Printers** in the navigation bar.
 2. Click **Add Printer**.
@@ -40,11 +40,11 @@ Before you can send G-code to a printer, you need to create a printer profile.
 6. Click **Save**.
 
 !!! note
-    LayerNexus connects to your printers via the [Moonraker API](https://moonraker.readthedocs.io/). Ensure that LayerNexus (or the Docker container) can reach the Moonraker URL over your network.
+    LayerNexus connects to your printers via the [Moonraker API](../integrations/moonraker.md). Make sure LayerNexus can reach the Moonraker URL over your network.
 
 ### Cost Profiles
 
-You can also attach a **cost profile** to a printer to track printing costs:
+You can attach a **cost profile** to a printer to track printing costs:
 
 - Electricity cost per kWh
 - Printer depreciation rate
@@ -56,14 +56,14 @@ These values are used to calculate per-job and per-project costs.
 
 ## 4. Import OrcaSlicer Profiles
 
-LayerNexus uses the [OrcaSlicer API](https://github.com/AFKFelix/orca-slicer-api) for slicing. To slice parts, you need to import profiles.
+LayerNexus uses the [OrcaSlicer API](../integrations/orcaslicer.md) for slicing. To slice parts, you need to import profiles:
 
 1. Go to **OrcaSlicer Profiles** in the navigation bar.
 2. Click **Import Profile**.
-3. Upload the three profile files from OrcaSlicer:
-    - **Machine profile** (`.json`) — defines the printer hardware
-    - **Filament profile** (`.json`) — defines filament settings (temperature, flow, etc.)
-    - **Print preset** (`.json`) — defines print settings (layer height, speed, etc.)
+3. Upload three profile files exported from OrcaSlicer:
+    - **Machine profile** (`.json`) — your printer hardware settings
+    - **Filament profile** (`.json`) — filament settings (temperature, flow, etc.)
+    - **Print preset** (`.json`) — print quality settings (layer height, speed, etc.)
 4. Click **Save**.
 
 !!! tip "Exporting Profiles from OrcaSlicer"
@@ -76,9 +76,9 @@ LayerNexus uses the [OrcaSlicer API](https://github.com/AFKFelix/orca-slicer-api
 Once you have a project with parts, a printer profile, and slicer profiles set up:
 
 1. Open a part detail page.
-2. Click **Slice** to send the STL to OrcaSlicer API for slicing.
+2. Click **Slice** to send the STL to OrcaSlicer for slicing.
 3. Review the slicing results (estimated print time, filament usage).
-4. Click **Upload to Printer** to send the G-code to Moonraker.
+4. Click **Upload to Printer** to send the G-code to your printer via Moonraker.
 5. Click **Start Print** to begin printing.
 
 ### Print Queue
@@ -94,7 +94,7 @@ For managing multiple jobs across multiple printers:
 
 ## Next Steps
 
-- [Learn about user roles and permissions](../user-guide/roles.md)
-- [Manage projects and sub-projects](../user-guide/projects.md)
+- [Learn about roles and permissions](roles.md)
+- [Manage projects and sub-projects](projects.md)
 - [Set up Spoolman for filament tracking](../integrations/spoolman.md)
-- [Configure a reverse proxy for production](../deployment/reverse-proxy.md)
+- [Set up HTTPS for remote access](../advanced/reverse-proxy.md)

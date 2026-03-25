@@ -1,44 +1,26 @@
 # Spoolman
 
-LayerNexus integrates with [Spoolman](https://github.com/Donkie/Spoolman) for filament inventory management, allowing you to track spool usage across parts and projects.
-
-## What is Spoolman?
-
-[Spoolman](https://github.com/Donkie/Spoolman) is a self-hosted filament inventory manager. It tracks:
-
-- Spool inventory (weight remaining, location)
-- Filament types and materials (PLA, PETG, ABS, etc.)
-- Manufacturer and color information
-- Usage history
-
-LayerNexus uses Spoolman as the **primary source** for filament data — materials are managed exclusively through Spoolman.
+[Spoolman](https://github.com/Donkie/Spoolman) is a self-hosted filament inventory manager. When connected to LayerNexus, you can pick spools from your inventory when editing parts, and LayerNexus will automatically fill in the color and material type.
 
 ---
 
-## Configuration
+## Setting It Up
 
-### Environment Variable
+### 1. Add Spoolman to Your Docker Compose
 
-| Variable | Description | Default |
-|---|---|---|
-| `SPOOLMAN_URL` | URL of the Spoolman instance | _(empty — disabled)_ |
-
-Set this to the URL where your Spoolman instance is running:
-
-```bash
-SPOOLMAN_URL=http://spoolman:8000     # Docker Compose internal
-SPOOLMAN_URL=http://192.168.1.50:7912 # External Spoolman instance
-```
-
-!!! note
-    When `SPOOLMAN_URL` is empty or not set, Spoolman integration is disabled. Filament selection features will not be available.
-
-### Docker Compose
-
-To run Spoolman alongside LayerNexus, add it to your `docker-compose.yml`:
+Add the Spoolman service to your `docker-compose.yml`:
 
 ```yaml
 services:
+  web:
+    image: ghcr.io/peterus/layernexus:latest
+    # ... your existing config ...
+    environment:
+      - SPOOLMAN_URL=http://spoolman:8000
+      # ... other environment variables ...
+    depends_on:
+      - spoolman
+
   spoolman:
     image: ghcr.io/donkie/spoolman:latest
     ports:
@@ -51,43 +33,31 @@ volumes:
   spoolman_data:
 ```
 
-Then set `SPOOLMAN_URL=http://spoolman:8000` in the LayerNexus service environment.
+For a complete full-stack example, see [Docker Details](../advanced/docker.md).
 
-See [Docker Compose Examples](../deployment/docker-compose.md) for a complete full-stack configuration.
+### 2. Already Running Spoolman?
 
----
+If you have Spoolman running elsewhere on your network, just set the environment variable to point to it:
 
-## Filament Mapping
+```bash
+SPOOLMAN_URL=http://192.168.1.50:7912
+```
 
-Spoolman filament mappings link Spoolman spools to parts in LayerNexus.
-
-### How It Works
-
-1. Spoolman manages your filament inventory (spools, materials, colors).
-2. In LayerNexus, when editing a part, you can select a filament from Spoolman.
-3. LayerNexus fetches available spools from the Spoolman API and displays them for selection.
-4. When a spool is selected, the part automatically inherits:
-    - **Color** from the spool
-    - **Material type** (PLA, PETG, ABS, etc.)
-
-### Setting Up Filament Mappings
-
-1. Ensure Spoolman is running and has spools configured.
-2. In LayerNexus, set `SPOOLMAN_URL` to point to your Spoolman instance.
-3. Open a part for editing.
-4. In the filament selection field, choose a spool from the Spoolman dropdown.
-5. The color and material fields are automatically populated.
+!!! note
+    When `SPOOLMAN_URL` is empty or not set, Spoolman integration is disabled and filament selection won't be available.
 
 ---
 
-## Automatic Color and Material Population
+## Using Spoolman with Parts
 
-When you select a Spoolman spool for a part:
+Once Spoolman is connected:
 
-- The **color** is set from the spool's color hex code.
-- The **material** is set from the spool's filament type.
+1. Make sure you have spools set up in Spoolman (with colors, materials, etc.).
+2. In LayerNexus, open a part for editing.
+3. In the filament selection field, pick a spool from the dropdown.
+4. The **color** and **material** fields are automatically filled in from the spool data.
 
-This ensures consistency between your filament inventory and your print projects.
+This keeps your filament data consistent between Spoolman and your print projects.
 
 !!! tip
     Keep your Spoolman inventory up to date. As you use filament, update spool weights in Spoolman so LayerNexus reflects accurate availability.
@@ -96,16 +66,16 @@ This ensures consistency between your filament inventory and your print projects
 
 ## Troubleshooting
 
-### Spoolman Connection Fails
+**Can't see any spools?**
 
-- Verify the `SPOOLMAN_URL` is correct and the Spoolman instance is running.
-- Test connectivity: `curl http://<spoolman-url>/api/v1/spool`
-- If running in Docker, ensure both services are on the same Docker network.
+- Check that you have spools configured in Spoolman.
+- Verify the connection: `curl http://<spoolman-url>/api/v1/spool`
+- If running in Docker, make sure both services are on the same Docker network.
 
-### No Spools Available
+**Connection fails?**
 
-- Check that you have configured spools in Spoolman.
-- Verify the Spoolman API returns data: `curl http://<spoolman-url>/api/v1/spool`
+- Double-check the `SPOOLMAN_URL` value.
+- Make sure the Spoolman container is running: `docker compose ps spoolman`
 
 ---
 
@@ -113,4 +83,4 @@ This ensures consistency between your filament inventory and your print projects
 
 - [OrcaSlicer integration](orcaslicer.md)
 - [Klipper / Moonraker integration](moonraker.md)
-- [Manage parts and filament in projects](../user-guide/projects.md)
+- [Managing parts in projects](../user-guide/projects.md)
