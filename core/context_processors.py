@@ -9,6 +9,11 @@ def app_name(request: HttpRequest) -> dict[str, str]:
     return {"APP_NAME": getattr(settings, "APP_NAME", "LayerNexus")}
 
 
+def app_version(request: HttpRequest) -> dict[str, str]:
+    """Add the application version to the template context."""
+    return {"APP_VERSION": getattr(settings, "APP_VERSION", "dev")}
+
+
 def allow_registration(request: HttpRequest) -> dict[str, bool]:
     """Add the registration toggle to the template context."""
     return {"ALLOW_REGISTRATION": getattr(settings, "ALLOW_REGISTRATION", True)}

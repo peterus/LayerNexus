@@ -1,6 +1,8 @@
 services:
   web:
-    build: .
+    build:
+      context: .
+      target: release
     ports:
       - "8000:8000"
     volumes:
