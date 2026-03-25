@@ -111,8 +111,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -t layernexus:test .
+      - name: Build Docker image (release)
+        run: docker build --target release -t layernexus:test .
 
       - name: Run container smoke test
         run: |
@@ -121,5 +121,5 @@ jobs:
             -e ALLOWED_HOSTS=localhost \
             -p 8000:8000 \
             layernexus:test
-          timeout 30 sh -c 'until curl -sf http://localhost:8000/accounts/login/; do sleep 1; done'
+          timeout 30 sh -c 'until curl -sf http://localhost:8000/health/; do sleep 1; done'
           docker stop ln-test
