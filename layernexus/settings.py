@@ -73,6 +73,7 @@ TEMPLATES = [
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
                 "core.context_processors.app_name",
+                "core.context_processors.app_version",
                 "core.context_processors.allow_registration",
             ],
         },
@@ -158,6 +159,13 @@ ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION", "true").lower() in (
 
 # Application name
 APP_NAME = "LayerNexus"
+
+# Application version (read from VERSION file, overridable via env/Docker ARG)
+_version_file = BASE_DIR / "VERSION"
+APP_VERSION = os.environ.get(
+    "APP_VERSION",
+    _version_file.read_text().strip() if _version_file.exists() else "dev",
+)
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

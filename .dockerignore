@@ -1,14 +1,52 @@
+# Version control
 .git
-__pycache__
+.gitignore
+
+# Docker (don't send Dockerfiles into the build context)
+docker-compose*.yml
+.dockerignore
+
+# Documentation
+docs/
+*.md
+!requirements.txt
+LICENSE
+mkdocs.yml
+
+# CI/CD
+.github/
+
+# Python artifacts
+__pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Development / IDE
+.env
+.vscode/
+.idea/
+*.swp
+*.swo
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Database & data (use Docker volumes)
 db.sqlite3
 db.sqlite3-journal
+data/
+
+# Media (use Docker volumes)
 media/
-.env
-.venv
-venv/
-*.egg-info
-.mypy_cache
-.pytest_cache
-.ruff_cache
+
+# Coverage & testing
+.coverage
+htmlcov/
+coverage.xml
+
+# OS
+.DS_Store
+Thumbs.db
