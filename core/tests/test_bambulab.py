@@ -303,22 +303,26 @@ class PrinterProfileFormTests(TestDataMixin, TestCase):
         """Klipper printer with URL is valid."""
         from core.forms import PrinterProfileForm
 
-        form = PrinterProfileForm(data={
-            "name": "My Klipper",
-            "printer_type": PrinterProfile.TYPE_KLIPPER,
-            "moonraker_url": "http://192.168.1.100:7125",
-        })
+        form = PrinterProfileForm(
+            data={
+                "name": "My Klipper",
+                "printer_type": PrinterProfile.TYPE_KLIPPER,
+                "moonraker_url": "http://192.168.1.100:7125",
+            }
+        )
         self.assertTrue(form.is_valid(), form.errors)
 
     def test_klipper_without_url_invalid(self):
         """Klipper printer without URL is invalid."""
         from core.forms import PrinterProfileForm
 
-        form = PrinterProfileForm(data={
-            "name": "My Klipper",
-            "printer_type": PrinterProfile.TYPE_KLIPPER,
-            "moonraker_url": "",
-        })
+        form = PrinterProfileForm(
+            data={
+                "name": "My Klipper",
+                "printer_type": PrinterProfile.TYPE_KLIPPER,
+                "moonraker_url": "",
+            }
+        )
         self.assertFalse(form.is_valid())
         self.assertIn("moonraker_url", form.errors)
 
@@ -333,23 +337,27 @@ class PrinterProfileFormTests(TestDataMixin, TestCase):
             token="encrypted-token",
             is_active=True,
         )
-        form = PrinterProfileForm(data={
-            "name": "My Bambu",
-            "printer_type": PrinterProfile.TYPE_BAMBULAB,
-            "bambu_account": account.pk,
-            "bambu_device_id": "ABC123",
-        })
+        form = PrinterProfileForm(
+            data={
+                "name": "My Bambu",
+                "printer_type": PrinterProfile.TYPE_BAMBULAB,
+                "bambu_account": account.pk,
+                "bambu_device_id": "ABC123",
+            }
+        )
         self.assertTrue(form.is_valid(), form.errors)
 
     def test_bambulab_without_account_invalid(self):
         """Bambu Lab printer without account is invalid."""
         from core.forms import PrinterProfileForm
 
-        form = PrinterProfileForm(data={
-            "name": "My Bambu",
-            "printer_type": PrinterProfile.TYPE_BAMBULAB,
-            "bambu_device_id": "ABC123",
-        })
+        form = PrinterProfileForm(
+            data={
+                "name": "My Bambu",
+                "printer_type": PrinterProfile.TYPE_BAMBULAB,
+                "bambu_device_id": "ABC123",
+            }
+        )
         self.assertFalse(form.is_valid())
         self.assertIn("bambu_account", form.errors)
 
@@ -363,12 +371,14 @@ class PrinterProfileFormTests(TestDataMixin, TestCase):
             region="global",
             is_active=True,
         )
-        form = PrinterProfileForm(data={
-            "name": "My Bambu",
-            "printer_type": PrinterProfile.TYPE_BAMBULAB,
-            "bambu_account": account.pk,
-            "bambu_device_id": "",
-        })
+        form = PrinterProfileForm(
+            data={
+                "name": "My Bambu",
+                "printer_type": PrinterProfile.TYPE_BAMBULAB,
+                "bambu_account": account.pk,
+                "bambu_device_id": "",
+            }
+        )
         self.assertFalse(form.is_valid())
         self.assertIn("bambu_device_id", form.errors)
 
@@ -410,11 +420,14 @@ class BambuAuthWizardViewTests(TestDataMixin, TestCase):
         mock_auth_cls.return_value = mock_auth
         mock_auth._login_request = MagicMock()
 
-        resp = self.client.post(reverse("core:bambuaccount_step1"), {
-            "email": "user@bambu.com",
-            "password": "secret123",
-            "region": "global",
-        })
+        resp = self.client.post(
+            reverse("core:bambuaccount_step1"),
+            {
+                "email": "user@bambu.com",
+                "password": "secret123",
+                "region": "global",
+            },
+        )
 
         self.assertEqual(resp.status_code, 302)
         session = self.client.session
@@ -454,9 +467,12 @@ class BambuAuthWizardViewTests(TestDataMixin, TestCase):
         mock_client_cls.return_value = mock_client
         mock_client.get_user_info.return_value = {"uid": "u_99999"}
 
-        resp = self.client.post(reverse("core:bambuaccount_step2"), {
-            "code": "123456",
-        })
+        resp = self.client.post(
+            reverse("core:bambuaccount_step2"),
+            {
+                "code": "123456",
+            },
+        )
 
         self.assertEqual(resp.status_code, 302)
         session = self.client.session
@@ -473,9 +489,12 @@ class BambuAuthWizardViewTests(TestDataMixin, TestCase):
         session["bambu_auth_region"] = "global"
         session.save()
 
-        resp = self.client.post(reverse("core:bambuaccount_step2"), {
-            "code": "abcdef",
-        })
+        resp = self.client.post(
+            reverse("core:bambuaccount_step2"),
+            {
+                "code": "abcdef",
+            },
+        )
         self.assertEqual(resp.status_code, 200)
         self.assertFormError(resp.context["form"], "code", "The code must contain only digits.")
 
@@ -504,10 +523,13 @@ class BambuAuthWizardViewTests(TestDataMixin, TestCase):
             ],
         }
 
-        resp = self.client.post(reverse("core:bambuaccount_step3"), {
-            "device_id": "DEVICE001",
-            "lan_ip": "192.168.1.50",
-        })
+        resp = self.client.post(
+            reverse("core:bambuaccount_step3"),
+            {
+                "device_id": "DEVICE001",
+                "lan_ip": "192.168.1.50",
+            },
+        )
 
         self.assertEqual(resp.status_code, 302)
 
@@ -569,21 +591,15 @@ class BambuAccountManagementTests(TestDataMixin, TestCase):
 
     def test_delete_confirmation_page(self):
         """Delete confirmation shows account details."""
-        resp = self.client.get(
-            reverse("core:bambuaccount_delete", kwargs={"pk": self.account.pk})
-        )
+        resp = self.client.get(reverse("core:bambuaccount_delete", kwargs={"pk": self.account.pk}))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "test@bambu.com")
 
     def test_delete_removes_account(self):
         """POST to delete removes the account."""
-        resp = self.client.post(
-            reverse("core:bambuaccount_delete", kwargs={"pk": self.account.pk})
-        )
+        resp = self.client.post(reverse("core:bambuaccount_delete", kwargs={"pk": self.account.pk}))
         self.assertEqual(resp.status_code, 302)
-        self.assertFalse(
-            BambuCloudAccount.objects.filter(pk=self.account.pk).exists()
-        )
+        self.assertFalse(BambuCloudAccount.objects.filter(pk=self.account.pk).exists())
 
     def test_cannot_delete_other_users_account(self):
         """Cannot delete an account belonging to another user."""
@@ -592,19 +608,13 @@ class BambuAccountManagementTests(TestDataMixin, TestCase):
             email="other@bambu.com",
             region="global",
         )
-        resp = self.client.post(
-            reverse("core:bambuaccount_delete", kwargs={"pk": other_account.pk})
-        )
+        resp = self.client.post(reverse("core:bambuaccount_delete", kwargs={"pk": other_account.pk}))
         self.assertEqual(resp.status_code, 404)
-        self.assertTrue(
-            BambuCloudAccount.objects.filter(pk=other_account.pk).exists()
-        )
+        self.assertTrue(BambuCloudAccount.objects.filter(pk=other_account.pk).exists())
 
     def test_refresh_redirects_to_step1(self):
         """Refresh action pre-fills session and redirects."""
-        resp = self.client.post(
-            reverse("core:bambuaccount_refresh", kwargs={"pk": self.account.pk})
-        )
+        resp = self.client.post(reverse("core:bambuaccount_refresh", kwargs={"pk": self.account.pk}))
         self.assertEqual(resp.status_code, 302)
         self.assertIn("connect", resp.url)
         session = self.client.session
@@ -639,7 +649,5 @@ class BambuAccountManagementTests(TestDataMixin, TestCase):
         designer.groups.add(designer_group)
 
         self.client.login(username="designer_del", password="testpass123")
-        resp = self.client.post(
-            reverse("core:bambuaccount_delete", kwargs={"pk": self.account.pk})
-        )
+        resp = self.client.post(reverse("core:bambuaccount_delete", kwargs={"pk": self.account.pk}))
         self.assertEqual(resp.status_code, 403)

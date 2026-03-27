@@ -75,8 +75,7 @@ class BambuAccountStep1View(PrinterManageMixin, FormView):
         except ImportError:
             messages.error(
                 self.request,
-                "Bambu Lab Cloud API library is not installed. "
-                "Please contact your administrator.",
+                "Bambu Lab Cloud API library is not installed. Please contact your administrator.",
             )
             return self.form_invalid(form)
 
@@ -94,8 +93,7 @@ class BambuAccountStep1View(PrinterManageMixin, FormView):
 
             messages.info(
                 self.request,
-                f"A verification code has been sent to {email}. "
-                "Please check your inbox.",
+                f"A verification code has been sent to {email}. Please check your inbox.",
             )
             return super().form_valid(form)
 
@@ -369,9 +367,7 @@ class BambuAccountDeleteView(PrinterManageMixin, DeleteView):
     def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
         """Add linked printers to the context."""
         context = super().get_context_data(**kwargs)
-        context["linked_printers"] = PrinterProfile.objects.filter(
-            bambu_account=self.object
-        )
+        context["linked_printers"] = PrinterProfile.objects.filter(bambu_account=self.object)
         return context
 
     def form_valid(self, form: Any) -> HttpResponse:

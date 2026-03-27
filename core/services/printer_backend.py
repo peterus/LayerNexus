@@ -49,10 +49,7 @@ class NormalizedJobStatus:
     temperatures: dict[str, float] = field(default_factory=dict)
 
     def __repr__(self) -> str:
-        return (
-            f"NormalizedJobStatus(state={self.state!r}, progress={self.progress:.1%}, "
-            f"filename={self.filename!r})"
-        )
+        return f"NormalizedJobStatus(state={self.state!r}, progress={self.progress:.1%}, filename={self.filename!r})"
 
     @property
     def is_terminal(self) -> bool:

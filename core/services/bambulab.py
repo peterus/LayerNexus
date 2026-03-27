@@ -86,8 +86,7 @@ def decrypt_token(ciphertext: str) -> str:
         return fernet.decrypt(ciphertext.encode()).decode()
     except InvalidToken as exc:
         raise BambuLabError(
-            "Cannot decrypt Bambu Lab token. "
-            "This may happen if DJANGO_SECRET_KEY changed since the token was stored."
+            "Cannot decrypt Bambu Lab token. This may happen if DJANGO_SECRET_KEY changed since the token was stored."
         ) from exc
 
 
@@ -126,23 +125,16 @@ class BambuLabClient:
         self.account = printer.bambu_account
 
         if not self.account:
-            raise BambuLabError(
-                f"Printer '{printer.name}' has no Bambu Lab account linked."
-            )
+            raise BambuLabError(f"Printer '{printer.name}' has no Bambu Lab account linked.")
         if not self.account.is_active:
-            raise BambuLabError(
-                f"Bambu Lab account '{self.account.email}' is inactive. "
-                "Please re-authenticate."
-            )
+            raise BambuLabError(f"Bambu Lab account '{self.account.email}' is inactive. Please re-authenticate.")
 
         self._token = decrypt_token(self.account.token)
         self._device_id = printer.bambu_device_id
         self._ip_address = printer.bambu_ip_address
 
         if not self._device_id:
-            raise BambuLabError(
-                f"Printer '{printer.name}' has no Bambu Lab device ID configured."
-            )
+            raise BambuLabError(f"Printer '{printer.name}' has no Bambu Lab device ID configured.")
 
     # ── Cloud API helpers ──────────────────────────────────────────────
 
@@ -158,10 +150,7 @@ class BambuLabClient:
         try:
             from bambulab import BambuClient
         except ImportError as exc:
-            raise BambuLabError(
-                "bambu-lab-cloud-api is not installed. "
-                "Run: pip install bambu-lab-cloud-api"
-            ) from exc
+            raise BambuLabError("bambu-lab-cloud-api is not installed. Run: pip install bambu-lab-cloud-api") from exc
 
         return BambuClient(token=self._token, region=self.account.region)
 
@@ -178,16 +167,10 @@ class BambuLabClient:
         try:
             from bambulab import MQTTClient
         except ImportError as exc:
-            raise BambuLabError(
-                "bambu-lab-cloud-api is not installed. "
-                "Run: pip install bambu-lab-cloud-api"
-            ) from exc
+            raise BambuLabError("bambu-lab-cloud-api is not installed. Run: pip install bambu-lab-cloud-api") from exc
 
         if not self.account.bambu_uid:
-            raise BambuLabError(
-                f"Bambu Lab account '{self.account.email}' has no user ID. "
-                "Please re-authenticate."
-            )
+            raise BambuLabError(f"Bambu Lab account '{self.account.email}' has no user ID. Please re-authenticate.")
 
         return MQTTClient(
             username=self.account.bambu_uid,
@@ -206,17 +189,13 @@ class BambuLabClient:
         """
         if not self._ip_address:
             raise BambuLabError(
-                f"Printer '{self.printer.name}' has no LAN IP address configured. "
-                "LAN upload requires a local IP."
+                f"Printer '{self.printer.name}' has no LAN IP address configured. LAN upload requires a local IP."
             )
 
         try:
             from bambulab import LocalFTPClient
         except ImportError as exc:
-            raise BambuLabError(
-                "bambu-lab-cloud-api is not installed. "
-                "Run: pip install bambu-lab-cloud-api"
-            ) from exc
+            raise BambuLabError("bambu-lab-cloud-api is not installed. Run: pip install bambu-lab-cloud-api") from exc
 
         # Get access code from device info
         cloud = self._get_cloud_client()
@@ -232,8 +211,7 @@ class BambuLabClient:
 
             if not access_code:
                 raise BambuLabError(
-                    f"Cannot find access code for device {self._device_id}. "
-                    "Verify the device is bound to your account."
+                    f"Cannot find access code for device {self._device_id}. Verify the device is bound to your account."
                 )
 
             return LocalFTPClient(self._ip_address, access_code)
@@ -272,17 +250,14 @@ class BambuLabClient:
 
             if not event.wait(timeout=MQTT_STATUS_TIMEOUT):
                 raise BambuLabError(
-                    f"Timeout waiting for MQTT status from '{self.printer.name}' "
-                    f"(waited {MQTT_STATUS_TIMEOUT}s)."
+                    f"Timeout waiting for MQTT status from '{self.printer.name}' (waited {MQTT_STATUS_TIMEOUT}s)."
                 )
 
             return received_data
         except BambuLabError:
             raise
         except Exception as exc:
-            raise BambuLabError(
-                f"MQTT communication failed with '{self.printer.name}': {exc}"
-            ) from exc
+            raise BambuLabError(f"MQTT communication failed with '{self.printer.name}': {exc}") from exc
         finally:
             with contextlib.suppress(Exception):
                 mqtt.disconnect()
@@ -314,18 +289,13 @@ class BambuLabClient:
                         "nozzle_diameter": dev.get("nozzle_diameter"),
                     }
 
-            raise BambuLabError(
-                f"Device {self._device_id} not found in account "
-                f"'{self.account.email}'."
-            )
+            raise BambuLabError(f"Device {self._device_id} not found in account '{self.account.email}'.")
         except BambuLabError:
             raise
         except Exception as exc:
             raise BambuLabError(f"Failed to get printer status: {exc}") from exc
 
-    def upload_gcode(
-        self, file_path: str | Path, filename: str | None = None
-    ) -> dict[str, Any]:
+    def upload_gcode(self, file_path: str | Path, filename: str | None = None) -> dict[str, Any]:
         """Upload G-code to the printer, preferring LAN FTP.
 
         Tries LocalFTPClient (LAN) first.  Falls back to Cloud upload
@@ -363,9 +333,7 @@ class BambuLabClient:
         # Fallback: Cloud upload
         return self._upload_via_cloud(file_path, filename)
 
-    def _upload_via_ftp(
-        self, file_path: Path, filename: str
-    ) -> dict[str, Any]:
+    def _upload_via_ftp(self, file_path: Path, filename: str) -> dict[str, Any]:
         """Upload a file via LocalFTPClient (LAN).
 
         Args:
@@ -395,9 +363,7 @@ class BambuLabClient:
             with contextlib.suppress(Exception):
                 ftp.disconnect()
 
-    def _upload_via_cloud(
-        self, file_path: Path, filename: str
-    ) -> dict[str, Any]:
+    def _upload_via_cloud(self, file_path: Path, filename: str) -> dict[str, Any]:
         """Upload a file via Cloud API.
 
         Args:
@@ -469,9 +435,7 @@ class BambuLabClient:
 
             return {"status": "command_sent", "filename": filename}
         except Exception as exc:
-            raise BambuLabError(
-                f"Failed to start print on '{self.printer.name}': {exc}"
-            ) from exc
+            raise BambuLabError(f"Failed to start print on '{self.printer.name}': {exc}") from exc
         finally:
             with contextlib.suppress(Exception):
                 mqtt.disconnect()
@@ -560,9 +524,7 @@ class BambuLabClient:
 
             return {"status": "cancel_sent"}
         except Exception as exc:
-            raise BambuLabError(
-                f"Failed to cancel print on '{self.printer.name}': {exc}"
-            ) from exc
+            raise BambuLabError(f"Failed to cancel print on '{self.printer.name}': {exc}") from exc
         finally:
             with contextlib.suppress(Exception):
                 mqtt.disconnect()

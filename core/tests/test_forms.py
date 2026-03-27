@@ -202,11 +202,13 @@ class PrinterProfileFormTests(TestCase):
     def test_valid_minimal(self):
         from core.forms import PrinterProfileForm
 
-        form = PrinterProfileForm(data={
-            "name": "My Printer",
-            "printer_type": "klipper",
-            "moonraker_url": "http://192.168.1.100:7125",
-        })
+        form = PrinterProfileForm(
+            data={
+                "name": "My Printer",
+                "printer_type": "klipper",
+                "moonraker_url": "http://192.168.1.100:7125",
+            }
+        )
         self.assertTrue(form.is_valid())
 
     def test_name_required(self):

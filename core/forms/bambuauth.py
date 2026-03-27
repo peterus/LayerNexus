@@ -54,14 +54,16 @@ class BambuAuthStep2Form(forms.Form):
         max_length=6,
         min_length=6,
         help_text="Enter the 6-digit code sent to your email.",
-        widget=forms.TextInput(attrs={
-            "autofocus": True,
-            "inputmode": "numeric",
-            "pattern": "[0-9]{6}",
-            "autocomplete": "one-time-code",
-            "class": "form-control form-control-lg text-center",
-            "style": "letter-spacing: 0.5em; max-width: 200px;",
-        }),
+        widget=forms.TextInput(
+            attrs={
+                "autofocus": True,
+                "inputmode": "numeric",
+                "pattern": "[0-9]{6}",
+                "autocomplete": "one-time-code",
+                "class": "form-control form-control-lg text-center",
+                "style": "letter-spacing: 0.5em; max-width: 200px;",
+            }
+        ),
     )
 
     def clean_code(self) -> str:
@@ -87,10 +89,7 @@ class BambuAuthStep3Form(forms.Form):
     lan_ip = forms.GenericIPAddressField(
         label="Local IP Address (optional)",
         required=False,
-        help_text=(
-            "If the printer is on your local network, enter its IP address "
-            "for faster file uploads via LAN."
-        ),
+        help_text=("If the printer is on your local network, enter its IP address for faster file uploads via LAN."),
     )
 
     def __init__(self, *args, devices: list[dict] | None = None, **kwargs) -> None:
@@ -112,4 +111,3 @@ class BambuAuthStep3Form(forms.Form):
             ]
         else:
             self.fields["device_id"].choices = []
-
