@@ -46,6 +46,18 @@
           {% endif %}
           {% endfor %}
 
+          {# Printer Type Selection #}
+          <h5 class="border-bottom pb-2 mb-3 mt-4"><i class="bi bi-router me-2"></i>Printer Type</h5>
+          <div class="mb-3">
+            {% for radio in form.printer_type %}
+            <div class="form-check form-check-inline">
+              {{ radio.tag }}
+              <label class="form-check-label" for="{{ radio.id_for_label }}">{{ radio.choice_label }}</label>
+            </div>
+            {% endfor %}
+            {% for error in form.printer_type.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}
+          </div>
+
           <h5 class="border-bottom pb-2 mb-3 mt-4"><i class="bi bi-layers me-2"></i>OrcaSlicer Settings</h5>
           {% for field in form %}
           {% if field.name == 'orca_machine_profile' %}
@@ -64,24 +76,60 @@
           {% endif %}
           {% endfor %}
 
-          <h5 class="border-bottom pb-2 mb-3 mt-4"><i class="bi bi-wifi me-2"></i>Connection Settings</h5>
-          {% for field in form %}
-          {% if field.name == 'moonraker_url' or field.name == 'moonraker_api_key' %}
-          <div class="mb-3">
-            <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}</label>
-            {% if 'PasswordInput' in field|widget_class %}
-            <input type="password" name="{{ field.html_name }}" id="{{ field.id_for_label }}"
-              value="{{ field.value|default:'' }}" class="form-control {% if field.errors %}is-invalid{% endif %}">
-            {% else %}
-            <input type="{{ field.field.widget.input_type|default:'text' }}" name="{{ field.html_name }}"
-              id="{{ field.id_for_label }}" value="{{ field.value|default:'' }}"
-              class="form-control {% if field.errors %}is-invalid{% endif %}">
+          {# Klipper/Moonraker connection fields #}
+          <div id="klipper-fields">
+            <h5 class="border-bottom pb-2 mb-3 mt-4"><i class="bi bi-wifi me-2"></i>Klipper/Moonraker Connection</h5>
+            {% for field in form %}
+            {% if field.name == 'moonraker_url' or field.name == 'moonraker_api_key' %}
+            <div class="mb-3">
+              <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}</label>
+              {% if 'PasswordInput' in field|widget_class %}
+              <input type="password" name="{{ field.html_name }}" id="{{ field.id_for_label }}"
+                value="{{ field.value|default:'' }}" class="form-control {% if field.errors %}is-invalid{% endif %}">
+              {% else %}
+              <input type="{{ field.field.widget.input_type|default:'text' }}" name="{{ field.html_name }}"
+                id="{{ field.id_for_label }}" value="{{ field.value|default:'' }}"
+                class="form-control {% if field.errors %}is-invalid{% endif %}">
+              {% endif %}
+              {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+              {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+            </div>
             {% endif %}
-            {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
-            {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+            {% endfor %}
           </div>
-          {% endif %}
-          {% endfor %}
+
+          {# Bambu Lab connection fields #}
+          <div id="bambulab-fields">
+            <h5 class="border-bottom pb-2 mb-3 mt-4"><i class="bi bi-cloud me-2"></i>Bambu Lab Connection</h5>
+            {% for field in form %}
+            {% if field.name == 'bambu_account' %}
+            <div class="mb-3">
+              <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}</label>
+              <select name="{{ field.html_name }}" id="{{ field.id_for_label }}"
+                class="form-select{% if field.errors %} is-invalid{% endif %}">
+                <option value="">---------</option>
+                {% for choice in field.field.queryset %}
+                <option value="{{ choice.pk }}" {% if field.value|stringformat:'s' == choice.pk|stringformat:'s' %}selected{% endif %}>{{ choice }}</option>
+                {% endfor %}
+              </select>
+              {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+              {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+              <div class="form-text">
+                <a href="{% url 'core:bambuaccount_step1' %}">Connect a new Bambu Lab account</a>
+              </div>
+            </div>
+            {% elif field.name == 'bambu_device_id' or field.name == 'bambu_ip_address' %}
+            <div class="mb-3">
+              <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}</label>
+              <input type="text" name="{{ field.html_name }}" id="{{ field.id_for_label }}"
+                value="{{ field.value|default:'' }}"
+                class="form-control{% if field.errors %} is-invalid{% endif %}">
+              {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+              {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+            </div>
+            {% endif %}
+            {% endfor %}
+          </div>
 
           <div class="d-flex gap-2 mt-4">
             <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i>{% if form.instance.pk %}Update{% else %}Create{% endif %}</button>
@@ -93,4 +141,23 @@
     </div>
   </div>
 </div>
+
+<script>
+  (function () {
+    const radios = document.querySelectorAll('input[name="printer_type"]');
+    const klipperFields = document.getElementById('klipper-fields');
+    const bambuFields = document.getElementById('bambulab-fields');
+
+    function toggleFields() {
+      const selected = document.querySelector('input[name="printer_type"]:checked');
+      if (!selected) return;
+      const isKlipper = selected.value === 'klipper';
+      klipperFields.style.display = isKlipper ? '' : 'none';
+      bambuFields.style.display = isKlipper ? 'none' : '';
+    }
+
+    radios.forEach(function (r) { r.addEventListener('change', toggleFields); });
+    toggleFields();
+  })();
+</script>
 {% endblock %}
