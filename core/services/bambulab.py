@@ -12,6 +12,7 @@ Communication paths:
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import logging
 import threading
@@ -283,10 +284,8 @@ class BambuLabClient:
                 f"MQTT communication failed with '{self.printer.name}': {exc}"
             ) from exc
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 mqtt.disconnect()
-            except Exception:
-                pass
 
     # ── PrinterBackend protocol implementation ─────────────────────────
 
@@ -379,7 +378,7 @@ class BambuLabClient:
         ftp = self._get_ftp_client()
         try:
             ftp.connect()
-            result = ftp.upload_file(str(file_path), target_dir="/")
+            result = ftp.upload_file(str(file_path), target_dir="/", remote_filename=filename)
             logger.info(
                 "LAN FTP upload successful for '%s': %s",
                 self.printer.name,
@@ -393,10 +392,8 @@ class BambuLabClient:
         except Exception as exc:
             raise BambuLabError(f"FTP upload failed: {exc}") from exc
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 ftp.disconnect()
-            except Exception:
-                pass
 
     def _upload_via_cloud(
         self, file_path: Path, filename: str
@@ -412,9 +409,11 @@ class BambuLabClient:
         """
         cloud = self._get_cloud_client()
         try:
+            # Cloud API doesn't support custom filenames; the file is
+            # identified by its original name on the server side.
             result = cloud.upload_file(str(file_path))
             logger.info(
-                "Cloud upload successful for '%s': %s",
+                "Cloud upload successful for '%s': %s (original name used by Cloud API)",
                 self.printer.name,
                 filename,
             )
@@ -452,7 +451,7 @@ class BambuLabClient:
                 "print": {
                     "command": "project_file",
                     "sequence_id": str(int(time.time())),
-                    "param": f"Metadata/plate_1.gcode",
+                    "param": "Metadata/plate_1.gcode",
                     "subtask_name": filename,
                     "url": f"ftp://{filename}",
                     "file": filename,
@@ -474,10 +473,8 @@ class BambuLabClient:
                 f"Failed to start print on '{self.printer.name}': {exc}"
             ) from exc
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 mqtt.disconnect()
-            except Exception:
-                pass
 
     def get_job_status(self) -> NormalizedJobStatus:
         """Get current print job status via MQTT.
@@ -567,7 +564,5 @@ class BambuLabClient:
                 f"Failed to cancel print on '{self.printer.name}': {exc}"
             ) from exc
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 mqtt.disconnect()
-            except Exception:
-                pass

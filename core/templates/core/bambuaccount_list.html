@@ -32,9 +32,11 @@
           {% if account.token_expires_at %}
           <div>
             <i class="bi bi-clock me-1"></i>Token expires:
-            <span class="{% if account.token_expires_at < now %}text-danger{% endif %}">
-              {{ account.token_expires_at|timesince }} ago
-            </span>
+            {% if account.token_expires_at < now %}
+            <span class="text-danger">expired {{ account.token_expires_at|timesince }} ago</span>
+            {% else %}
+            <span class="text-success">in {{ account.token_expires_at|timeuntil }}</span>
+            {% endif %}
           </div>
           {% endif %}
           <div><i class="bi bi-calendar me-1"></i>Connected: {{ account.created_at|date:"N j, Y" }}</div>

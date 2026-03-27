@@ -28,11 +28,13 @@
           <h5 class="card-title mb-0">{{ printer.name }}</h5>
           {% with status=printer_statuses|dict_get:printer.pk %}
           {% if status == 'online' %}
-          <span class="badge bg-success" title="Moonraker reachable"><i class="bi bi-wifi"></i> Online</span>
+          <span class="badge bg-success" title="Printer reachable"><i class="bi bi-wifi"></i> Online</span>
+          {% elif status == 'unconfigured' %}
+          <span class="badge bg-secondary" title="Connection not configured"><i class="bi bi-gear"></i> Not configured</span>
           {% elif status == 'offline' %}
-          <span class="badge bg-danger" title="Moonraker not reachable"><i class="bi bi-wifi-off"></i> Offline</span>
+          <span class="badge bg-danger" title="Printer not reachable"><i class="bi bi-wifi-off"></i> Offline</span>
           {% else %}
-          <span class="badge bg-secondary" title="No Moonraker URL configured"><i class="bi bi-wifi-off"></i> Not configured</span>
+          <span class="badge bg-secondary" title="Status unknown"><i class="bi bi-question-circle"></i> Unknown</span>
           {% endif %}
           {% endwith %}
         </div>

@@ -16,7 +16,7 @@ from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
-from django.urls import reverse, reverse_lazy
+from django.urls import reverse_lazy
 from django.utils import timezone
 from django.views import View
 from django.views.generic import DeleteView, FormView, ListView
@@ -26,8 +26,9 @@ from core.forms import (
     BambuAuthStep2Form,
     BambuAuthStep3Form,
 )
+from core.mixins import PrinterManageMixin
 from core.models import BambuCloudAccount, PrinterProfile
-from core.services.bambulab import BambuLabError, encrypt_token
+from core.services.bambulab import encrypt_token
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ _SESSION_BAMBU_UID = "bambu_auth_uid"
 TOKEN_VALIDITY_HOURS = 23
 
 
-class BambuAccountStep1View(LoginRequiredMixin, FormView):
+class BambuAccountStep1View(PrinterManageMixin, FormView):
     """Step 1: Enter Bambu Lab Cloud credentials.
 
     Sends credentials to the Bambu Lab API which triggers a 2FA
@@ -120,7 +121,7 @@ class BambuAccountStep1View(LoginRequiredMixin, FormView):
             return self.form_invalid(form)
 
 
-class BambuAccountStep2View(LoginRequiredMixin, FormView):
+class BambuAccountStep2View(PrinterManageMixin, FormView):
     """Step 2: Enter the 2FA verification code.
 
     Completes authentication using the code sent to the user's email.
@@ -192,7 +193,7 @@ class BambuAccountStep2View(LoginRequiredMixin, FormView):
             return self.form_invalid(form)
 
 
-class BambuAccountStep3View(LoginRequiredMixin, FormView):
+class BambuAccountStep3View(PrinterManageMixin, FormView):
     """Step 3: Select a printer from the authenticated account.
 
     Lists all devices bound to the Bambu Lab account and creates
@@ -212,11 +213,14 @@ class BambuAccountStep3View(LoginRequiredMixin, FormView):
         return super().dispatch(request, *args, **kwargs)
 
     def _get_devices(self) -> list[dict]:
-        """Fetch device list from Bambu Lab Cloud API.
+        """Fetch device list from Bambu Lab Cloud API (cached per request).
 
         Returns:
             List of device dictionaries.
         """
+        if hasattr(self, "_cached_devices"):
+            return self._cached_devices
+
         token = self.request.session.get(_SESSION_BAMBU_TOKEN, "")
         region = self.request.session.get(_SESSION_BAMBU_REGION, "global")
 
@@ -226,12 +230,15 @@ class BambuAccountStep3View(LoginRequiredMixin, FormView):
             client = BambuClient(token=token, region=region)
             result = client.get_devices()
             if isinstance(result, list):
-                return result
-            return result.get("devices", [])
+                self._cached_devices = result
+            else:
+                self._cached_devices = result.get("devices", [])
         except Exception as exc:
             logger.exception("Failed to fetch Bambu Lab devices")
             messages.error(self.request, f"Failed to load devices: {exc}")
-            return []
+            self._cached_devices = []
+
+        return self._cached_devices
 
     def get_form_kwargs(self) -> dict[str, Any]:
         """Pass device list to the form."""
@@ -338,8 +345,14 @@ class BambuAccountListView(LoginRequiredMixin, ListView):
         """Filter to only the current user's accounts."""
         return BambuCloudAccount.objects.filter(user=self.request.user)
 
+    def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
+        """Add current time for token expiry comparison."""
+        context = super().get_context_data(**kwargs)
+        context["now"] = timezone.now()
+        return context
 
-class BambuAccountDeleteView(LoginRequiredMixin, DeleteView):
+
+class BambuAccountDeleteView(PrinterManageMixin, DeleteView):
     """Disconnect (delete) a Bambu Lab Cloud account.
 
     Also removes any printer profiles linked to this account.
@@ -371,7 +384,7 @@ class BambuAccountDeleteView(LoginRequiredMixin, DeleteView):
         return super().form_valid(form)
 
 
-class BambuAccountRefreshView(LoginRequiredMixin, View):
+class BambuAccountRefreshView(PrinterManageMixin, View):
     """Re-authenticate an existing Bambu Lab account.
 
     Pre-fills the wizard with the account's email and region, then

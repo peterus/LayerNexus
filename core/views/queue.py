@@ -170,9 +170,6 @@ class RunNextQueueView(PrinterControlMixin, View):
 
     def post(self, request: HttpRequest, printer_pk: int) -> HttpResponse:
         printer = get_object_or_404(PrinterProfile, pk=printer_pk)
-        if not printer.moonraker_url:
-            messages.error(request, "No Moonraker URL configured for this printer.")
-            return redirect("core:printqueue_list")
 
         # Check that the printer is free
         busy_entry = PrintQueue.objects.filter(

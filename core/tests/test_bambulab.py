@@ -11,7 +11,6 @@ Covers:
 
 from unittest.mock import MagicMock, patch
 
-from django.contrib.auth.models import User
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
@@ -28,7 +27,6 @@ from core.services.printer_backend import (
     get_printer_backend,
 )
 from core.tests.mixins import TestDataMixin
-
 
 # ── Token encryption tests ─────────────────────────────────────────────
 
@@ -619,3 +617,29 @@ class BambuAccountManagementTests(TestDataMixin, TestCase):
         resp = self.client.get(reverse("core:bambuaccount_list"))
         self.assertEqual(resp.status_code, 302)
         self.assertIn("login", resp.url)
+
+    def test_designer_cannot_access_wizard(self):
+        """Designer role (no can_manage_printers) gets 403 on wizard."""
+        from django.contrib.auth.models import Group, User
+
+        designer = User.objects.create_user(username="designer_test", password="testpass123")
+        designer_group = Group.objects.get(name="Designer")
+        designer.groups.add(designer_group)
+
+        self.client.login(username="designer_test", password="testpass123")
+        resp = self.client.get(reverse("core:bambuaccount_step1"))
+        self.assertEqual(resp.status_code, 403)
+
+    def test_designer_cannot_delete_account(self):
+        """Designer role gets 403 on account delete."""
+        from django.contrib.auth.models import Group, User
+
+        designer = User.objects.create_user(username="designer_del", password="testpass123")
+        designer_group = Group.objects.get(name="Designer")
+        designer.groups.add(designer_group)
+
+        self.client.login(username="designer_del", password="testpass123")
+        resp = self.client.post(
+            reverse("core:bambuaccount_delete", kwargs={"pk": self.account.pk})
+        )
+        self.assertEqual(resp.status_code, 403)

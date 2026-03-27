@@ -14,7 +14,6 @@ __all__ = [
     "BambuAuthStep1Form",
     "BambuAuthStep2Form",
     "BambuAuthStep3Form",
-    "BambuAccountDeleteForm",
 ]
 
 
@@ -114,11 +113,3 @@ class BambuAuthStep3Form(forms.Form):
         else:
             self.fields["device_id"].choices = []
 
-
-class BambuAccountDeleteForm(forms.Form):
-    """Confirmation form for disconnecting a Bambu Lab account."""
-
-    confirm = forms.BooleanField(
-        label="I understand this will disconnect all linked printers",
-        required=True,
-    )

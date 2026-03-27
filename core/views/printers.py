@@ -49,8 +49,18 @@ class PrinterProfileListView(LoginRequiredMixin, ListView):
                 backend = get_printer_backend(printer)
                 backend.get_printer_status()
                 statuses[printer.pk] = "online"
-            except PrinterError:
-                statuses[printer.pk] = "offline"
+            except PrinterError as exc:
+                exc_msg = str(exc).lower()
+                is_config_error = (
+                    "not configured" in exc_msg
+                    or "no moonraker" in exc_msg
+                    or "no bambu" in exc_msg
+                    or "device id" in exc_msg
+                )
+                if is_config_error:
+                    statuses[printer.pk] = "unconfigured"
+                else:
+                    statuses[printer.pk] = "offline"
         context["printer_statuses"] = statuses
         return context
 

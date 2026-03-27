@@ -8,6 +8,7 @@ to create the correct backend for a given ``PrinterProfile``.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -21,6 +22,7 @@ class PrinterError(Exception):
     """Base exception for all printer backend errors."""
 
 
+@dataclass
 class NormalizedJobStatus:
     """Normalized print job status returned by all backends.
 
@@ -41,17 +43,10 @@ class NormalizedJobStatus:
     STATE_IDLE = "idle"
     TERMINAL_STATES = {STATE_COMPLETE, STATE_ERROR, STATE_CANCELLED, STATE_STANDBY}
 
-    def __init__(
-        self,
-        state: str,
-        progress: float = 0.0,
-        filename: str = "",
-        temperatures: dict[str, float] | None = None,
-    ) -> None:
-        self.state = state
-        self.progress = progress
-        self.filename = filename
-        self.temperatures = temperatures or {}
+    state: str
+    progress: float = 0.0
+    filename: str = ""
+    temperatures: dict[str, float] = field(default_factory=dict)
 
     def __repr__(self) -> str:
         return (
