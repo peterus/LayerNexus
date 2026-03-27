@@ -50,7 +50,11 @@ class OperatorPermissionTests(_RBACTestBase):
 
     def test_operator_can_create_printer(self):
         self.client.login(username="operator_user", password="testpass123")
-        resp = self.client.post(reverse("core:printerprofile_create"), {"name": "Op Printer"})
+        resp = self.client.post(reverse("core:printerprofile_create"), {
+            "name": "Op Printer",
+            "printer_type": "klipper",
+            "moonraker_url": "http://192.168.1.100:7125",
+        })
         self.assertEqual(resp.status_code, 302)
         self.assertTrue(PrinterProfile.objects.filter(name="Op Printer").exists())
 
@@ -92,7 +96,11 @@ class AdminPermissionTests(_RBACTestBase):
 
     def test_admin_can_create_printer(self):
         self.client.login(username="admin_user", password="testpass123")
-        resp = self.client.post(reverse("core:printerprofile_create"), {"name": "Admin Printer"})
+        resp = self.client.post(reverse("core:printerprofile_create"), {
+            "name": "Admin Printer",
+            "printer_type": "klipper",
+            "moonraker_url": "http://192.168.1.100:7125",
+        })
         self.assertEqual(resp.status_code, 302)
 
 
