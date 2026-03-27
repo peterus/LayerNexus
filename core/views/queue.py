@@ -21,7 +21,7 @@ from core.models import (
     PrintJobPlate,
     PrintQueue,
 )
-from core.services.moonraker import MoonrakerClient, MoonrakerError
+from core.services.printer_backend import PrinterError, get_printer_backend
 
 logger = logging.getLogger(__name__)
 
@@ -214,16 +214,14 @@ class RunNextQueueView(PrinterControlMixin, View):
             )
             return redirect("core:printqueue_list")
 
-        # Build a descriptive, filesystem-safe filename for Klipper
+        # Build a descriptive, filesystem-safe filename for the printer
         safe_name = re.sub(r"[^\w\-]", "_", str(job))[:50]
         remote_filename = f"LN_{safe_name}_p{plate.plate_number}.gcode"
 
-        client = MoonrakerClient(printer.moonraker_url, printer.moonraker_api_key)
         try:
-            # Upload gcode
-            client.upload_gcode(gcode_file.path, filename=remote_filename)
-            # Start the print
-            client.start_print(remote_filename)
+            backend = get_printer_backend(printer)
+            backend.upload_gcode(gcode_file.path, filename=remote_filename)
+            backend.start_print(remote_filename)
 
             # Update queue entry
             entry.status = PrintQueue.STATUS_PRINTING
@@ -232,9 +230,9 @@ class RunNextQueueView(PrinterControlMixin, View):
 
             # Update plate status
             plate.status = PrintJobPlate.STATUS_PRINTING
-            plate.klipper_job_id = remote_filename
+            plate.remote_job_id = remote_filename
             plate.started_at = timezone.now()
-            plate.save(update_fields=["status", "klipper_job_id", "started_at"])
+            plate.save(update_fields=["status", "remote_job_id", "started_at"])
 
             # Update job status
             job.status = PrintJob.STATUS_PRINTING
@@ -246,7 +244,7 @@ class RunNextQueueView(PrinterControlMixin, View):
                 request,
                 f'Started printing plate {plate.plate_number} of "{job}" on {printer.name}.',
             )
-        except MoonrakerError as exc:
+        except PrinterError as exc:
             logger.exception("Failed to run queue entry %s", entry.pk)
             messages.error(request, f"Failed to start print: {exc}")
 
@@ -256,13 +254,13 @@ class RunNextQueueView(PrinterControlMixin, View):
 class RunAllQueuesView(PrinterControlMixin, View):
     """Start the next waiting job on every free printer.
 
-    Iterates over all printers that have a Moonraker URL.
+    Iterates over all configured printers.
     For each printer that is free (no printing/awaiting_review entry), it
     picks the highest-priority waiting entry and starts the print.
     """
 
     def post(self, request: HttpRequest) -> HttpResponse:
-        printers = PrinterProfile.objects.filter().exclude(moonraker_url="")
+        printers = PrinterProfile.objects.all()
 
         started = 0
         skipped_busy = 0
@@ -307,19 +305,19 @@ class RunAllQueuesView(PrinterControlMixin, View):
             safe_name = re.sub(r"[^\w\-]", "_", str(job))[:50]
             remote_filename = f"LN_{safe_name}_p{plate.plate_number}.gcode"
 
-            client = MoonrakerClient(printer.moonraker_url, printer.moonraker_api_key)
             try:
-                client.upload_gcode(gcode_file.path, filename=remote_filename)
-                client.start_print(remote_filename)
+                backend = get_printer_backend(printer)
+                backend.upload_gcode(gcode_file.path, filename=remote_filename)
+                backend.start_print(remote_filename)
 
                 entry.status = PrintQueue.STATUS_PRINTING
                 entry.started_at = timezone.now()
                 entry.save(update_fields=["status", "started_at"])
 
                 plate.status = PrintJobPlate.STATUS_PRINTING
-                plate.klipper_job_id = remote_filename
+                plate.remote_job_id = remote_filename
                 plate.started_at = timezone.now()
-                plate.save(update_fields=["status", "klipper_job_id", "started_at"])
+                plate.save(update_fields=["status", "remote_job_id", "started_at"])
 
                 job.status = PrintJob.STATUS_PRINTING
                 if not job.started_at:
@@ -327,7 +325,7 @@ class RunAllQueuesView(PrinterControlMixin, View):
                 job.save(update_fields=["status", "started_at"])
 
                 started += 1
-            except MoonrakerError as exc:
+            except PrinterError as exc:
                 logger.exception("Failed to start print on %s: %s", printer.name, exc)
                 errors += 1
 
@@ -448,7 +446,7 @@ class QueueEntryReviewView(PrinterControlMixin, View):
 
 
 class QueueCheckPrinterStatusView(LoginRequiredMixin, View):
-    """JSON endpoint: poll Moonraker for a printing queue entry.
+    """JSON endpoint: poll printer backend for a printing queue entry.
 
     Returns ``{"status": "printing"|"awaiting_review"|"error", ...}``.
     If the printer reports the job as complete the queue entry is moved
@@ -465,17 +463,11 @@ class QueueCheckPrinterStatusView(LoginRequiredMixin, View):
             return JsonResponse({"status": entry.status})
 
         printer = entry.printer
-        if not printer.moonraker_url:
-            return JsonResponse({"status": "error", "message": "No Moonraker URL"})
-
-        client = MoonrakerClient(printer.moonraker_url, printer.moonraker_api_key)
         try:
-            data = client.get_job_status()
-            status_data = data.get("result", {}).get("status", {})
-            print_stats = status_data.get("print_stats", {})
-            virtual_sd = status_data.get("virtual_sdcard", {})
-            state = print_stats.get("state", "unknown")
-            progress = virtual_sd.get("progress", 0)
+            backend = get_printer_backend(printer)
+            job_status = backend.get_job_status()
+            state = job_status.state
+            progress = job_status.progress
 
             if state == "complete":
                 entry.status = PrintQueue.STATUS_AWAITING_REVIEW
@@ -489,9 +481,6 @@ class QueueCheckPrinterStatusView(LoginRequiredMixin, View):
                 )
 
             if state in ("error", "cancelled", "standby"):
-                # standby = printer idle after cancel or after finishing.
-                # cancelled / error = explicit failure states.
-                # All mean the print is no longer running → operator review.
                 entry.status = PrintQueue.STATUS_AWAITING_REVIEW
                 entry.completed_at = timezone.now()
                 entry.save(update_fields=["status", "completed_at"])
@@ -510,17 +499,16 @@ class QueueCheckPrinterStatusView(LoginRequiredMixin, View):
                 }
             )
 
-        except MoonrakerError as exc:
-            logger.warning("Moonraker poll failed for entry %s: %s", pk, exc)
+        except PrinterError as exc:
+            logger.warning("Printer poll failed for entry %s: %s", pk, exc)
             return JsonResponse({"status": "error", "message": str(exc)})
 
 
 class CancelQueueEntryView(PrinterControlMixin, View):
     """Cancel a running print and move the queue entry to awaiting_review.
 
-    Sends a cancel command to Moonraker and sets the entry status so
-    the operator can then Pass (discard the failed print) or Fail
-    (retry).
+    Sends a cancel command to the printer backend and sets the entry status
+    so the operator can then Pass (discard the failed print) or Fail (retry).
     """
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
@@ -532,16 +520,15 @@ class CancelQueueEntryView(PrinterControlMixin, View):
         printer = entry.printer
         plate_label = f"Plate {entry.plate.plate_number} of '{entry.print_job}'"
 
-        if printer.moonraker_url:
-            client = MoonrakerClient(printer.moonraker_url, printer.moonraker_api_key)
-            try:
-                client.cancel_print()
-            except MoonrakerError as exc:
-                logger.warning("Cancel command failed for entry %s: %s", pk, exc)
-                messages.warning(
-                    request,
-                    f"Moonraker cancel command failed ({exc}), but entry marked for review.",
-                )
+        try:
+            backend = get_printer_backend(printer)
+            backend.cancel_print()
+        except PrinterError as exc:
+            logger.warning("Cancel command failed for entry %s: %s", pk, exc)
+            messages.warning(
+                request,
+                f"Cancel command failed ({exc}), but entry marked for review.",
+            )
 
         entry.status = PrintQueue.STATUS_AWAITING_REVIEW
         entry.completed_at = timezone.now()

@@ -1,9 +1,63 @@
-"""PrinterProfile and CostProfile models for the LayerNexus application."""
+"""PrinterProfile, CostProfile, and BambuCloudAccount models."""
 
 from __future__ import annotations
 
 from django.conf import settings
 from django.db import models
+
+
+class BambuCloudAccount(models.Model):
+    """Stores Bambu Lab Cloud credentials for printer communication.
+
+    Each LayerNexus user may link one or more Bambu Lab accounts.  The
+    JWT token is stored encrypted and used for Cloud API and MQTT
+    communication with Bambu Lab printers.
+    """
+
+    REGION_GLOBAL = "global"
+    REGION_CHINA = "china"
+    REGION_CHOICES = [
+        (REGION_GLOBAL, "Global"),
+        (REGION_CHINA, "China"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="bambu_accounts",
+    )
+    email = models.EmailField(help_text="Bambu Lab account email address")
+    region = models.CharField(
+        max_length=10,
+        choices=REGION_CHOICES,
+        default=REGION_GLOBAL,
+    )
+    token = models.TextField(
+        blank=True,
+        help_text="JWT access token (stored encrypted)",
+    )
+    bambu_uid = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Bambu Lab user ID (required for MQTT connections)",
+    )
+    token_expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the current JWT token expires",
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Whether this account is currently usable",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"Bambu Lab: {self.email} ({self.get_region_display()})"
 
 
 class PrinterProfile(models.Model):
@@ -12,12 +66,28 @@ class PrinterProfile(models.Model):
     Bed dimensions and nozzle diameter are derived from the linked
     ``orca_machine_profile`` and exposed as read-only convenience
     properties.
+
+    The ``printer_type`` field determines which backend is used for
+    communication (Klipper/Moonraker or Bambu Lab).
     """
+
+    TYPE_KLIPPER = "klipper"
+    TYPE_BAMBULAB = "bambulab"
+    TYPE_CHOICES = [
+        (TYPE_KLIPPER, "Klipper/Moonraker"),
+        (TYPE_BAMBULAB, "Bambu Lab"),
+    ]
 
     name = models.CharField(max_length=255)
     description = models.TextField(
         blank=True,
         help_text="Supports Markdown formatting.",
+    )
+    printer_type = models.CharField(
+        max_length=20,
+        choices=TYPE_CHOICES,
+        default=TYPE_KLIPPER,
+        help_text="Determines which communication backend is used",
     )
 
     # OrcaSlicer machine profile (new structured import)
@@ -34,6 +104,26 @@ class PrinterProfile(models.Model):
     # Klipper/Moonraker connection
     moonraker_url = models.URLField(blank=True, help_text="e.g. http://192.168.1.100:7125")
     moonraker_api_key = models.CharField(max_length=255, blank=True)
+
+    # Bambu Lab connection
+    bambu_account = models.ForeignKey(
+        BambuCloudAccount,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="printers",
+        help_text="Bambu Lab Cloud account for authentication",
+    )
+    bambu_device_id = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Device serial number from Bambu Lab Cloud",
+    )
+    bambu_ip_address = models.GenericIPAddressField(
+        null=True,
+        blank=True,
+        help_text="Local IP address for direct LAN communication (FTP upload)",
+    )
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
