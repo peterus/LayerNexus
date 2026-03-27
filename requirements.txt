@@ -4,3 +4,5 @@ pillow>=10.0
 markdown>=3.5
 bleach>=6.0
 whitenoise>=6.0
+bambu-lab-cloud-api>=1.0
+cryptography>=42.0

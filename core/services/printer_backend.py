@@ -151,6 +151,8 @@ def get_printer_backend(printer: PrinterProfile) -> PrinterBackend:
         return MoonrakerClient(printer.moonraker_url, printer.moonraker_api_key)
 
     if printer.printer_type == PP.TYPE_BAMBULAB:
-        raise PrinterError("Bambu Lab backend is not yet implemented.")
+        from core.services.bambulab import BambuLabClient
+
+        return BambuLabClient(printer)
 
     raise PrinterError(f"Unknown printer type: {printer.printer_type!r}")
