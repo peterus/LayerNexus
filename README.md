@@ -3,7 +3,7 @@
 [![CI](https://github.com/peterus/LayerNexus/actions/workflows/ci.yml/badge.svg)](https://github.com/peterus/LayerNexus/actions/workflows/ci.yml)
 [![Docker Image](https://ghcr-badge.egpl.dev/peterus/layernexus/latest_tag?trim=major&label=Docker)](https://github.com/peterus/LayerNexus/pkgs/container/layernexus)
 [![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://peterus.github.io/LayerNexus/)
-![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)
+![License: AGPL v3](https://img.shields.io/badge/License-AGPLv3-blue.svg)
 
 **The control center for your 3D print workflow.**
 
@@ -268,7 +268,7 @@ The GitHub Actions CI pipeline runs on every push to `main` and on pull requests
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0** — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **GNU Affero General Public License v3.0** — see the [LICENSE](LICENSE) file for details.
 
 ## Contributing
 
