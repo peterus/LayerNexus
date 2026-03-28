@@ -1,6 +1,9 @@
 # Klipper / Moonraker
 
-LayerNexus connects to your Klipper-based 3D printers through [Moonraker](https://github.com/Arksine/moonraker) — the API that runs alongside Klipper on your printer. This lets you upload G-code, start prints, and track progress right from LayerNexus.
+LayerNexus connects to your **Klipper-based** 3D printers through [Moonraker](https://github.com/Arksine/moonraker) — the API that runs alongside Klipper on your printer. This lets you upload G-code, start prints, and track progress right from LayerNexus.
+
+!!! tip "Using Bambu Lab printers?"
+    LayerNexus also supports Bambu Lab printers via the Cloud API. See [Bambu Lab](bambulab.md) for setup instructions.
 
 ---
 
@@ -8,7 +11,8 @@ LayerNexus connects to your Klipper-based 3D printers through [Moonraker](https:
 
 1. Go to **Printers** in the navigation bar.
 2. Click **Add Printer**.
-3. Fill in:
+3. Select **Klipper/Moonraker** as the printer type.
+4. Fill in:
 
 | Field | What to Enter | Example |
 |---|---|---|
@@ -16,7 +20,7 @@ LayerNexus connects to your Klipper-based 3D printers through [Moonraker](https:
 | **Moonraker URL** | The URL where Moonraker is running | `http://192.168.1.100:7125` |
 | **API Key** | Only needed if your Moonraker requires authentication | _(leave empty if not needed)_ |
 
-4. Click **Save**.
+5. Click **Save**.
 
 ### Finding Your Moonraker URL
 
@@ -76,5 +80,6 @@ LayerNexus tracks each print job through its lifecycle:
 
 ## Next Steps
 
+- [Set up Bambu Lab printers](bambulab.md)
 - [Track filament with Spoolman](spoolman.md)
 - [Manage the print queue](../user-guide/printing.md)

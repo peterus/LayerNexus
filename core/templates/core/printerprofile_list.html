@@ -7,7 +7,14 @@
 <div class="d-flex justify-content-between align-items-center mb-4">
   <h1 class="h3 mb-0"><i class="bi bi-cpu me-2"></i>Printers</h1>
   {% if perms.core.can_manage_printers %}
-  <a href="{% url 'core:printerprofile_create' %}" class="btn btn-primary"><i class="bi bi-plus-lg me-1"></i>Add Printer</a>
+  <div class="d-flex gap-2">
+    <a href="{% url 'core:bambuaccount_step1' %}" class="btn btn-outline-success">
+      <i class="bi bi-cloud-arrow-up me-1"></i>Connect Bambu Lab
+    </a>
+    <a href="{% url 'core:printerprofile_create' %}" class="btn btn-primary">
+      <i class="bi bi-plus-lg me-1"></i>Add Printer
+    </a>
+  </div>
   {% endif %}
 </div>
 
@@ -21,11 +28,13 @@
           <h5 class="card-title mb-0">{{ printer.name }}</h5>
           {% with status=printer_statuses|dict_get:printer.pk %}
           {% if status == 'online' %}
-          <span class="badge bg-success" title="Moonraker reachable"><i class="bi bi-wifi"></i> Online</span>
+          <span class="badge bg-success" title="Printer reachable"><i class="bi bi-wifi"></i> Online</span>
+          {% elif status == 'unconfigured' %}
+          <span class="badge bg-secondary" title="Connection not configured"><i class="bi bi-gear"></i> Not configured</span>
           {% elif status == 'offline' %}
-          <span class="badge bg-danger" title="Moonraker not reachable"><i class="bi bi-wifi-off"></i> Offline</span>
+          <span class="badge bg-danger" title="Printer not reachable"><i class="bi bi-wifi-off"></i> Offline</span>
           {% else %}
-          <span class="badge bg-secondary" title="No Moonraker URL configured"><i class="bi bi-wifi-off"></i> Not configured</span>
+          <span class="badge bg-secondary" title="Status unknown"><i class="bi bi-question-circle"></i> Unknown</span>
           {% endif %}
           {% endwith %}
         </div>

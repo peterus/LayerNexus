@@ -30,17 +30,32 @@ After uploading, you can preview the 3D model directly in the browser using the 
 
 ## 3. Set Up Printer Profiles
 
-Before you can send G-code to a printer, create a printer profile:
+Before you can send G-code to a printer, create a printer profile. LayerNexus supports two types of printers:
 
-1. Go to **Printers** in the navigation bar.
-2. Click **Add Printer**.
-3. Enter a name for the printer (e.g., "Voron 2.4").
-4. Enter the **Moonraker URL** — this is the URL where Moonraker is running on your printer (e.g., `http://192.168.1.100:7125`).
-5. Optionally add an **API key** if your Moonraker instance requires authentication.
-6. Click **Save**.
+=== "Klipper / Moonraker"
 
-!!! note
-    LayerNexus connects to your printers via the [Moonraker API](../integrations/moonraker.md). Make sure LayerNexus can reach the Moonraker URL over your network.
+    1. Go to **Printers** in the navigation bar.
+    2. Click **Add Printer**.
+    3. Select **Klipper/Moonraker** as the printer type.
+    4. Enter a name for the printer (e.g., "Voron 2.4").
+    5. Enter the **Moonraker URL** — this is the URL where Moonraker is running on your printer (e.g., `http://192.168.1.100:7125`).
+    6. Optionally add an **API key** if your Moonraker instance requires authentication.
+    7. Click **Save**.
+
+    !!! note
+        LayerNexus connects to your printers via the [Moonraker API](../integrations/moonraker.md). Make sure LayerNexus can reach the Moonraker URL over your network.
+
+=== "Bambu Lab"
+
+    1. Go to **Bambu Lab Accounts** in the navigation bar.
+    2. Click **Connect Account**.
+    3. Log in with your Bambu Lab Cloud email and password.
+    4. Enter the **6-digit verification code** sent to your email.
+    5. Select your printer from the list of registered devices.
+    6. Optionally enter the printer's **LAN IP address** for faster G-code uploads.
+    7. Click **Connect Printer**.
+
+    The wizard creates a printer profile automatically. See [Bambu Lab](../integrations/bambulab.md) for the full guide.
 
 ### Cost Profiles
 
@@ -78,7 +93,7 @@ Once you have a project with parts, a printer profile, and slicer profiles set u
 1. Open a part detail page.
 2. Click **Slice** to send the STL to OrcaSlicer for slicing.
 3. Review the slicing results (estimated print time, filament usage).
-4. Click **Upload to Printer** to send the G-code to your printer via Moonraker.
+4. Click **Upload to Printer** to send the G-code to your printer.
 5. Click **Start Print** to begin printing.
 
 ### Print Queue

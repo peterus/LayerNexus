@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% load core_tags %}
+{% block title %}Bambu Lab Accounts — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="h3 mb-0"><i class="bi bi-cloud me-2"></i>Bambu Lab Accounts</h1>
+  <a href="{% url 'core:bambuaccount_step1' %}" class="btn btn-primary">
+    <i class="bi bi-plus-lg me-1"></i>Connect Account
+  </a>
+</div>
+
+{% if accounts %}
+<div class="row row-cols-1 row-cols-md-2 g-4">
+  {% for account in accounts %}
+  <div class="col">
+    <div class="card h-100 shadow-sm">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-cloud-check me-1"></i>{{ account.email }}
+          </h5>
+          {% if account.is_active %}
+          <span class="badge bg-success">Active</span>
+          {% else %}
+          <span class="badge bg-warning text-dark">Inactive</span>
+          {% endif %}
+        </div>
+
+        <div class="small text-body-secondary mb-3">
+          <div><i class="bi bi-globe me-1"></i>Region: {{ account.get_region_display }}</div>
+          {% if account.token_expires_at %}
+          <div>
+            <i class="bi bi-clock me-1"></i>Token expires:
+            {% if account.token_expires_at < now %}
+            <span class="text-danger">expired {{ account.token_expires_at|timesince }} ago</span>
+            {% else %}
+            <span class="text-success">in {{ account.token_expires_at|timeuntil }}</span>
+            {% endif %}
+          </div>
+          {% endif %}
+          <div><i class="bi bi-calendar me-1"></i>Connected: {{ account.created_at|date:"N j, Y" }}</div>
+        </div>
+
+        {% with printers=account.printers.all %}
+        {% if printers %}
+        <h6 class="small text-uppercase text-body-secondary">Linked Printers</h6>
+        <ul class="list-unstyled small mb-0">
+          {% for printer in printers %}
+          <li>
+            <i class="bi bi-printer me-1"></i>
+            <a href="{% url 'core:printerprofile_update' printer.pk %}" class="text-decoration-none">
+              {{ printer.name }}
+            </a>
+          </li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% endwith %}
+      </div>
+      <div class="card-footer d-flex gap-2">
+        <form method="post" action="{% url 'core:bambuaccount_refresh' account.pk %}" class="d-inline">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-sm btn-outline-primary" title="Re-authenticate">
+            <i class="bi bi-arrow-repeat me-1"></i>Refresh Token
+          </button>
+        </form>
+        <a href="{% url 'core:bambuaccount_delete' account.pk %}" class="btn btn-sm btn-outline-danger">
+          <i class="bi bi-trash me-1"></i>Disconnect
+        </a>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="text-center py-5">
+  <i class="bi bi-cloud display-1 text-body-secondary"></i>
+  <h4 class="mt-3">No Bambu Lab accounts connected</h4>
+  <p class="text-body-secondary">Connect your Bambu Lab Cloud account to manage your printers.</p>
+  <a href="{% url 'core:bambuaccount_step1' %}" class="btn btn-primary">
+    <i class="bi bi-plus-lg me-1"></i>Connect Account
+  </a>
+</div>
+{% endif %}
+{% endblock %}

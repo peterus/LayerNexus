@@ -6,12 +6,14 @@ from typing import Any
 
 import requests
 
+from core.services.printer_backend import NormalizedJobStatus, PrinterError
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 15  # seconds
 
 
-class MoonrakerError(Exception):
+class MoonrakerError(PrinterError):
     """Raised when a Moonraker API operation fails."""
 
 
@@ -140,14 +142,48 @@ class MoonrakerClient:
             json={"filename": filename},
         )
 
-    def get_job_status(self) -> dict:
-        """Get the current print job status including progress.
+    def get_job_status(self) -> NormalizedJobStatus:
+        """Get the current print job status with normalized fields.
 
         Queries both ``print_stats`` (state, filename, durations) and
-        ``virtual_sdcard`` (progress 0.0–1.0).
+        ``virtual_sdcard`` (progress 0.0–1.0) and returns a
+        :class:`NormalizedJobStatus`.
 
         Returns:
-            Dictionary with job status information.
+            Normalized job status.
+        """
+        data = self._request(
+            "GET",
+            "printer/objects/query",
+            params={"print_stats": None, "virtual_sdcard": None},
+        )
+        status_data = data.get("result", {}).get("status", {})
+        print_stats = status_data.get("print_stats", {})
+        virtual_sd = status_data.get("virtual_sdcard", {})
+
+        raw_state = print_stats.get("state", "unknown")
+        state_map = {
+            "printing": NormalizedJobStatus.STATE_PRINTING,
+            "complete": NormalizedJobStatus.STATE_COMPLETE,
+            "error": NormalizedJobStatus.STATE_ERROR,
+            "cancelled": NormalizedJobStatus.STATE_CANCELLED,
+            "standby": NormalizedJobStatus.STATE_STANDBY,
+            "paused": NormalizedJobStatus.STATE_PRINTING,
+        }
+        state = state_map.get(raw_state, NormalizedJobStatus.STATE_IDLE)
+
+        return NormalizedJobStatus(
+            state=state,
+            progress=virtual_sd.get("progress", 0.0),
+            filename=print_stats.get("filename", ""),
+        )
+
+    def get_job_status_raw(self) -> dict:
+        """Get the raw Moonraker job status response.
+
+        Returns:
+            Dictionary with the full Moonraker response including
+            ``print_stats`` and ``virtual_sdcard`` data.
         """
         return self._request(
             "GET",

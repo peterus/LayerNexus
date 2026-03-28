@@ -33,6 +33,8 @@ class PrinterProfileViewTests(TestDataMixin, TestCase):
             reverse("core:printerprofile_create"),
             {
                 "name": "New Printer",
+                "printer_type": "klipper",
+                "moonraker_url": "http://192.168.1.100:7125",
             },
         )
         self.assertEqual(resp.status_code, 302)
@@ -47,6 +49,8 @@ class PrinterProfileViewTests(TestDataMixin, TestCase):
             reverse("core:printerprofile_update", args=[self.printer.pk]),
             {
                 "name": "Renamed Printer",
+                "printer_type": "klipper",
+                "moonraker_url": "http://192.168.1.100:7125",
             },
         )
         self.assertEqual(resp.status_code, 302)
@@ -56,7 +60,7 @@ class PrinterProfileViewTests(TestDataMixin, TestCase):
     def test_update_other_user_404(self):
         resp = self.client.post(
             reverse("core:printerprofile_update", args=[self.other_printer.pk]),
-            {"name": "Hacked"},
+            {"name": "Hacked", "printer_type": "klipper", "moonraker_url": "http://192.168.1.99:7125"},
         )
         self.assertEqual(resp.status_code, 302)
 

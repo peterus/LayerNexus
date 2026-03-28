@@ -1,6 +1,7 @@
 """URL configuration for the core app."""
 
 from .auth import urlpatterns as auth_urls
+from .bambuauth import urlpatterns as bambuauth_urls
 from .dashboard import urlpatterns as dashboard_urls
 from .documents import urlpatterns as document_urls
 from .hardware import urlpatterns as hardware_urls
@@ -28,4 +29,5 @@ urlpatterns = (
     + document_urls
     + hardware_urls
     + auth_urls
+    + bambuauth_urls
 )
