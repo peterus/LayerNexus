@@ -9,7 +9,7 @@
 
 ## Overview
 
-LayerNexus is a Django web application for managing large-scale 3D printing projects. It integrates with **OrcaSlicer** (via API) for slicing, **Klipper/Moonraker** for printer connectivity, and **Spoolman** for filament tracking — giving you a single dashboard to go from STL files to finished prints.
+LayerNexus is a Django web application for managing large-scale 3D printing projects. It integrates with **OrcaSlicer** (via API) for slicing, **Klipper/Moonraker** and **Bambu Lab** printers for connectivity, and **Spoolman** for filament tracking — giving you a single dashboard to go from STL files to finished prints.
 
 ## Features
 
@@ -27,8 +27,10 @@ LayerNexus is a Django web application for managing large-scale 3D printing proj
 - 📏 **Filament Calculation** — Estimate filament usage per part and per project (including sub-projects)
 - 🔪 **OrcaSlicer API Integration** — Automated slicing via orca-slicer-api Docker container
 - ⚙️ **OrcaSlicer Profile Management** — Import and reuse machine, filament, and print preset profiles
+- 🖨️ **Multi-Backend Printer Support** — Connect Klipper/Moonraker and Bambu Lab printers from the same dashboard
 - 📤 **Upload to Klipper** — Send G-code directly via the Moonraker API
-- 📊 **Print Status Tracking** — Monitor print progress from Klipper
+- 🎋 **Bambu Lab Cloud Integration** — Connect Bambu Lab printers via Cloud API with 2FA authentication, LAN and Cloud G-code upload, and MQTT-based print control
+- 📊 **Print Status Tracking** — Monitor print progress across all connected printers
 
 ### Filament & Inventory
 
@@ -60,7 +62,7 @@ LayerNexus is a Django web application for managing large-scale 3D printing proj
 | **Static Files** | WhiteNoise with compressed manifest storage |
 | **Deployment** | Docker + Docker Compose, Gunicorn |
 | **CI/CD** | GitHub Actions (ruff lint/format, tests, pip-audit, Docker smoke test) |
-| **External Services** | orca-slicer-api, Klipper/Moonraker, Spoolman |
+| **External Services** | orca-slicer-api, Klipper/Moonraker, Bambu Lab Cloud, Spoolman |
 
 ## Quick Start
 
@@ -115,7 +117,7 @@ LayerNexus/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── entrypoint.sh           # Docker entrypoint (migrations + collectstatic)
-├── gunicorn.ctl            # Gunicorn config
+├── VERSION                 # Semantic version file
 ├── .github/
 │   ├── workflows/ci.yml    # CI pipeline
 │   └── copilot-instructions.md
@@ -125,29 +127,44 @@ LayerNexus/
 │   ├── wsgi.py
 │   └── asgi.py
 ├── core/                   # Main application
-│   ├── models.py           # 17 models
-│   ├── views.py            # 73 class-based views
-│   ├── urls.py
-│   ├── forms.py
-│   ├── mixins.py           # Role-based access control mixins
-│   ├── admin.py
-│   ├── context_processors.py
-│   ├── tests.py            # 319 tests
-│   ├── services/
-│   │   ├── moonraker.py    # Klipper/Moonraker API client
-│   │   ├── orcaslicer.py   # orca-slicer-api REST client
-│   │   └── spoolman.py     # Spoolman API client
+│   ├── models/             # Database models (package)
+│   │   ├── projects.py     # Project (hierarchical)
+│   │   ├── parts.py        # Part, PrintTimeEstimate
+│   │   ├── printers.py     # PrinterProfile, CostProfile, BambuCloudAccount
+│   │   ├── printing.py     # PrintJob, PrintJobPart, PrintJobPlate
+│   │   ├── queue.py        # PrintQueue
+│   │   ├── orca_profiles.py # OrcaSlicer profiles
+│   │   ├── documents.py    # ProjectDocument, FileVersion
+│   │   ├── hardware.py     # HardwarePart, ProjectHardware
+│   │   └── spoolman.py     # SpoolmanFilamentMapping
+│   ├── views/              # Class-based views (package)
+│   │   ├── dashboard.py    # Dashboard and statistics
+│   │   ├── projects.py     # Project CRUD
+│   │   ├── parts.py        # Part CRUD
+│   │   ├── printers.py     # Printer profile management
+│   │   ├── print_jobs.py   # Print job management
+│   │   ├── queue.py        # Print queue management
+│   │   ├── bambuauth.py    # Bambu Lab Cloud authentication wizard
+│   │   └── ...             # auth, documents, hardware, materials, orca_profiles
+│   ├── forms/              # Django ModelForms (package)
+│   ├── urls/               # URL routing (package, split by feature)
+│   ├── services/           # External API clients
+│   │   ├── printer_backend.py  # PrinterBackend protocol + factory
+│   │   ├── moonraker.py        # Klipper/Moonraker API client
+│   │   ├── bambulab.py         # Bambu Lab Cloud/MQTT/FTP client
+│   │   ├── orcaslicer.py       # orca-slicer-api REST client
+│   │   └── spoolman.py         # Spoolman API client
 │   ├── templates/
 │   │   ├── base.html       # Base template with favicon, navbar, theme switcher
-│   │   ├── core/           # 46 app templates
+│   │   ├── core/           # App templates
 │   │   └── registration/   # Auth templates (login, register, profile)
+│   ├── tests/              # Test suite (package)
+│   ├── mixins.py           # Role-based access control mixins
 │   └── templatetags/
 │       └── core_tags.py    # Custom template tags
 ├── static/
 │   ├── css/custom.css
-│   ├── favicon.svg         # SVG favicon (stacked layers design)
-│   ├── favicon-32.png      # 32×32 PNG favicon
-│   └── favicon-180.png     # Apple touch icon (180×180)
+│   └── favicon.svg         # SVG favicon
 └── media/                  # User uploads (STL, G-code, documents, images)
 ```
 
@@ -178,8 +195,20 @@ LayerNexus uses [orca-slicer-api](https://github.com/AFKFelix/orca-slicer-api) �
 ### Moonraker (Klipper)
 
 1. Make sure [Moonraker](https://github.com/Arksine/moonraker) is running alongside your Klipper installation.
-2. Configure the Moonraker URL (e.g., `http://<printer-ip>:7125`) in the LayerNexus printer settings.
-3. Ensure LayerNexus can reach the Moonraker API over your network.
+2. In LayerNexus, go to **Printers → Add Printer** and select **Klipper/Moonraker** as the printer type.
+3. Configure the Moonraker URL (e.g., `http://<printer-ip>:7125`) in the printer settings.
+4. Ensure LayerNexus can reach the Moonraker API over your network.
+
+### Bambu Lab
+
+LayerNexus connects to Bambu Lab printers (P1P, P1S, X1, X1C, A1, A1 Mini) via the [Bambu Lab Cloud API](https://github.com/coelacant1/Bambu-Lab-Cloud-API).
+
+1. In LayerNexus, go to **Bambu Lab Accounts → Connect Account**.
+2. Log in with your Bambu Lab Cloud credentials and complete the 2FA email verification.
+3. Select your printer from the list of registered devices.
+4. Optionally enter the printer's LAN IP address for faster G-code uploads via FTP.
+
+No additional Docker containers are needed — Bambu Lab communication is handled entirely through the Cloud API, MQTT, and optional LAN FTP.
 
 ### Spoolman
 
@@ -215,8 +244,9 @@ The first user to register is automatically assigned the **Admin** role. Subsequ
 
 | Model | Description |
 |---|---|
-| **PrinterProfile** | Printer configuration with Moonraker URL and API key |
+| **PrinterProfile** | Printer configuration supporting Klipper/Moonraker and Bambu Lab backends |
 | **PrinterCostProfile** | Cost parameters (electricity, depreciation, maintenance) per printer |
+| **BambuCloudAccount** | Bambu Lab Cloud credentials with encrypted token storage |
 | **OrcaSlicerProfile** | Slicer profile bundle (machine, filament, print preset config files) |
 
 ### Project Attachments
@@ -237,7 +267,7 @@ docker compose exec web python manage.py test core
 python manage.py test core
 ```
 
-The test suite includes 319 tests covering models, views, forms, services, permissions, and integration features.
+The test suite includes 359 tests covering models, views, forms, services, permissions, and integration features.
 
 ## CI/CD Pipeline
 

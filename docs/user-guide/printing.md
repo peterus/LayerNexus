@@ -63,11 +63,20 @@ Once a job is ready:
 
 1. Open the print job detail page.
 2. Click **Upload to Printer**.
-3. The G-code file is sent to the printer via the [Moonraker API](../integrations/moonraker.md).
+3. The G-code file is sent to the printer using the appropriate backend:
+
+    === "Klipper / Moonraker"
+
+        The file is uploaded via the [Moonraker API](../integrations/moonraker.md). The printer must be online and reachable.
+
+    === "Bambu Lab"
+
+        The file is uploaded via **LAN FTP** (if a LAN IP is configured) or the **Bambu Lab Cloud**. See [Bambu Lab](../integrations/bambulab.md) for details.
+
 4. Click **Start Print** to begin.
 
 !!! warning "Printer Connectivity"
-    The printer must be online and reachable via its Moonraker URL. Check the printer profile settings if uploads fail. See [Klipper / Moonraker](../integrations/moonraker.md) for troubleshooting.
+    The printer must be online and reachable. For Klipper, check the Moonraker URL in the printer profile. For Bambu Lab, ensure the Cloud token hasn't expired (check **Bambu Lab Accounts**).
 
 ---
 
@@ -99,7 +108,7 @@ STL Upload → Slice (OrcaSlicer API) → G-code → Add to Queue → Upload to 
 2. **Slice** using OrcaSlicer profiles
 3. **Create** a print job
 4. **Queue** the job with priority
-5. **Upload** G-code to the printer via Moonraker
+5. **Upload** G-code to the printer (via Moonraker, LAN FTP, or Bambu Lab Cloud)
 6. **Start** the print
 7. **Track** status until completion
 
@@ -111,3 +120,4 @@ STL Upload → Slice (OrcaSlicer API) → G-code → Add to Queue → Upload to 
 - [User roles and permissions](roles.md)
 - [OrcaSlicer integration](../integrations/orcaslicer.md)
 - [Klipper / Moonraker integration](../integrations/moonraker.md)
+- [Bambu Lab integration](../integrations/bambulab.md)

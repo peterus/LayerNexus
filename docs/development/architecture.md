@@ -13,7 +13,7 @@ This page describes the internal architecture of LayerNexus for contributors and
 | **Static Files** | WhiteNoise with compressed manifest storage |
 | **Deployment** | Docker + Docker Compose, Gunicorn |
 | **CI/CD** | GitHub Actions |
-| **External Services** | OrcaSlicer API, Klipper/Moonraker, Spoolman |
+| **External Services** | OrcaSlicer API, Klipper/Moonraker, Bambu Lab Cloud, Spoolman |
 
 ---
 
@@ -39,7 +39,7 @@ LayerNexus/
 │   ├── models/                # Database models
 │   │   ├── projects.py        # Project (hierarchical with sub-projects)
 │   │   ├── parts.py           # Part, PrintTimeEstimate
-│   │   ├── printers.py        # PrinterProfile, CostProfile
+│   │   ├── printers.py        # PrinterProfile, CostProfile, BambuCloudAccount
 │   │   ├── printing.py        # PrintJob, PrintJobPart, PrintJobPlate
 │   │   ├── queue.py           # PrintQueue
 │   │   ├── orca_profiles.py   # OrcaFilamentProfile, OrcaPrintPreset, OrcaMachineProfile
@@ -55,6 +55,7 @@ LayerNexus/
 │   │   ├── printers.py        # Printer profile management
 │   │   ├── print_jobs.py      # Print job management
 │   │   ├── queue.py           # Print queue management
+│   │   ├── bambuauth.py       # Bambu Lab Cloud authentication wizard
 │   │   ├── orca_profiles.py   # OrcaSlicer profile import/management
 │   │   ├── documents.py       # Project document upload
 │   │   ├── hardware.py        # Hardware catalog and assignment
@@ -64,8 +65,10 @@ LayerNexus/
 │   ├── forms/                 # Django ModelForms
 │   ├── urls/                  # URL routing (split by feature)
 │   ├── services/              # External API clients
-│   │   ├── orcaslicer.py      # OrcaSlicer API client
+│   │   ├── printer_backend.py # PrinterBackend protocol + factory function
 │   │   ├── moonraker.py       # Klipper/Moonraker API client
+│   │   ├── bambulab.py        # Bambu Lab Cloud/MQTT/FTP client
+│   │   ├── orcaslicer.py      # OrcaSlicer API client
 │   │   ├── spoolman.py        # Spoolman API client
 │   │   ├── profile_import.py  # OrcaSlicer profile import logic
 │   │   ├── gcode_thumbnail.py # G-code thumbnail extraction
@@ -141,6 +144,13 @@ class QueueDequeueMixin(RoleRequiredMixin):
 
 All external API integrations are encapsulated in `core/services/`:
 
+### Printer Backend Protocol (`printer_backend.py`)
+
+- Defines the `PrinterBackend` protocol that all printer backends must implement
+- Provides `NormalizedJobStatus` dataclass for unified print status across backends
+- Factory function `get_printer_backend()` instantiates the correct backend based on `PrinterProfile.printer_type`
+- Backends must implement: `get_printer_status()`, `upload_gcode()`, `start_print()`, `get_job_status()`, `cancel_print()`
+
 ### OrcaSlicer Client (`orcaslicer.py`)
 
 - Sends STL files and profile JSON to the OrcaSlicer API
@@ -149,10 +159,16 @@ All external API integrations are encapsulated in `core/services/`:
 
 ### Moonraker Client (`moonraker.py`)
 
-- Uploads G-code to Klipper printers
-- Starts, pauses, and cancels prints
-- Monitors printer status
+- Implements `PrinterBackend` for Klipper printers
+- Uploads G-code, starts/pauses/cancels prints, monitors status
 - Configured per-printer via `PrinterProfile.moonraker_url`
+
+### Bambu Lab Client (`bambulab.py`)
+
+- Implements `PrinterBackend` for Bambu Lab printers (P1, X1, A1 series)
+- Communicates via three channels: Cloud API (status), MQTT (print control), LAN FTP (G-code upload)
+- Tokens encrypted at rest using Fernet (AES) derived from Django's `SECRET_KEY`
+- Falls back from LAN FTP to Cloud upload, and from MQTT to Cloud API for status
 
 ### Spoolman Client (`spoolman.py`)
 
@@ -226,7 +242,10 @@ Project (hierarchical, self-referencing)
 ├── ProjectHardware → HardwarePart
 └── Sub-Projects (recursive)
 
-PrinterProfile → CostProfile
+PrinterProfile (Klipper or Bambu Lab)
+├── CostProfile
+└── BambuCloudAccount (for Bambu Lab printers)
+
 PrintJob → PrintQueue (priority-ordered)
 
 OrcaMachineProfile

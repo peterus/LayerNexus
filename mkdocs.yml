@@ -66,6 +66,7 @@ nav:
   - Integrations:
       - OrcaSlicer: integrations/orcaslicer.md
       - Klipper / Moonraker: integrations/moonraker.md
+      - Bambu Lab: integrations/bambulab.md
       - Spoolman: integrations/spoolman.md
   - Advanced:
       - HTTPS & Reverse Proxy: advanced/reverse-proxy.md

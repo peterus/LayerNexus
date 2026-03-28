@@ -102,6 +102,9 @@ volumes:
 !!! note "Moonraker"
     Moonraker runs on your 3D printer itself, not as a Docker container alongside LayerNexus. You configure the Moonraker URL (e.g., `http://192.168.1.100:7125`) in the LayerNexus printer profile settings. See [Klipper / Moonraker](../integrations/moonraker.md).
 
+!!! note "Bambu Lab"
+    Bambu Lab printers connect via the Bambu Lab Cloud API — no additional Docker container is needed. You set up the connection through the **Bambu Lab Accounts** wizard in LayerNexus. See [Bambu Lab](../integrations/bambulab.md).
+
 ---
 
 ## Running Without Docker Compose
