@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from django.db import models
+from django.db.models import CheckConstraint, Index, Q, UniqueConstraint
 
 if TYPE_CHECKING:
     from core.models.printing import PrintJob
@@ -50,6 +51,7 @@ class PrintQueue(models.Model):
         max_length=20,
         choices=STATUS_CHOICES,
         default=STATUS_WAITING,
+        db_index=True,
     )
     priority = models.IntegerField(choices=PRIORITY_CHOICES, default=2)
     position = models.PositiveIntegerField(default=0, help_text="Position in the queue (0 = next)")
@@ -71,6 +73,24 @@ class PrintQueue(models.Model):
 
     class Meta:
         ordering = ["-priority", "position", "added_at"]
+        indexes = [
+            Index(fields=["status", "printer"], name="printqueue_status_printer_idx"),
+        ]
+        constraints = [
+            CheckConstraint(
+                condition=Q(priority__gte=1, priority__lte=4),
+                name="printqueue_priority_between_1_and_4",
+            ),
+            CheckConstraint(
+                condition=Q(position__gte=0),
+                name="printqueue_position_gte_0",
+            ),
+            UniqueConstraint(
+                fields=["plate"],
+                condition=Q(status="waiting"),
+                name="printqueue_unique_plate_when_waiting",
+            ),
+        ]
         permissions = [
             ("can_manage_print_queue", "Can add and remove jobs from the print queue"),
             ("can_dequeue_job", "Can remove waiting jobs from the queue"),

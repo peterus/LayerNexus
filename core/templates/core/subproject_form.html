@@ -26,44 +26,33 @@
         <form method="post" enctype="multipart/form-data" novalidate>
           {% csrf_token %}
           {% for field in form %}
-          <div class="mb-3">
-            <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}{% if field.field.required %} <span class="text-danger">*</span>{% endif %}</label>
-            {% if field.field.widget.input_type == 'textarea' or 'Textarea' in field|widget_class %}
-            <textarea name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-control {% if field.errors %}is-invalid{% endif %}" rows="{{ field.field.widget.attrs.rows|default:4 }}" {% if field.field.required %}required{% endif %}>{{ field.value|default:'' }}</textarea>
-            {% elif 'Select' in field|widget_class %}
-            <select name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-select {% if field.errors %}is-invalid{% endif %}">
-              {% for val, label in field.field.choices %}
-              <option value="{{ val }}" {% if field.value|stringformat:"s" == val|stringformat:"s" %}selected{% endif %}>{{ label }}</option>
-              {% endfor %}
-            </select>
-            {% elif 'ClearableFileInput' in field|widget_class or 'FileInput' in field|widget_class %}
-            {% if field.value %}
-            <div class="mb-2">
-              {% if 'image' in field.name %}
-              <img src="{{ field.value.url }}" alt="Current image" class="img-thumbnail" style="max-height:120px;">
-              {% endif %}
-              <div class="form-check mt-1">
-                <input type="checkbox" name="{{ field.html_name }}-clear" id="{{ field.html_name }}-clear" class="form-check-input">
-                <label class="form-check-label text-danger" for="{{ field.html_name }}-clear">Remove current file</label>
-              </div>
-            </div>
-            {% endif %}
-            <input type="file" name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-control {% if field.errors %}is-invalid{% endif %}" accept="image/*">
             {% if field.name == 'image' %}
-            <div id="paste-zone" class="border rounded p-3 mt-2 text-center text-body-secondary" style="cursor:pointer;border-style:dashed !important;">
-              <i class="bi bi-clipboard me-1"></i>Paste image from clipboard (Ctrl+V) or click to select
+            {# Image field with paste zone — rendered specially #}
+            <div class="mb-3">
+              <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}{% if field.field.required %} <span class="text-danger">*</span>{% endif %}</label>
+              {% if field.value %}
+              <div class="mb-2">
+                <img src="{{ field.value.url }}" alt="Current image" class="img-thumbnail" style="max-height:120px;">
+                <div class="form-check mt-1">
+                  <input type="checkbox" name="{{ field.html_name }}-clear" id="{{ field.html_name }}-clear" class="form-check-input">
+                  <label class="form-check-label text-danger" for="{{ field.html_name }}-clear">Remove current file</label>
+                </div>
+              </div>
+              {% endif %}
+              <input type="file" name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-control {% if field.errors %}is-invalid{% endif %}" accept="image/*">
+              <div id="paste-zone" class="border rounded p-3 mt-2 text-center text-body-secondary" style="cursor:pointer;border-style:dashed !important;">
+                <i class="bi bi-clipboard me-1"></i>Paste image from clipboard (Ctrl+V) or click to select
+              </div>
+              <div id="paste-preview" class="mt-2 d-none">
+                <img id="paste-preview-img" class="img-thumbnail" style="max-height:120px;" alt="Pasted image preview">
+                <button type="button" id="paste-clear" class="btn btn-sm btn-outline-danger ms-2"><i class="bi bi-x-lg"></i> Remove</button>
+              </div>
+              {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
+              {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
             </div>
-            <div id="paste-preview" class="mt-2 d-none">
-              <img id="paste-preview-img" class="img-thumbnail" style="max-height:120px;" alt="Pasted image preview">
-              <button type="button" id="paste-clear" class="btn btn-sm btn-outline-danger ms-2"><i class="bi bi-x-lg"></i> Remove</button>
-            </div>
-            {% endif %}
             {% else %}
-            <input type="{{ field.field.widget.input_type|default:'text' }}" name="{{ field.html_name }}" id="{{ field.id_for_label }}" value="{{ field.value|default:'' }}" class="form-control {% if field.errors %}is-invalid{% endif %}" {% if field.field.required %}required{% endif %}>
+              {% include "core/includes/_form_field.html" with field=field %}
             {% endif %}
-            {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
-            {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
-          </div>
           {% endfor %}
           <div class="d-flex gap-2">
             <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i>{% if form.instance.pk %}Update{% else %}Create{% endif %}</button>

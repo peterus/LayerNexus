@@ -2,8 +2,41 @@
 
 from __future__ import annotations
 
+import ipaddress
+import os
+from urllib.parse import urlparse
+
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import CheckConstraint, Q
+
+
+def _is_cloud_metadata_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Check if the address is a cloud metadata endpoint (always blocked)."""
+    return str(addr) == "169.254.169.254"
+
+
+def _is_private_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Check if the address falls within private/internal IP ranges."""
+    private_ranges_v4 = [
+        ipaddress.IPv4Network("127.0.0.0/8"),
+        ipaddress.IPv4Network("10.0.0.0/8"),
+        ipaddress.IPv4Network("172.16.0.0/12"),
+        ipaddress.IPv4Network("192.168.0.0/16"),
+        ipaddress.IPv4Network("169.254.0.0/16"),
+    ]
+    private_ranges_v6 = [
+        ipaddress.IPv6Network("::1/128"),
+        ipaddress.IPv6Network("fe80::/10"),
+        ipaddress.IPv6Network("fd00::/8"),
+    ]
+
+    if isinstance(addr, ipaddress.IPv4Address):
+        return any(addr in net for net in private_ranges_v4)
+    if isinstance(addr, ipaddress.IPv6Address):
+        return any(addr in net for net in private_ranges_v6)
+    return False
 
 
 class PrinterProfile(models.Model):
@@ -54,6 +87,51 @@ class PrinterProfile(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
+    def clean(self) -> None:
+        """Validate moonraker_url against SSRF attacks.
+
+        Cloud metadata endpoints (169.254.169.254) are ALWAYS blocked.
+        Private/internal IPs are allowed by default (ALLOW_PRIVATE_IPS=true)
+        since this project typically runs in a LAN. Set ALLOW_PRIVATE_IPS=false
+        to block private IPs (e.g. in cloud deployments).
+
+        DNS hostnames are resolved at validation time so that SSRF checks
+        cannot be bypassed via DNS rebinding.
+        """
+        import socket
+
+        super().clean()
+        if not self.moonraker_url:
+            return
+
+        parsed = urlparse(self.moonraker_url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValidationError({"moonraker_url": "Moonraker URL must use http or https."})
+
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValidationError({"moonraker_url": "Invalid URL: no hostname found."})
+
+        try:
+            addr = ipaddress.ip_address(hostname)
+        except ValueError:
+            # hostname is a DNS name – resolve it to check the actual IP
+            try:
+                resolved = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                addr = ipaddress.ip_address(resolved[0][4][0])
+            except (socket.gaierror, OSError):
+                # Cannot resolve – allow it (will fail at connection time)
+                return
+
+        # Always block cloud metadata endpoint
+        if _is_cloud_metadata_ip(addr):
+            raise ValidationError({"moonraker_url": "Access to cloud metadata endpoints is not allowed."})
+
+        # Check private IPs (default: allowed for LAN setups)
+        allow_private = os.environ.get("ALLOW_PRIVATE_IPS", "true").lower() in ("true", "1", "yes")
+        if not allow_private and _is_private_ip(addr):
+            raise ValidationError({"moonraker_url": "Private/internal IP addresses are not allowed."})
 
     # ── Convenience properties (delegated to OrcaMachineProfile) ────────
 
@@ -116,6 +194,14 @@ class CostProfile(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            CheckConstraint(
+                condition=Q(printer_lifespan_hours__gt=0),
+                name="costprofile_lifespan_hours_gt_0",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"Cost Profile: {self.printer.name}"

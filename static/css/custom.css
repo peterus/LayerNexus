@@ -74,6 +74,8 @@ body {
 /* Footer */
 footer {
     margin-top: auto;
+    padding: 1.5rem 0;
+    border-top: 1px solid var(--bs-border-color);
 }
 
 /* Form styling */
@@ -98,6 +100,11 @@ footer {
     margin-bottom: 1rem;
     display: block;
 }
+
+/* Utility classes */
+.project-card-img { height: 160px; object-fit: cover; }
+.progress-thin { height: 8px; }
+.thumb-sm { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; }
 
 /* Print preview */
 @media print {

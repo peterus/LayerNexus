@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Optional
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.db.models import CheckConstraint, Q
 
 from core.models.parts import Part
 from core.models.spoolman import SpoolmanFilamentMapping
@@ -38,7 +39,7 @@ class Project(models.Model):
     )
     parent = models.ForeignKey(
         "self",
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         null=True,
         blank=True,
         related_name="subprojects",
@@ -70,6 +71,12 @@ class Project(models.Model):
 
     class Meta:
         ordering = ["-updated_at"]
+        constraints = [
+            CheckConstraint(
+                condition=Q(quantity__gte=1),
+                name="project_quantity_gte_1",
+            ),
+        ]
         permissions = [
             ("can_manage_projects", "Can create, edit, and delete projects"),
         ]

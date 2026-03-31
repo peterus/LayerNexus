@@ -168,10 +168,14 @@ class SaveFilamentMappingView(FilamentMappingManageMixin, View):
         filament_name = request.POST.get("filament_name", "")
 
         if not filament_id_str:
-            messages.error(request, "Kein Filament-Typ angegeben.")
+            messages.error(request, "No filament type specified.")
             return redirect("core:materialprofile_list")
 
-        filament_id = int(filament_id_str)
+        try:
+            filament_id = int(filament_id_str)
+        except ValueError:
+            messages.error(request, "Invalid filament ID.")
+            return redirect("core:materialprofile_list")
 
         if not profile_id_str:
             # Remove existing mapping
@@ -179,10 +183,14 @@ class SaveFilamentMappingView(FilamentMappingManageMixin, View):
                 spoolman_filament_id=filament_id,
             ).delete()
             if deleted:
-                messages.success(request, f"Profil-Zuordnung für '{filament_name}' entfernt.")
+                messages.success(request, f"Profile mapping for '{filament_name}' removed.")
             return redirect("core:materialprofile_list")
 
-        profile_id = int(profile_id_str)
+        try:
+            profile_id = int(profile_id_str)
+        except ValueError:
+            messages.error(request, "Invalid profile ID.")
+            return redirect("core:materialprofile_list")
         profile = get_object_or_404(OrcaFilamentProfile, pk=profile_id)
 
         filament_color = request.POST.get("filament_color", "")[:7]
@@ -197,6 +205,6 @@ class SaveFilamentMappingView(FilamentMappingManageMixin, View):
         )
         messages.success(
             request,
-            f"'{filament_name}' → '{profile.name}' {'zugeordnet' if created else 'aktualisiert'}.",
+            f"'{filament_name}' -> '{profile.name}' {'assigned' if created else 'updated'}.",
         )
         return redirect("core:materialprofile_list")

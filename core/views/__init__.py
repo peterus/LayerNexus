@@ -1,14 +1,167 @@
 """Views package for the LayerNexus application."""
 
-from .auth import *  # noqa: F401, F403
-from .dashboard import *  # noqa: F401, F403
-from .documents import *  # noqa: F401, F403
-from .hardware import *  # noqa: F401, F403
-from .helpers import *  # noqa: F401, F403
-from .materials import *  # noqa: F401, F403
-from .orca_profiles import *  # noqa: F401, F403
-from .parts import *  # noqa: F401, F403
-from .print_jobs import *  # noqa: F401, F403
-from .printers import *  # noqa: F401, F403
-from .projects import *  # noqa: F401, F403
-from .queue import *  # noqa: F401, F403
+from .auth import (
+    ProfileView,
+    RegisterView,
+    UserCreateView,
+    UserDeleteView,
+    UserListView,
+    UserUpdateView,
+)
+from .dashboard import (
+    AdminDashboardView,
+    DashboardView,
+    FarmDashboardView,
+    StatisticsView,
+)
+from .documents import (
+    ProjectDocumentCreateView,
+    ProjectDocumentDeleteView,
+    ProjectDocumentDownloadView,
+)
+from .hardware import (
+    ProjectHardwareCreateView,
+    ProjectHardwareDeleteView,
+    ProjectHardwareUpdateView,
+)
+from .materials import (
+    MaterialProfileListView,
+    SaveFilamentMappingView,
+    SpoolmanFilamentsAPIView,
+    SpoolmanSpoolsView,
+)
+from .orca_profiles import (
+    OrcaFilamentProfileDeleteView,
+    OrcaFilamentProfileDetailView,
+    OrcaFilamentProfileImportView,
+    OrcaFilamentProfileListView,
+    OrcaMachineProfileDeleteView,
+    OrcaMachineProfileDetailView,
+    OrcaMachineProfileImportView,
+    OrcaMachineProfileListView,
+    OrcaPrintPresetDeleteView,
+    OrcaPrintPresetDetailView,
+    OrcaPrintPresetImportView,
+    OrcaPrintPresetListView,
+)
+from .parts import (
+    PartCreateView,
+    PartDeleteView,
+    PartDetailView,
+    PartReEstimateView,
+    PartUpdateView,
+)
+from .print_jobs import (
+    AddPartToJobView,
+    CreateJobsFromProjectView,
+    PrintJobCreateView,
+    PrintJobDeleteView,
+    PrintJobDetailView,
+    PrintJobListView,
+    PrintJobSliceView,
+    PrintJobUpdateView,
+    RemovePartFromJobView,
+    SliceJobStatusView,
+)
+from .printers import (
+    CostProfileUpdateView,
+    PrinterProfileCreateView,
+    PrinterProfileDeleteView,
+    PrinterProfileListView,
+    PrinterProfileUpdateView,
+    PrinterStatusView,
+    UploadToPrinterView,
+)
+from .projects import (
+    ProjectCostView,
+    ProjectCreateView,
+    ProjectDeleteView,
+    ProjectDetailView,
+    ProjectListView,
+    ProjectReEstimateView,
+    ProjectUpdateView,
+    SubProjectCreateView,
+)
+from .queue import (
+    CancelQueueEntryView,
+    PrintQueueCreateView,
+    PrintQueueDeleteView,
+    PrintQueueListView,
+    QueueCheckPrinterStatusView,
+    QueueEntryReviewView,
+    RunAllQueuesView,
+    RunNextQueueView,
+)
+
+__all__ = [
+    "AddPartToJobView",
+    "AdminDashboardView",
+    "CancelQueueEntryView",
+    "CostProfileUpdateView",
+    "CreateJobsFromProjectView",
+    "DashboardView",
+    "FarmDashboardView",
+    "MaterialProfileListView",
+    "OrcaFilamentProfileDeleteView",
+    "OrcaFilamentProfileDetailView",
+    "OrcaFilamentProfileImportView",
+    "OrcaFilamentProfileListView",
+    "OrcaMachineProfileDeleteView",
+    "OrcaMachineProfileDetailView",
+    "OrcaMachineProfileImportView",
+    "OrcaMachineProfileListView",
+    "OrcaPrintPresetDeleteView",
+    "OrcaPrintPresetDetailView",
+    "OrcaPrintPresetImportView",
+    "OrcaPrintPresetListView",
+    "PartCreateView",
+    "PartDeleteView",
+    "PartDetailView",
+    "PartReEstimateView",
+    "PartUpdateView",
+    "PrintJobCreateView",
+    "PrintJobDeleteView",
+    "PrintJobDetailView",
+    "PrintJobListView",
+    "PrintJobSliceView",
+    "PrintJobUpdateView",
+    "PrintQueueCreateView",
+    "PrintQueueDeleteView",
+    "PrintQueueListView",
+    "PrinterProfileCreateView",
+    "PrinterProfileDeleteView",
+    "PrinterProfileListView",
+    "PrinterProfileUpdateView",
+    "PrinterStatusView",
+    "ProfileView",
+    "ProjectCostView",
+    "ProjectCreateView",
+    "ProjectDeleteView",
+    "ProjectDetailView",
+    "ProjectDocumentCreateView",
+    "ProjectDocumentDeleteView",
+    "ProjectDocumentDownloadView",
+    "ProjectHardwareCreateView",
+    "ProjectHardwareDeleteView",
+    "ProjectHardwareUpdateView",
+    "ProjectListView",
+    "ProjectReEstimateView",
+    "ProjectUpdateView",
+    "QueueCheckPrinterStatusView",
+    "QueueEntryReviewView",
+    "RegisterView",
+    "RemovePartFromJobView",
+    "RunAllQueuesView",
+    "RunNextQueueView",
+    "SaveFilamentMappingView",
+    "SliceJobStatusView",
+    "SpoolmanFilamentsAPIView",
+    "SpoolmanSpoolsView",
+    "StatisticsView",
+    "SubProjectCreateView",
+    "UploadToPrinterView",
+    "UserCreateView",
+    "UserDeleteView",
+    "UserListView",
+    "UserUpdateView",
+]

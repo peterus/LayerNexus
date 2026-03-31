@@ -1,6 +1,7 @@
 """OrcaSlicer profile views for the LayerNexus application."""
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from django.contrib import messages
@@ -39,6 +40,100 @@ __all__ = [
     "OrcaPrintPresetImportView",
     "OrcaPrintPresetDeleteView",
 ]
+
+
+# ── Base import view ─────────────────────────────────────────────────────
+
+
+class OrcaProfileImportViewBase(OrcaProfileManageMixin, View):
+    """Base view for importing OrcaSlicer profiles from JSON files.
+
+    Subclasses configure the following class attributes:
+    - ``model_class``: The Django model for this profile type.
+    - ``form_class``: The import form class.
+    - ``import_function_path``: Attribute name on
+      ``core.services.profile_import`` for the import function.
+    - ``template_name``: Template to render.
+    - ``success_url_name``: URL name to redirect to on success
+      (detail view, receives ``pk``).
+    - ``pending_url_name``: URL name to redirect to when profile is
+      pending (import view).
+    - ``profile_type_label``: Human-readable label for messages
+      (e.g. ``"Profile"``, ``"Filament profile"``).
+    """
+
+    model_class = None
+    form_class = None
+    import_function_path: str = ""
+    template_name: str = ""
+    success_url_name: str = ""
+    pending_url_name: str = ""
+    profile_type_label: str = "Profile"
+
+    def _get_import_function(self) -> Callable:
+        """Lazily import the profile import function."""
+        from core.services import profile_import
+
+        return getattr(profile_import, self.import_function_path)
+
+    def _get_pending_queryset(self):
+        """Return pending profiles for context."""
+        return self.model_class.objects.filter(
+            state=self.model_class.STATE_PENDING,
+        )
+
+    def get(self, request: HttpRequest) -> HttpResponse:
+        """Show the import form."""
+        from django.template.response import TemplateResponse
+
+        form = self.form_class()
+        return TemplateResponse(
+            request,
+            self.template_name,
+            {"form": form, "pending_profiles": self._get_pending_queryset()},
+        )
+
+    def post(self, request: HttpRequest) -> HttpResponse:
+        """Process an uploaded profile JSON file."""
+        from django.template.response import TemplateResponse
+
+        import_function = self._get_import_function()
+
+        form = self.form_class(request.POST, request.FILES)
+        if not form.is_valid():
+            return TemplateResponse(
+                request,
+                self.template_name,
+                {"form": form, "pending_profiles": self._get_pending_queryset()},
+            )
+
+        json_data = form.cleaned_data["profile_file"]
+        display_name = form.cleaned_data.get("display_name") or None
+
+        try:
+            result = import_function(json_data, request.user, display_name)
+        except ValueError as exc:
+            form.add_error(None, str(exc))
+            return TemplateResponse(
+                request,
+                self.template_name,
+                {"form": form, "pending_profiles": self._get_pending_queryset()},
+            )
+
+        if result.is_resolved:
+            msg = f"{self.profile_type_label} '{result.profile.name}' imported and resolved."
+            if result.auto_resolved_children:
+                names = ", ".join(result.auto_resolved_children)
+                msg += f" Additionally auto-resolved: {names}."
+            messages.success(request, msg)
+            return redirect(self.success_url_name, pk=result.profile.pk)
+        else:
+            messages.warning(
+                request,
+                f"{self.profile_type_label} '{result.profile.name}' saved as pending. "
+                f"Please upload the parent profile '{result.missing_parent}' next.",
+            )
+            return redirect(self.pending_url_name)
 
 
 # ── OrcaSlicer Machine Profiles (structured import with inheritance) ─────
@@ -84,76 +179,16 @@ class OrcaMachineProfileDetailView(LoginRequiredMixin, DetailView):
         return context
 
 
-class OrcaMachineProfileImportView(OrcaProfileManageMixin, View):
-    """Import an OrcaSlicer machine profile from a JSON file.
+class OrcaMachineProfileImportView(OrcaProfileImportViewBase):
+    """Import an OrcaSlicer machine profile from a JSON file."""
 
-    Handles the inheritance chain: if the profile's parent is missing,
-    the user is informed which file to upload next.
-    """
-
+    model_class = OrcaMachineProfile
+    form_class = OrcaMachineProfileImportForm
+    import_function_path = "import_machine_profile_json"
     template_name = "core/orcamachineprofile_import.html"
-
-    def get(self, request: HttpRequest) -> HttpResponse:
-        """Show the import form."""
-        from django.template.response import TemplateResponse
-
-        form = OrcaMachineProfileImportForm()
-        pending = OrcaMachineProfile.objects.filter(
-            state=OrcaMachineProfile.STATE_PENDING,
-        )
-        return TemplateResponse(
-            request,
-            self.template_name,
-            {"form": form, "pending_profiles": pending},
-        )
-
-    def post(self, request: HttpRequest) -> HttpResponse:
-        """Process an uploaded profile JSON file."""
-        from django.template.response import TemplateResponse
-
-        from core.services.profile_import import import_machine_profile_json
-
-        form = OrcaMachineProfileImportForm(request.POST, request.FILES)
-        if not form.is_valid():
-            pending = OrcaMachineProfile.objects.filter(
-                state=OrcaMachineProfile.STATE_PENDING,
-            )
-            return TemplateResponse(
-                request,
-                self.template_name,
-                {"form": form, "pending_profiles": pending},
-            )
-
-        json_data = form.cleaned_data["profile_file"]
-        display_name = form.cleaned_data.get("display_name") or None
-
-        try:
-            result = import_machine_profile_json(json_data, request.user, display_name)
-        except ValueError as exc:
-            form.add_error(None, str(exc))
-            pending = OrcaMachineProfile.objects.filter(
-                state=OrcaMachineProfile.STATE_PENDING,
-            )
-            return TemplateResponse(
-                request,
-                self.template_name,
-                {"form": form, "pending_profiles": pending},
-            )
-
-        if result.is_resolved:
-            msg = f"Profile '{result.profile.name}' imported and resolved."
-            if result.auto_resolved_children:
-                names = ", ".join(result.auto_resolved_children)
-                msg += f" Additionally auto-resolved: {names}."
-            messages.success(request, msg)
-            return redirect("core:orcamachineprofile_detail", pk=result.profile.pk)
-        else:
-            messages.warning(
-                request,
-                f"Profile '{result.profile.name}' saved as pending. "
-                f"Please upload the parent profile '{result.missing_parent}' next.",
-            )
-            return redirect("core:orcamachineprofile_import")
+    success_url_name = "core:orcamachineprofile_detail"
+    pending_url_name = "core:orcamachineprofile_import"
+    profile_type_label = "Profile"
 
 
 class OrcaMachineProfileDeleteView(OrcaProfileManageMixin, DeleteView):
@@ -211,76 +246,16 @@ class OrcaFilamentProfileDetailView(LoginRequiredMixin, DetailView):
         return context
 
 
-class OrcaFilamentProfileImportView(OrcaProfileManageMixin, View):
-    """Import an OrcaSlicer filament profile from a JSON file.
+class OrcaFilamentProfileImportView(OrcaProfileImportViewBase):
+    """Import an OrcaSlicer filament profile from a JSON file."""
 
-    Handles the inheritance chain: if the profile's parent is missing,
-    the user is informed which file to upload next.
-    """
-
+    model_class = OrcaFilamentProfile
+    form_class = OrcaFilamentProfileImportForm
+    import_function_path = "import_filament_profile_json"
     template_name = "core/orcafilamentprofile_import.html"
-
-    def get(self, request: HttpRequest) -> HttpResponse:
-        """Show the import form."""
-        from django.template.response import TemplateResponse
-
-        form = OrcaFilamentProfileImportForm()
-        pending = OrcaFilamentProfile.objects.filter(
-            state=OrcaFilamentProfile.STATE_PENDING,
-        )
-        return TemplateResponse(
-            request,
-            self.template_name,
-            {"form": form, "pending_profiles": pending},
-        )
-
-    def post(self, request: HttpRequest) -> HttpResponse:
-        """Process an uploaded filament profile JSON file."""
-        from django.template.response import TemplateResponse
-
-        from core.services.profile_import import import_filament_profile_json
-
-        form = OrcaFilamentProfileImportForm(request.POST, request.FILES)
-        if not form.is_valid():
-            pending = OrcaFilamentProfile.objects.filter(
-                state=OrcaFilamentProfile.STATE_PENDING,
-            )
-            return TemplateResponse(
-                request,
-                self.template_name,
-                {"form": form, "pending_profiles": pending},
-            )
-
-        json_data = form.cleaned_data["profile_file"]
-        display_name = form.cleaned_data.get("display_name") or None
-
-        try:
-            result = import_filament_profile_json(json_data, request.user, display_name)
-        except ValueError as exc:
-            form.add_error(None, str(exc))
-            pending = OrcaFilamentProfile.objects.filter(
-                state=OrcaFilamentProfile.STATE_PENDING,
-            )
-            return TemplateResponse(
-                request,
-                self.template_name,
-                {"form": form, "pending_profiles": pending},
-            )
-
-        if result.is_resolved:
-            msg = f"Filament profile '{result.profile.name}' imported and resolved."
-            if result.auto_resolved_children:
-                names = ", ".join(result.auto_resolved_children)
-                msg += f" Additionally auto-resolved: {names}."
-            messages.success(request, msg)
-            return redirect("core:orcafilamentprofile_detail", pk=result.profile.pk)
-        else:
-            messages.warning(
-                request,
-                f"Filament profile '{result.profile.name}' saved as pending. "
-                f"Please upload the parent profile '{result.missing_parent}' next.",
-            )
-            return redirect("core:orcafilamentprofile_import")
+    success_url_name = "core:orcafilamentprofile_detail"
+    pending_url_name = "core:orcafilamentprofile_import"
+    profile_type_label = "Filament profile"
 
 
 class OrcaFilamentProfileDeleteView(OrcaProfileManageMixin, DeleteView):
@@ -338,76 +313,16 @@ class OrcaPrintPresetDetailView(LoginRequiredMixin, DetailView):
         return context
 
 
-class OrcaPrintPresetImportView(OrcaProfileManageMixin, View):
-    """Import an OrcaSlicer process profile from a JSON file.
+class OrcaPrintPresetImportView(OrcaProfileImportViewBase):
+    """Import an OrcaSlicer process profile from a JSON file."""
 
-    Handles the inheritance chain: if the profile's parent is missing,
-    the user is informed which file to upload next.
-    """
-
+    model_class = OrcaPrintPreset
+    form_class = OrcaPrintPresetImportForm
+    import_function_path = "import_process_profile_json"
     template_name = "core/orcaprintpreset_import.html"
-
-    def get(self, request: HttpRequest) -> HttpResponse:
-        """Show the import form."""
-        from django.template.response import TemplateResponse
-
-        form = OrcaPrintPresetImportForm()
-        pending = OrcaPrintPreset.objects.filter(
-            state=OrcaPrintPreset.STATE_PENDING,
-        )
-        return TemplateResponse(
-            request,
-            self.template_name,
-            {"form": form, "pending_profiles": pending},
-        )
-
-    def post(self, request: HttpRequest) -> HttpResponse:
-        """Process an uploaded process profile JSON file."""
-        from django.template.response import TemplateResponse
-
-        from core.services.profile_import import import_process_profile_json
-
-        form = OrcaPrintPresetImportForm(request.POST, request.FILES)
-        if not form.is_valid():
-            pending = OrcaPrintPreset.objects.filter(
-                state=OrcaPrintPreset.STATE_PENDING,
-            )
-            return TemplateResponse(
-                request,
-                self.template_name,
-                {"form": form, "pending_profiles": pending},
-            )
-
-        json_data = form.cleaned_data["profile_file"]
-        display_name = form.cleaned_data.get("display_name") or None
-
-        try:
-            result = import_process_profile_json(json_data, request.user, display_name)
-        except ValueError as exc:
-            form.add_error(None, str(exc))
-            pending = OrcaPrintPreset.objects.filter(
-                state=OrcaPrintPreset.STATE_PENDING,
-            )
-            return TemplateResponse(
-                request,
-                self.template_name,
-                {"form": form, "pending_profiles": pending},
-            )
-
-        if result.is_resolved:
-            msg = f"Process profile '{result.profile.name}' imported and resolved."
-            if result.auto_resolved_children:
-                names = ", ".join(result.auto_resolved_children)
-                msg += f" Additionally auto-resolved: {names}."
-            messages.success(request, msg)
-            return redirect("core:orcaprintpreset_detail", pk=result.profile.pk)
-        else:
-            messages.warning(
-                request,
-                f"Process profile '{result.profile.name}' saved as pending. "
-                f"Please upload the parent profile '{result.missing_parent}' next.",
-            )
-            return redirect("core:orcaprintpreset_import")
+    success_url_name = "core:orcaprintpreset_detail"
+    pending_url_name = "core:orcaprintpreset_import"
+    profile_type_label = "Process profile"
 
 
 class OrcaPrintPresetDeleteView(OrcaProfileManageMixin, DeleteView):

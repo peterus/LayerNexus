@@ -15,9 +15,7 @@
   <div>
     <h1 class="h3 mb-1">{{ job }}</h1>
     <p class="text-body-secondary mb-0">
-      <span class="badge {% if job.status == 'completed' %}bg-success{% elif job.status == 'failed' %}bg-danger{% elif job.status == 'cancelled' %}bg-warning text-dark{% elif job.status == 'printing' %}bg-primary{% elif job.status == 'slicing' %}bg-info{% elif job.status == 'sliced' %}bg-info{% elif job.status == 'draft' %}bg-secondary{% else %}bg-secondary{% endif %}">
-        {{ job.get_status_display }}
-      </span>
+      {% include "core/includes/_job_status_badge.html" with status=job.status display=job.get_status_display %}
       {% if job.machine_profile %}
       · Machine: <a href="{% url 'core:orcamachineprofile_detail' job.machine_profile.pk %}" class="text-decoration-none">{{ job.machine_profile.name }}</a>
       {% endif %}
@@ -124,9 +122,7 @@
               <div class="card-body p-2">
                 <div class="d-flex justify-content-between align-items-center mb-1">
                   <strong>Plate {{ plate.plate_number }}</strong>
-                  <span class="badge {% if plate.status == 'completed' %}bg-success{% elif plate.status == 'failed' %}bg-danger{% elif plate.status == 'printing' %}bg-primary{% else %}bg-secondary{% endif %}">
-                    {{ plate.get_status_display }}
-                  </span>
+                  {% include "core/includes/_job_status_badge.html" with status=plate.status display=plate.get_status_display %}
                 </div>
                 <div class="d-flex justify-content-between text-body-secondary">
                   <small>
@@ -265,83 +261,36 @@
 </div>
 {% endblock %}
 
+{% load static %}
 {% block extra_js %}
 {% if job.status == 'slicing' %}
+<script src="{% static 'js/polling.js' %}"></script>
 <script>
-// Poll slicing status and refresh page when done
-(function() {
-  var pollInterval = setInterval(function() {
-    fetch('{% url "core:slice_job_status" job.pk %}')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (data.status !== 'slicing') {
-          clearInterval(pollInterval);
-          location.reload();
-        }
-      })
-      .catch(function() { /* ignore network errors */ });
+  startPolling('{% url "core:slice_job_status" job.pk %}', function(data) {
+    if (data.status !== 'slicing') {
+      location.reload();
+      return false;
+    }
   }, 3000);
-})();
 </script>
 {% endif %}
 
 {% if plates %}
 <script src="https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/gcode-preview@2.18.0/dist/gcode-preview.min.js"></script>
+<script src="{% static 'js/gcode-preview.js' %}"></script>
 <script>
 (function() {
   "use strict";
-
-  // Detect dark mode
-  function isDarkMode() {
-    return document.documentElement.getAttribute("data-bs-theme") === "dark"
-      || window.matchMedia("(prefers-color-scheme: dark)").matches;
-  }
-
-  function initPreview(canvas) {
-    var url = canvas.getAttribute("data-gcode-url");
-    if (!url) return;
-
-    var container = canvas.parentElement;
-    var loadingEl = container.querySelector(".gcode-loading");
-
-    // Set canvas size to match container
-    var rect = container.getBoundingClientRect();
-    canvas.width = rect.width * window.devicePixelRatio;
-    canvas.height = rect.height * window.devicePixelRatio;
-
-    var dark = isDarkMode();
-    var preview = GCodePreview.init({
-      canvas: canvas,
-      extrusionColor: dark ? "#44bbff" : "#007bff",
-      backgroundColor: dark ? "#212529" : "#f8f9fa",
-      buildVolume: { x: 256, y: 256, z: 256 },
-      initialCameraPosition: [0, 400, 450],
-      lineWidth: 2,
-      renderExtrusion: true,
-      renderTravel: false,
-    });
-
-    fetch(url)
-      .then(function(r) { return r.text(); })
-      .then(function(gcode) {
-        preview.processGCode(gcode);
-        if (loadingEl) loadingEl.style.display = "none";
-      })
-      .catch(function(err) {
-        console.error("G-code preview error:", err);
-        if (loadingEl) {
-          loadingEl.innerHTML = '<i class="bi bi-exclamation-triangle"></i> <small>Preview failed</small>';
-        }
-      });
-  }
-
-  // Use IntersectionObserver for lazy loading
   var observer = new IntersectionObserver(function(entries) {
     entries.forEach(function(entry) {
       if (entry.isIntersecting) {
         observer.unobserve(entry.target);
-        initPreview(entry.target);
+        var canvas = entry.target;
+        var url = canvas.getAttribute("data-gcode-url");
+        if (url) {
+          initGCodePreview(canvas.parentElement.id || canvas.parentElement, url);
+        }
       }
     });
   }, { rootMargin: "200px" });

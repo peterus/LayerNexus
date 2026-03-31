@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Optional
 
 from django.core.validators import MinValueValidator
 from django.db import models
-from django.db.models import Sum
+from django.db.models import CheckConstraint, Q, Sum
 
 if TYPE_CHECKING:
     from core.models.orca_profiles import OrcaPrintPreset
@@ -70,6 +70,7 @@ class Part(models.Model):
         max_length=10,
         choices=ESTIMATION_STATUS_CHOICES,
         default=ESTIMATION_NONE,
+        db_index=True,
         help_text="Status of the background filament/time estimation.",
     )
     estimation_error = models.TextField(
@@ -83,6 +84,12 @@ class Part(models.Model):
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            CheckConstraint(
+                condition=Q(quantity__gte=1),
+                name="part_quantity_gte_1",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.name} ({self.project.name})"

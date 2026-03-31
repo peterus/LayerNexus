@@ -29,22 +29,7 @@
         <form method="post" novalidate>
           {% csrf_token %}
           {% for field in form %}
-          <div class="mb-3">
-            <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}{% if field.field.required %} <span class="text-danger">*</span>{% endif %}</label>
-            {% if 'Select' in field|widget_class %}
-            <select name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-select {% if field.errors %}is-invalid{% endif %}">
-              {% for val, label in field.field.choices %}
-              <option value="{{ val }}" {% if field.value|stringformat:"s" == val|stringformat:"s" %}selected{% endif %}>{{ label }}</option>
-              {% endfor %}
-            </select>
-            {% elif 'Textarea' in field|widget_class %}
-            <textarea name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-control {% if field.errors %}is-invalid{% endif %}" rows="{{ field.field.widget.attrs.rows|default:3 }}">{{ field.value|default:'' }}</textarea>
-            {% else %}
-            <input type="{{ field.field.widget.input_type|default:'text' }}" name="{{ field.html_name }}" id="{{ field.id_for_label }}" value="{{ field.value|default:'' }}" class="form-control {% if field.errors %}is-invalid{% endif %}" {% if field.field.required %}required{% endif %}>
-            {% endif %}
-            {% if field.help_text %}<div class="form-text">{{ field.help_text }}</div>{% endif %}
-            {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
-          </div>
+            {% include "core/includes/_form_field.html" with field=field %}
           {% endfor %}
           <div class="d-flex gap-2">
             <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i>{% if form.instance.pk %}Update{% else %}Create Draft{% endif %}</button>

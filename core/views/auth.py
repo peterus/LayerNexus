@@ -8,6 +8,7 @@ from django.contrib import messages
 from django.contrib.auth import login
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.models import Group, User
+from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect
@@ -49,26 +50,37 @@ class RegisterView(CreateView):
         return super().dispatch(request, *args, **kwargs)
 
     def form_valid(self, form: UserRegistrationForm) -> HttpResponse:
-        """Save user, assign role group, and log in."""
-        response = super().form_valid(form)
-        user = self.object
-        is_first_user = User.objects.count() == 1
-        if is_first_user:
-            # First user becomes Admin
-            group, _created = Group.objects.get_or_create(name="Admin")
-            user.groups.add(group)
-            user.is_staff = True
-            user.is_superuser = True
-            user.save(update_fields=["is_staff", "is_superuser"])
-            messages.success(
-                self.request,
-                "Welcome! You are the first user and have been assigned the Admin role.",
-            )
-        else:
-            # Default role for self-registered users: Designer
-            group, _created = Group.objects.get_or_create(name="Designer")
-            user.groups.add(group)
-            messages.success(self.request, "Registration successful. Welcome!")
+        """Save user, assign role group, and log in.
+
+        Uses a transaction with select_for_update to prevent a race condition
+        where two concurrent registrations could both see themselves as the
+        first user and both receive Admin privileges.
+        """
+        with transaction.atomic():
+            response = super().form_valid(form)
+            user = self.object
+            # Lock the Admin group row to serialize first-user checks.
+            # get_or_create + select_for_update ensures only one transaction
+            # can evaluate the "first user" condition at a time, even when
+            # there are 0 pre-existing users (avoiding the empty-table race).
+            Group.objects.select_for_update().get_or_create(name="Admin")
+            is_first_user = User.objects.count() == 1
+            if is_first_user:
+                # First user becomes Admin
+                group, _created = Group.objects.get_or_create(name="Admin")
+                user.groups.add(group)
+                user.is_staff = True
+                user.is_superuser = True
+                user.save(update_fields=["is_staff", "is_superuser"])
+                messages.success(
+                    self.request,
+                    "Welcome! You are the first user and have been assigned the Admin role.",
+                )
+            else:
+                # Default role for self-registered users: Designer
+                group, _created = Group.objects.get_or_create(name="Designer")
+                user.groups.add(group)
+                messages.success(self.request, "Registration successful. Welcome!")
         login(self.request, user)
         return response
 

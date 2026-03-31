@@ -4,15 +4,23 @@ from __future__ import annotations
 
 from django.conf import settings as django_settings
 from django.db import models
+from django.db.models import Index
+
+__all__ = [
+    "OrcaProfileBase",
+    "OrcaFilamentProfile",
+    "OrcaMachineProfile",
+    "OrcaPrintPreset",
+]
 
 
-class OrcaFilamentProfile(models.Model):
-    """Fully resolved OrcaSlicer filament profile.
+class OrcaProfileBase(models.Model):
+    """Abstract base class for OrcaSlicer profile models.
 
-    Stores the flattened, inheritance-resolved OrcaSlicer filament profile.
-    All resolved settings are stored in a single ``settings`` JSONField.
+    Holds the common fields, properties, and methods shared by all three
+    concrete profile types (filament, print preset, machine).
 
-    Import workflow:
+    Import workflow (common to all profile types):
     1. User uploads a JSON profile file.
     2. If the ``inherits`` field is set and the parent profile does not yet
        exist, the profile is stored as *pending*.
@@ -76,25 +84,15 @@ class OrcaFilamentProfile(models.Model):
         help_text="All resolved settings",
     )
 
-    # ── Ownership & timestamps ──────────────────────────────────────────
-    created_by = models.ForeignKey(
-        django_settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="orca_filament_profiles",
-        help_text="User who imported this profile (informational only)",
-    )
+    # ── Timestamps ──────────────────────────────────────────────────────
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        abstract = True
         ordering = ["name"]
-        permissions = [
-            (
-                "can_manage_orca_profiles",
-                "Can import, edit, and delete OrcaSlicer profiles",
-            ),
+        indexes = [
+            Index(fields=["state", "instantiation"], name="%(class)s_st_ins_idx"),
         ]
 
     def __str__(self) -> str:
@@ -107,6 +105,51 @@ class OrcaFilamentProfile(models.Model):
     def is_resolved(self) -> bool:
         """Whether inheritance has been fully resolved."""
         return self.state == self.STATE_RESOLVED
+
+    # ── Import / Resolution ─────────────────────────────────────────────
+
+    @classmethod
+    def get_pending_for_parent(cls, parent_name: str) -> models.QuerySet:
+        """Return pending profiles waiting for the given parent.
+
+        Args:
+            parent_name: The OrcaSlicer profile name of the parent.
+
+        Returns:
+            QuerySet of pending profile instances.
+        """
+        return cls.objects.filter(
+            inherits_name=parent_name,
+            state=cls.STATE_PENDING,
+        )
+
+
+class OrcaFilamentProfile(OrcaProfileBase):
+    """Fully resolved OrcaSlicer filament profile.
+
+    Stores the flattened, inheritance-resolved OrcaSlicer filament profile.
+    All resolved settings are stored in a single ``settings`` JSONField.
+    """
+
+    # ── Ownership ───────────────────────────────────────────────────────
+    created_by = models.ForeignKey(
+        django_settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="orca_filament_profiles",
+        help_text="User who imported this profile (informational only)",
+    )
+
+    class Meta(OrcaProfileBase.Meta):
+        permissions = [
+            (
+                "can_manage_orca_profiles",
+                "Can import, edit, and delete OrcaSlicer profiles",
+            ),
+        ]
+
+    # ── Filament-specific properties ────────────────────────────────────
 
     @property
     def first_filament_type(self) -> str | None:
@@ -149,95 +192,15 @@ class OrcaFilamentProfile(models.Model):
                 return None
         return None
 
-    # ── Import / Resolution ─────────────────────────────────────────────
 
-    @classmethod
-    def get_pending_for_parent(cls, parent_name: str) -> models.QuerySet:
-        """Return pending profiles waiting for the given parent.
-
-        Args:
-            parent_name: The OrcaSlicer profile name of the parent.
-
-        Returns:
-            QuerySet of pending OrcaFilamentProfile instances.
-        """
-        return cls.objects.filter(
-            inherits_name=parent_name,
-            state=cls.STATE_PENDING,
-        )
-
-
-class OrcaPrintPreset(models.Model):
+class OrcaPrintPreset(OrcaProfileBase):
     """Fully resolved OrcaSlicer process (print) profile.
 
     Stores the flattened, inheritance-resolved OrcaSlicer process profile.
     All resolved settings are stored in a single ``settings`` JSONField.
-
-    Import workflow:
-    1. User uploads a JSON profile file.
-    2. If the ``inherits`` field is set and the parent profile does not yet
-       exist, the profile is stored as *pending*.
-    3. When the parent is uploaded and resolved, pending children are
-       automatically resolved (inheritance chain merged).
     """
 
-    STATE_PENDING = "pending"
-    STATE_RESOLVED = "resolved"
-    STATE_CHOICES = [
-        (STATE_PENDING, "Pending (needs parent profile)"),
-        (STATE_RESOLVED, "Resolved"),
-    ]
-
-    # ── Metadata ────────────────────────────────────────────────────────
-    name = models.CharField(
-        max_length=255,
-        help_text="Display name for this profile",
-    )
-    description = models.TextField(
-        blank=True,
-        help_text="Supports Markdown formatting.",
-    )
-    orca_name = models.CharField(
-        max_length=255,
-        help_text="Original profile name from OrcaSlicer JSON ('name' field)",
-        default="",
-    )
-    state = models.CharField(
-        max_length=20,
-        choices=STATE_CHOICES,
-        default=STATE_PENDING,
-        help_text="Whether inheritance has been fully resolved",
-    )
-    inherits_name = models.CharField(
-        max_length=255,
-        blank=True,
-        help_text="Parent profile name (from 'inherits' field in JSON)",
-    )
-    setting_id = models.CharField(max_length=50, blank=True)
-    instantiation = models.BooleanField(
-        default=True,
-        help_text="True = selectable profile; False = base/template only",
-    )
-    renamed_from = models.CharField(
-        max_length=255,
-        blank=True,
-        help_text="Old profile name before OrcaSlicer rename (used for parent lookup)",
-    )
-
-    # Raw JSON from the uploaded file (before inheritance resolution)
-    uploaded_json = models.JSONField(
-        default=dict,
-        help_text="Raw JSON content from the uploaded profile file",
-    )
-
-    # ── All resolved settings ───────────────────────────────────────────
-    settings = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text="All resolved settings",
-    )
-
-    # ── Ownership & timestamps ──────────────────────────────────────────
+    # ── Ownership ───────────────────────────────────────────────────────
     created_by = models.ForeignKey(
         django_settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -246,22 +209,11 @@ class OrcaPrintPreset(models.Model):
         related_name="orca_print_presets",
         help_text="User who imported this profile (informational only)",
     )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
-    class Meta:
-        ordering = ["name"]
+    class Meta(OrcaProfileBase.Meta):
+        pass
 
-    def __str__(self) -> str:
-        suffix = "" if self.state == self.STATE_RESOLVED else " (pending)"
-        return f"{self.name}{suffix}"
-
-    # ── Convenience properties ──────────────────────────────────────────
-
-    @property
-    def is_resolved(self) -> bool:
-        """Whether inheritance has been fully resolved."""
-        return self.state == self.STATE_RESOLVED
+    # ── Print-preset-specific properties ────────────────────────────────
 
     @property
     def infill_density_display(self) -> str | None:
@@ -274,94 +226,15 @@ class OrcaPrintPreset(models.Model):
         """Whether supports are enabled (convenience alias)."""
         return bool(self.settings.get("enable_support"))
 
-    # ── Import / Resolution ─────────────────────────────────────────────
 
-    @classmethod
-    def get_pending_for_parent(cls, parent_name: str) -> models.QuerySet:
-        """Return pending profiles waiting for the given parent.
-
-        Args:
-            parent_name: The OrcaSlicer profile name of the parent.
-
-        Returns:
-            QuerySet of pending OrcaPrintPreset instances.
-        """
-        return cls.objects.filter(
-            inherits_name=parent_name,
-            state=cls.STATE_PENDING,
-        )
-
-
-class OrcaMachineProfile(models.Model):
+class OrcaMachineProfile(OrcaProfileBase):
     """Fully resolved OrcaSlicer machine (printer) profile.
 
     Stores the flattened, inheritance-resolved OrcaSlicer machine profile.
     All resolved settings are stored in a single ``settings`` JSONField.
-
-    Import workflow:
-    1. User uploads a JSON profile file.
-    2. If the ``inherits`` field is set and the parent profile does not yet
-       exist, the profile is stored as *pending*.
-    3. When the parent is uploaded and resolved, pending children are
-       automatically resolved (inheritance chain merged).
     """
 
-    STATE_PENDING = "pending"
-    STATE_RESOLVED = "resolved"
-    STATE_CHOICES = [
-        (STATE_PENDING, "Pending (needs parent profile)"),
-        (STATE_RESOLVED, "Resolved"),
-    ]
-
-    # ── Metadata ────────────────────────────────────────────────────────
-    name = models.CharField(
-        max_length=255,
-        help_text="Display name for this profile",
-    )
-    description = models.TextField(
-        blank=True,
-        help_text="Supports Markdown formatting.",
-    )
-    orca_name = models.CharField(
-        max_length=255,
-        help_text="Original profile name from OrcaSlicer JSON ('name' field)",
-    )
-    state = models.CharField(
-        max_length=20,
-        choices=STATE_CHOICES,
-        default=STATE_PENDING,
-        help_text="Whether inheritance has been fully resolved",
-    )
-    inherits_name = models.CharField(
-        max_length=255,
-        blank=True,
-        help_text="Parent profile name (from 'inherits' field in JSON)",
-    )
-    setting_id = models.CharField(max_length=50, blank=True)
-    instantiation = models.BooleanField(
-        default=True,
-        help_text="True = selectable profile; False = base/template only",
-    )
-    renamed_from = models.CharField(
-        max_length=255,
-        blank=True,
-        help_text="Old profile name before OrcaSlicer rename (used for parent lookup)",
-    )
-
-    # Raw JSON from the uploaded file (before inheritance resolution)
-    uploaded_json = models.JSONField(
-        default=dict,
-        help_text="Raw JSON content from the uploaded profile file",
-    )
-
-    # ── All resolved settings ───────────────────────────────────────────
-    settings = models.JSONField(
-        default=dict,
-        blank=True,
-        help_text="All resolved settings",
-    )
-
-    # ── Ownership & timestamps ──────────────────────────────────────────
+    # ── Ownership ───────────────────────────────────────────────────────
     created_by = models.ForeignKey(
         django_settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -370,22 +243,11 @@ class OrcaMachineProfile(models.Model):
         related_name="orca_machine_profiles",
         help_text="User who imported this profile (informational only)",
     )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
-    class Meta:
-        ordering = ["name"]
+    class Meta(OrcaProfileBase.Meta):
+        pass
 
-    def __str__(self) -> str:
-        suffix = "" if self.state == self.STATE_RESOLVED else " (pending)"
-        return f"{self.name}{suffix}"
-
-    # ── Convenience properties ──────────────────────────────────────────
-
-    @property
-    def is_resolved(self) -> bool:
-        """Whether inheritance has been fully resolved."""
-        return self.state == self.STATE_RESOLVED
+    # ── Machine-specific properties ─────────────────────────────────────
 
     @property
     def bed_size_x(self) -> float | None:
@@ -439,20 +301,3 @@ class OrcaMachineProfile(models.Model):
             except (ValueError, TypeError):
                 return None
         return None
-
-    # ── Import / Resolution ─────────────────────────────────────────────
-
-    @classmethod
-    def get_pending_for_parent(cls, parent_name: str) -> models.QuerySet:
-        """Return pending profiles waiting for the given parent.
-
-        Args:
-            parent_name: The OrcaSlicer profile name of the parent.
-
-        Returns:
-            QuerySet of pending OrcaMachineProfile instances.
-        """
-        return cls.objects.filter(
-            inherits_name=parent_name,
-            state=cls.STATE_PENDING,
-        )

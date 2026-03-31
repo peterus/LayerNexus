@@ -144,7 +144,7 @@
           </div>
         </div>
         {% if total_printers > 0 %}
-        <div class="progress mt-3" style="height: 8px;">
+        <div class="progress progress-thin mt-3">
           <div class="progress-bar bg-primary" role="progressbar"
                style="width: {% widthratio busy_printers total_printers 100 %}%;"
                aria-valuenow="{{ busy_printers }}" aria-valuemin="0" aria-valuemax="{{ total_printers }}"></div>
@@ -184,7 +184,7 @@
         {% if jobs_by_status %}
         {% for item in jobs_by_status %}
         <div class="d-flex justify-content-between align-items-center mb-2">
-          <span class="badge {% if item.status == 'completed' %}bg-success{% elif item.status == 'failed' %}bg-danger{% elif item.status == 'printing' %}bg-primary{% elif item.status == 'cancelled' %}bg-warning text-dark{% else %}bg-secondary{% endif %}">{{ item.status }}</span>
+          {% include "core/includes/_job_status_badge.html" with status=item.status display=item.status %}
           <span>{{ item.count }}</span>
         </div>
         {% endfor %}

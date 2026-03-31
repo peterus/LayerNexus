@@ -81,10 +81,7 @@
               <tr>
                 <td><a href="{% url 'core:printjob_detail' job.pk %}" class="text-decoration-none">{{ job }}</a></td>
                 <td>
-                  <span
-                    class="badge {% if job.status == 'completed' %}bg-success{% elif job.status == 'failed' %}bg-danger{% elif job.status == 'cancelled' %}bg-warning text-dark{% elif job.status == 'printing' %}bg-primary{% elif job.status == 'slicing' or job.status == 'uploading' or job.status == 'uploaded' %}bg-info{% elif job.status == 'sliced' %}bg-info{% elif job.status == 'draft' %}bg-secondary{% else %}bg-secondary{% endif %}">
-                    {{ job.get_status_display }}
-                  </span>
+                  {% include "core/includes/_job_status_badge.html" with status=job.status display=job.get_status_display %}
                 </td>
                 <td class="text-center">{{ job.plate_count }}</td>
                 <td><small>{{ job.created_at|timesince }} ago</small></td>
@@ -242,6 +239,7 @@
 </div>
 {% endblock %}
 
+{% load static %}
 {% block extra_js %}
 {% if part.stl_file %}
 <script type="importmap">
@@ -253,83 +251,8 @@
 }
 </script>
 <script type="module">
-  import * as THREE from 'three';
-  import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-  import { STLLoader } from 'three/addons/loaders/STLLoader.js';
-
-  const container = document.getElementById('viewer-container');
-  container.innerHTML = '';
-  const width = container.clientWidth;
-  const height = container.clientHeight;
-
-  const scene = new THREE.Scene();
-  const isDark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
-  scene.background = new THREE.Color(isDark ? 0x212529 : 0xf8f9fa);
-
-  const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 10000);
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setSize(width, height);
-  renderer.setPixelRatio(window.devicePixelRatio);
-  container.appendChild(renderer.domElement);
-
-  const controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.1;
-
-  // Lighting — multiple lights to avoid black faces
-  const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-  scene.add(ambientLight);
-
-  const dirLight1 = new THREE.DirectionalLight(0xffffff, 0.8);
-  dirLight1.position.set(1, 1, 1);
-  scene.add(dirLight1);
-
-  const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.3);
-  dirLight2.position.set(-1, -1, -1);
-  scene.add(dirLight2);
-
-  const loader = new STLLoader();
-  loader.load('{{ part.stl_file.url }}', function (geometry) {
-    geometry.computeVertexNormals();
-    const material = new THREE.MeshStandardMaterial({
-      color: 0x4dabf7,
-      metalness: 0.1,
-      roughness: 0.6,
-    });
-    const mesh = new THREE.Mesh(geometry, material);
-    scene.add(mesh);
-
-    geometry.computeBoundingBox();
-    const bb = geometry.boundingBox;
-    const center = new THREE.Vector3();
-    bb.getCenter(center);
-    mesh.position.sub(center);
-
-    const size = new THREE.Vector3();
-    bb.getSize(size);
-    const maxDim = Math.max(size.x, size.y, size.z);
-    camera.position.set(maxDim * 1.2, maxDim * 0.8, maxDim * 1.5);
-    camera.lookAt(0, 0, 0);
-    controls.target.set(0, 0, 0);
-    controls.update();
-  }, undefined, function (err) {
-    container.innerHTML = '<span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>Failed to load 3D model</span>';
-  });
-
-  function animate() {
-    requestAnimationFrame(animate);
-    controls.update();
-    renderer.render(scene, camera);
-  }
-  animate();
-
-  window.addEventListener('resize', function () {
-    const w = container.clientWidth;
-    const h = container.clientHeight;
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
-    renderer.setSize(w, h);
-  });
+  import { initSTLViewer } from '{% static "js/stl-viewer.js" %}';
+  initSTLViewer('viewer-container', '{{ part.stl_file.url }}');
 </script>
 {% endif %}
 {% endblock %}

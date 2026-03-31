@@ -11,7 +11,7 @@ from django.urls import reverse, reverse_lazy
 from django.views import View
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
-from core.forms import AddPartToJobForm, PrintJobForm, PrintJobUpdateForm
+from core.forms import AddPartToJobForm, PrintJobForm
 from core.mixins import RoleRequiredMixin
 from core.models import (
     OrcaMachineProfile,
@@ -21,7 +21,7 @@ from core.models import (
     Project,
     SpoolmanFilamentMapping,
 )
-from core.views.helpers import _start_orcaslicer_worker
+from core.services.slicing_worker import _start_orcaslicer_worker
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +139,7 @@ class PrintJobUpdateView(RoleRequiredMixin, UpdateView):
     permission_required = "core.change_printjob"
 
     model = PrintJob
-    form_class = PrintJobUpdateForm
+    form_class = PrintJobForm
     template_name = "core/printjob_form.html"
 
     def get_form(self, form_class=None):

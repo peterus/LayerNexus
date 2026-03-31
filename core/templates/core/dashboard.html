@@ -163,10 +163,7 @@
                   {% endif %}
                 </small>
               </div>
-              <span
-                class="badge {% if job.status == 'completed' %}bg-success{% elif job.status == 'failed' %}bg-danger{% elif job.status == 'cancelled' %}bg-warning text-dark{% elif job.status == 'printing' %}bg-primary{% elif job.status == 'slicing' or job.status == 'uploading' or job.status == 'uploaded' %}bg-info{% else %}bg-secondary{% endif %}">
-                {{ job.get_status_display }}
-              </span>
+              {% include "core/includes/_job_status_badge.html" with status=job.status display=job.get_status_display %}
             </div>
           </div>
           {% endfor %}
@@ -205,8 +202,7 @@
               {% endif %}
             </td>
             <td>{{ entry.printer.name }}</td>
-            <td><span
-                class="badge {% if entry.priority == 4 %}bg-danger{% elif entry.priority == 3 %}bg-warning text-dark{% elif entry.priority == 2 %}bg-info{% else %}bg-secondary{% endif %}">{{ entry.get_priority_display }}</span></td>
+            <td>{% include "core/includes/_priority_badge.html" with priority=entry.priority display=entry.get_priority_display %}</td>
             <td>
               {% if entry.status == 'printing' %}
                 <span class="badge bg-primary"><i class="bi bi-printer me-1"></i>Printing</span>
