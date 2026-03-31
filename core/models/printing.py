@@ -5,7 +5,7 @@ from __future__ import annotations
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
-from django.db.models import Sum
+from django.db.models import CheckConstraint, Q, Sum
 
 
 class PrintJob(models.Model):
@@ -65,7 +65,7 @@ class PrintJob(models.Model):
         related_name="print_jobs",
         help_text="Assigned when the job is added to a print queue",
     )
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT, db_index=True)
 
     # Aggregate print stats (sum of all plates)
     filament_used_grams = models.FloatField(null=True, blank=True)
@@ -183,7 +183,7 @@ class PrintJobPlate(models.Model):
         null=True,
         help_text="Preview image extracted from sliced G-code",
     )
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_WAITING)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_WAITING, db_index=True)
 
     # Per-plate stats
     filament_used_grams = models.FloatField(null=True, blank=True)
@@ -198,6 +198,12 @@ class PrintJobPlate(models.Model):
     class Meta:
         ordering = ["plate_number"]
         unique_together = ["print_job", "plate_number"]
+        constraints = [
+            CheckConstraint(
+                check=Q(plate_number__gte=1),
+                name="printjobplate_plate_number_gte_1",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"Plate {self.plate_number} of {self.print_job}"

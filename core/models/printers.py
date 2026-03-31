@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import CheckConstraint, Q
 
 
 def _is_cloud_metadata_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -183,6 +184,14 @@ class CostProfile(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            CheckConstraint(
+                check=Q(printer_lifespan_hours__gt=0),
+                name="costprofile_lifespan_hours_gt_0",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"Cost Profile: {self.printer.name}"
