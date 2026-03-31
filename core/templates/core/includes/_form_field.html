@@ -1,7 +1,5 @@
 {% load core_tags %}
-{# Generic form field renderer.
-   Context: field — a bound Django form field.
-#}
+{% comment %}Generic form field renderer. Context: field — a bound Django form field.{% endcomment %}
 {% with widget_type=field|widget_class %}
 {% if 'HiddenInput' in widget_type %}
   {{ field }}
