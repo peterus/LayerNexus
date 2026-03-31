@@ -8,7 +8,6 @@ from core.models import PrintJob
 
 __all__ = [
     "PrintJobForm",
-    "PrintJobUpdateForm",
     "AddPartToJobForm",
 ]
 
@@ -19,21 +18,6 @@ class PrintJobForm(forms.ModelForm):
     The user provides a name, machine profile, and optional notes.
     Parts are added separately after the job is created.
     """
-
-    class Meta:
-        model = PrintJob
-        fields = [
-            "name",
-            "machine_profile",
-            "notes",
-        ]
-        widgets = {
-            "notes": forms.Textarea(attrs={"rows": 3}),
-        }
-
-
-class PrintJobUpdateForm(forms.ModelForm):
-    """Form for editing existing print jobs."""
 
     class Meta:
         model = PrintJob
