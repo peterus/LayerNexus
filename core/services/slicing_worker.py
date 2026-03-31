@@ -41,7 +41,7 @@ _orcaslicer_worker_active = False
 _LOCK_FILE = Path(settings.BASE_DIR) / "data" / ".orcaslicer_worker.lock"
 
 
-def _acquire_file_lock() -> "IO[str] | None":
+def _acquire_file_lock() -> IO[str] | None:
     """Try to acquire an exclusive file lock (non-blocking).
 
     Returns the open file handle on success, or None if another
