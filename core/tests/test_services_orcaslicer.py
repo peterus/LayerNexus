@@ -289,7 +289,7 @@ class SliceMethodTests(TestCase):
         mock_response.headers = {}
         mock_post.return_value = mock_response
 
-        result = self.client.slice(model_path="/tmp/model.stl")
+        result = self.client.slice(model_path="/test_model.stl")
 
         self.assertEqual(result.gcode_content, b"G28\n")
 

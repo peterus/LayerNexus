@@ -88,9 +88,7 @@ class OrcaFilamentProfileImportForm(OrcaProfileImportFormBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["profile_file"].help_text = (
-            "Upload an OrcaSlicer filament profile JSON file."
-        )
+        self.fields["profile_file"].help_text = "Upload an OrcaSlicer filament profile JSON file."
 
 
 class OrcaPrintPresetImportForm(OrcaProfileImportFormBase):
@@ -101,9 +99,7 @@ class OrcaPrintPresetImportForm(OrcaProfileImportFormBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["profile_file"].help_text = (
-            "Upload an OrcaSlicer process profile JSON file."
-        )
+        self.fields["profile_file"].help_text = "Upload an OrcaSlicer process profile JSON file."
 
 
 class OrcaMachineProfileImportForm(OrcaProfileImportFormBase):
@@ -114,6 +110,4 @@ class OrcaMachineProfileImportForm(OrcaProfileImportFormBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["profile_file"].help_text = (
-            "Upload an OrcaSlicer machine profile JSON file."
-        )
+        self.fields["profile_file"].help_text = "Upload an OrcaSlicer machine profile JSON file."

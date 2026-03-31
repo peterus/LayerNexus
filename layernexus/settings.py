@@ -30,9 +30,7 @@ if not _secret_key:
     if DEBUG:
         _secret_key = "django-insecure-dev-only-key-not-for-production"
     else:
-        raise RuntimeError(
-            "DJANGO_SECRET_KEY environment variable is required when DEBUG is off."
-        )
+        raise RuntimeError("DJANGO_SECRET_KEY environment variable is required when DEBUG is off.")
 SECRET_KEY = _secret_key
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")

@@ -169,7 +169,7 @@ class MoonrakerUploadGcodeTests(TestCase):
         mock_response.raise_for_status.return_value = None
         mock_post.return_value = mock_response
 
-        result = self.client.upload_gcode("/tmp/test.gcode")
+        result = self.client.upload_gcode("/test.gcode")
 
         self.assertEqual(result["item"]["path"], "test.gcode")
         mock_post.assert_called_once()
@@ -183,7 +183,7 @@ class MoonrakerUploadGcodeTests(TestCase):
         mock_response.raise_for_status.return_value = None
         mock_post.return_value = mock_response
 
-        result = self.client.upload_gcode("/tmp/test.gcode", filename="custom.gcode")
+        result = self.client.upload_gcode("/test.gcode", filename="custom.gcode")
 
         self.assertEqual(result["item"]["path"], "custom.gcode")
 
@@ -198,7 +198,7 @@ class MoonrakerUploadGcodeTests(TestCase):
         mock_post.side_effect = requests.ConnectionError("down")
 
         with self.assertRaises(MoonrakerError) as ctx:
-            self.client.upload_gcode("/tmp/test.gcode")
+            self.client.upload_gcode("/test.gcode")
 
         self.assertIn("Cannot connect", str(ctx.exception))
 
@@ -209,7 +209,7 @@ class MoonrakerUploadGcodeTests(TestCase):
         mock_post.side_effect = requests.RequestException("upload error")
 
         with self.assertRaises(MoonrakerError) as ctx:
-            self.client.upload_gcode("/tmp/test.gcode")
+            self.client.upload_gcode("/test.gcode")
 
         self.assertIn("Upload failed", str(ctx.exception))
 

@@ -53,9 +53,7 @@ def start_print_for_queue_entry(entry: PrintQueue) -> str:
 
     gcode_file = plate.gcode_file
     if not gcode_file:
-        raise PrintStartError(
-            f"No G-code file for plate {plate.plate_number}. Slice the job first."
-        )
+        raise PrintStartError(f"No G-code file for plate {plate.plate_number}. Slice the job first.")
 
     # Build a descriptive, filesystem-safe filename for Klipper
     safe_name = re.sub(r"[^\w\-]", "_", str(job))[:50]

@@ -1,7 +1,8 @@
 """OrcaSlicer profile views for the LayerNexus application."""
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin

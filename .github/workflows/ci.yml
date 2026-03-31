@@ -97,7 +97,7 @@ jobs:
 
       - name: Django deployment checklist
         run: |
-          DJANGO_SECRET_KEY=ci-audit-key \
+          DJANGO_SECRET_KEY=ci-audit-key-that-is-long-enough-for-django-security-check-validation \
           DEBUG=0 \
           ALLOWED_HOSTS=localhost \
           python manage.py check --deploy --fail-level WARNING

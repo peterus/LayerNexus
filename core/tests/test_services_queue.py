@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
-from core.models import PrintJob, PrintJobPlate, PrintQueue, PrinterProfile, Project
+from core.models import PrintJob, PrintJobPlate, PrintQueue
 from core.services.moonraker import MoonrakerError
 from core.services.queue import PrintStartError, start_print_for_queue_entry
 from core.tests.mixins import TestDataMixin
@@ -50,7 +50,7 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
         """Successful print start updates all statuses."""
         # Set up a mock gcode file
         mock_gcode = MagicMock()
-        mock_gcode.path = "/tmp/test.gcode"
+        mock_gcode.path = "/test.gcode"
         mock_gcode.__bool__ = MagicMock(return_value=True)
         self.plate.gcode_file = mock_gcode
         self.plate.save = MagicMock()  # Prevent actual save
@@ -62,10 +62,8 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
         MockClientCls.return_value = mock_client
 
         # Mock save methods to avoid DB issues with the mock file
-        with patch.object(PrintQueue, "save"):
-            with patch.object(PrintJobPlate, "save"):
-                with patch.object(PrintJob, "save"):
-                    remote_filename = start_print_for_queue_entry(self.entry)
+        with patch.object(PrintQueue, "save"), patch.object(PrintJobPlate, "save"), patch.object(PrintJob, "save"):
+            remote_filename = start_print_for_queue_entry(self.entry)
 
         # Verify MoonrakerClient was constructed with correct args
         MockClientCls.assert_called_once_with("http://printer:7125", "test-key")
@@ -83,7 +81,7 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
     def test_moonraker_upload_error(self, MockClientCls):
         """MoonrakerError during upload should propagate."""
         mock_gcode = MagicMock()
-        mock_gcode.path = "/tmp/test.gcode"
+        mock_gcode.path = "/test.gcode"
         mock_gcode.__bool__ = MagicMock(return_value=True)
         self.plate.gcode_file = mock_gcode
         self.entry.plate = self.plate
@@ -99,7 +97,7 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
     def test_moonraker_start_error(self, MockClientCls):
         """MoonrakerError during start_print should propagate."""
         mock_gcode = MagicMock()
-        mock_gcode.path = "/tmp/test.gcode"
+        mock_gcode.path = "/test.gcode"
         mock_gcode.__bool__ = MagicMock(return_value=True)
         self.plate.gcode_file = mock_gcode
         self.entry.plate = self.plate
@@ -116,7 +114,7 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
     def test_status_updates_on_success(self, MockClientCls):
         """Verify that queue entry, plate, and job statuses are updated."""
         mock_gcode = MagicMock()
-        mock_gcode.path = "/tmp/test.gcode"
+        mock_gcode.path = "/test.gcode"
         mock_gcode.__bool__ = MagicMock(return_value=True)
         self.plate.gcode_file = mock_gcode
         self.entry.plate = self.plate
@@ -129,10 +127,12 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
         plate_save = MagicMock()
         job_save = MagicMock()
 
-        with patch.object(PrintQueue, "save", entry_save):
-            with patch.object(PrintJobPlate, "save", plate_save):
-                with patch.object(PrintJob, "save", job_save):
-                    start_print_for_queue_entry(self.entry)
+        with (
+            patch.object(PrintQueue, "save", entry_save),
+            patch.object(PrintJobPlate, "save", plate_save),
+            patch.object(PrintJob, "save", job_save),
+        ):
+            start_print_for_queue_entry(self.entry)
 
         # Check status was set to printing
         self.assertEqual(self.entry.status, PrintQueue.STATUS_PRINTING)

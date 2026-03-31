@@ -456,7 +456,8 @@ class QueueCheckPrinterStatusView(LoginRequiredMixin, View):
 
         except MoonrakerError as exc:
             logger.warning("Moonraker poll failed for entry %s: %s", pk, exc)
-            return JsonResponse({"status": "error", "message": "Could not communicate with printer. Check server logs for details."})
+            msg = "Could not communicate with printer. Check server logs for details."
+            return JsonResponse({"status": "error", "message": msg})
 
 
 class CancelQueueEntryView(PrinterControlMixin, View):

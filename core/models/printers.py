@@ -85,6 +85,9 @@ class PrinterProfile(models.Model):
             ("can_control_printer", "Can start prints and cancel running prints"),
         ]
 
+    def __str__(self) -> str:
+        return self.name
+
     def clean(self) -> None:
         """Validate moonraker_url against SSRF attacks.
 
@@ -104,9 +107,7 @@ class PrinterProfile(models.Model):
 
         parsed = urlparse(self.moonraker_url)
         if parsed.scheme not in ("http", "https"):
-            raise ValidationError(
-                {"moonraker_url": "Moonraker URL must use http or https."}
-            )
+            raise ValidationError({"moonraker_url": "Moonraker URL must use http or https."})
 
         hostname = parsed.hostname
         if not hostname:
@@ -125,19 +126,12 @@ class PrinterProfile(models.Model):
 
         # Always block cloud metadata endpoint
         if _is_cloud_metadata_ip(addr):
-            raise ValidationError(
-                {"moonraker_url": "Access to cloud metadata endpoints is not allowed."}
-            )
+            raise ValidationError({"moonraker_url": "Access to cloud metadata endpoints is not allowed."})
 
         # Check private IPs (default: allowed for LAN setups)
         allow_private = os.environ.get("ALLOW_PRIVATE_IPS", "true").lower() in ("true", "1", "yes")
         if not allow_private and _is_private_ip(addr):
-            raise ValidationError(
-                {"moonraker_url": "Private/internal IP addresses are not allowed."}
-            )
-
-    def __str__(self) -> str:
-        return self.name
+            raise ValidationError({"moonraker_url": "Private/internal IP addresses are not allowed."})
 
     # ── Convenience properties (delegated to OrcaMachineProfile) ────────
 

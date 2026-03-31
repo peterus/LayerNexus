@@ -130,7 +130,8 @@ class PrinterStatusView(LoginRequiredMixin, View):
             return JsonResponse({"status": status})
         except MoonrakerError as exc:
             logger.exception("Moonraker error for printer %s: %s", printer.pk, exc)
-            return JsonResponse({"error": "Could not retrieve printer status. Check server logs for details."}, status=502)
+            msg = "Could not retrieve printer status. Check server logs for details."
+            return JsonResponse({"error": msg}, status=502)
 
 
 class UploadToPrinterView(PrinterControlMixin, View):

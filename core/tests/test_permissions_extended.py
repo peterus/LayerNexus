@@ -4,14 +4,13 @@ Covers: PrinterControlMixin, QueueManageMixin, QueueDequeueMixin,
 OrcaProfileManageMixin, FilamentMappingManageMixin.
 """
 
-from django.test import TestCase, override_settings
+from django.test import override_settings
 from django.urls import reverse
 
 from core.models import (
     OrcaFilamentProfile,
     OrcaMachineProfile,
     OrcaPrintPreset,
-    PrinterProfile,
     PrintJob,
     PrintJobPlate,
     PrintQueue,
@@ -191,17 +190,13 @@ class OrcaProfileManageMixinTests(_RBACTestBase):
     def test_designer_cannot_delete_filament_profile(self):
         """Designer lacks can_manage_orca_profiles."""
         self.client.login(username="designer_user", password="testpass123")
-        resp = self.client.post(
-            reverse("core:orcafilamentprofile_delete", args=[self.filament_profile.pk])
-        )
+        resp = self.client.post(reverse("core:orcafilamentprofile_delete", args=[self.filament_profile.pk]))
         self.assertEqual(resp.status_code, 403)
 
     def test_designer_cannot_delete_print_preset(self):
         """Designer lacks can_manage_orca_profiles."""
         self.client.login(username="designer_user", password="testpass123")
-        resp = self.client.post(
-            reverse("core:orcaprintpreset_delete", args=[self.print_preset.pk])
-        )
+        resp = self.client.post(reverse("core:orcaprintpreset_delete", args=[self.print_preset.pk]))
         self.assertEqual(resp.status_code, 403)
 
     def test_operator_can_access_machine_import(self):
@@ -213,9 +208,7 @@ class OrcaProfileManageMixinTests(_RBACTestBase):
     def test_operator_can_delete_machine_profile(self):
         """Operator has can_manage_orca_profiles."""
         self.client.login(username="operator_user", password="testpass123")
-        resp = self.client.post(
-            reverse("core:orcamachineprofile_delete", args=[self.machine_profile.pk])
-        )
+        resp = self.client.post(reverse("core:orcamachineprofile_delete", args=[self.machine_profile.pk]))
         # 302 = redirect after delete, 200 = confirmation page
         self.assertNotEqual(resp.status_code, 403)
 
