@@ -1,8 +1,10 @@
 """OrcaSlicer background worker for estimation and slicing jobs."""
 
+import fcntl
 import logging
 import threading
 from datetime import timedelta
+from pathlib import Path
 
 from django.conf import settings
 
@@ -32,6 +34,24 @@ __all__: list[str] = [
 _orcaslicer_worker_lock = threading.Lock()
 _orcaslicer_worker_active = False
 
+# File lock to ensure only one worker across all gunicorn processes
+_LOCK_FILE = Path(settings.BASE_DIR) / "data" / ".orcaslicer_worker.lock"
+
+
+def _acquire_file_lock() -> object | None:
+    """Try to acquire an exclusive file lock (non-blocking).
+
+    Returns the open file handle on success, or None if another
+    process already holds the lock.
+    """
+    _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fh = open(_LOCK_FILE, "w")  # noqa: SIM115
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fh
+    except OSError:
+        return None
+
 
 def _start_orcaslicer_worker() -> None:
     """Start the OrcaSlicer worker thread if not already running.
@@ -39,6 +59,9 @@ def _start_orcaslicer_worker() -> None:
     The worker processes pending estimation parts and pending slicing
     jobs sequentially, one at a time.  Only one worker thread is active
     at any given time to avoid overloading the OrcaSlicer API.
+
+    A file lock ensures that only one gunicorn process can run the
+    worker, even with multiple workers.
     """
     global _orcaslicer_worker_active
     with _orcaslicer_worker_lock:
@@ -60,13 +83,26 @@ def _orcaslicer_worker_loop() -> None:
     Each iteration picks either the next Part with
     ``estimation_status='pending'`` or the next PrintJob with
     ``status='pending'``, processes it via the OrcaSlicer API, and
-    repeats until no more pending work remains.  Estimation parts are
+    repeats until no more pending work remains.
     Slicing jobs are prioritised over estimations because users are
     actively waiting for sliced G-code.
+
+    A file lock ensures only one worker runs across all gunicorn
+    processes.  If the lock cannot be acquired, the thread exits
+    immediately — the process that holds the lock is already
+    processing the queue.
     """
     global _orcaslicer_worker_active
     from django.db import connection
     from django.utils import timezone
+
+    # Acquire cross-process file lock
+    lock_fh = _acquire_file_lock()
+    if lock_fh is None:
+        logger.debug("OrcaSlicer worker: another process holds the lock, exiting")
+        with _orcaslicer_worker_lock:
+            _orcaslicer_worker_active = False
+        return
 
     try:
         while True:
@@ -118,6 +154,10 @@ def _orcaslicer_worker_loop() -> None:
             logger.info("OrcaSlicer worker: no more pending work, stopping")
             break
     finally:
+        # Release the file lock
+        fcntl.flock(lock_fh, fcntl.LOCK_UN)
+        lock_fh.close()
+
         # Re-check for work inside the lock to prevent a second worker
         # from being spawned between clearing the flag and re-checking.
         with _orcaslicer_worker_lock:
