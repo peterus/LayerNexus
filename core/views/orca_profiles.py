@@ -50,7 +50,7 @@ class OrcaProfileImportViewBase(OrcaProfileManageMixin, View):
     Subclasses configure the following class attributes:
     - ``model_class``: The Django model for this profile type.
     - ``form_class``: The import form class.
-    - ``import_function_path``: Dotted path or attribute name in
+    - ``import_function_path``: Attribute name on
       ``core.services.profile_import`` for the import function.
     - ``template_name``: Template to render.
     - ``success_url_name``: URL name to redirect to on success

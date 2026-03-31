@@ -61,7 +61,7 @@ class CoreConfig(AppConfig):
         )
 
         if has_pending:
-            from core.views import _start_orcaslicer_worker
+            from core.services.slicing_worker import _start_orcaslicer_worker
 
             _start_orcaslicer_worker()
             logger.info("OrcaSlicer worker started on application startup")

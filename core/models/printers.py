@@ -23,10 +23,12 @@ def _is_private_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         ipaddress.IPv4Network("127.0.0.0/8"),
         ipaddress.IPv4Network("10.0.0.0/8"),
         ipaddress.IPv4Network("172.16.0.0/12"),
+        ipaddress.IPv4Network("192.168.0.0/16"),
         ipaddress.IPv4Network("169.254.0.0/16"),
     ]
     private_ranges_v6 = [
         ipaddress.IPv6Network("::1/128"),
+        ipaddress.IPv6Network("fe80::/10"),
         ipaddress.IPv6Network("fd00::/8"),
     ]
 
@@ -90,12 +92,22 @@ class PrinterProfile(models.Model):
         Private/internal IPs are allowed by default (ALLOW_PRIVATE_IPS=true)
         since this project typically runs in a LAN. Set ALLOW_PRIVATE_IPS=false
         to block private IPs (e.g. in cloud deployments).
+
+        DNS hostnames are resolved at validation time so that SSRF checks
+        cannot be bypassed via DNS rebinding.
         """
+        import socket
+
         super().clean()
         if not self.moonraker_url:
             return
 
         parsed = urlparse(self.moonraker_url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValidationError(
+                {"moonraker_url": "Moonraker URL must use http or https."}
+            )
+
         hostname = parsed.hostname
         if not hostname:
             raise ValidationError({"moonraker_url": "Invalid URL: no hostname found."})
@@ -103,9 +115,13 @@ class PrinterProfile(models.Model):
         try:
             addr = ipaddress.ip_address(hostname)
         except ValueError:
-            # hostname is a DNS name, not a raw IP – resolve is not done here
-            # to avoid DNS rebinding; raw IP checks are sufficient for model validation
-            return
+            # hostname is a DNS name – resolve it to check the actual IP
+            try:
+                resolved = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                addr = ipaddress.ip_address(resolved[0][4][0])
+            except (socket.gaierror, OSError):
+                # Cannot resolve – allow it (will fail at connection time)
+                return
 
         # Always block cloud metadata endpoint
         if _is_cloud_metadata_ip(addr):

@@ -59,8 +59,12 @@ class RegisterView(CreateView):
         with transaction.atomic():
             response = super().form_valid(form)
             user = self.object
-            # Lock existing users to prevent concurrent first-user checks
-            is_first_user = User.objects.select_for_update().count() == 1
+            # Lock the Admin group row to serialize first-user checks.
+            # get_or_create + select_for_update ensures only one transaction
+            # can evaluate the "first user" condition at a time, even when
+            # there are 0 pre-existing users (avoiding the empty-table race).
+            Group.objects.select_for_update().get_or_create(name="Admin")
+            is_first_user = User.objects.count() == 1
             if is_first_user:
                 # First user becomes Admin
                 group, _created = Group.objects.get_or_create(name="Admin")

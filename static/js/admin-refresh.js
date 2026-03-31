@@ -52,7 +52,7 @@ function initAdminRefresh() {
           }
         }
       }
-      window.scrollTo({ top: scrollY, behavior: 'instant' });
+      window.scrollTo({ top: scrollY, behavior: 'auto' });
       updateStatus('Updated ' + new Date().toLocaleTimeString());
     })
     .catch(function () {

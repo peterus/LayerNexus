@@ -11,7 +11,7 @@ import re
 from django.utils import timezone
 
 from core.models import PrintJob, PrintJobPlate, PrintQueue
-from core.services.moonraker import MoonrakerClient, MoonrakerError
+from core.services.moonraker import MoonrakerClient
 
 logger = logging.getLogger(__name__)
 

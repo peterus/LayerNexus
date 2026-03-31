@@ -43,10 +43,12 @@ urlpatterns = [
     path("", include("core.urls")),
 ]
 
-# Always serve user-uploaded media (STL, gcode).  LayerNexus is a
-# self-hosted application — Django's static() helper is a no-op when
-# DEBUG=False, so we register the pattern unconditionally.
+# Serve user-uploaded media (STL, gcode).  LayerNexus is a self-hosted
+# application — Django's static() helper is a no-op when DEBUG=False,
+# so we register the pattern unconditionally.
 # In production, media is served only to authenticated users.
+# NOTE: For high-traffic or large-file scenarios, consider fronting
+# this with Nginx + X-Accel-Redirect for better performance.
 _media_view = serve if settings.DEBUG else authenticated_media
 urlpatterns += [
     re_path(
