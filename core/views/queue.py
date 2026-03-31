@@ -93,8 +93,6 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
 
     def get_context_data(self, **kwargs):
         """Add plate->compatible-printers mapping for client-side filtering."""
-        import json as _json
-
         context = super().get_context_data(**kwargs)
 
         # Build a map: plate_pk -> [compatible printer PKs]
@@ -118,7 +116,7 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
                 compatible = [p.pk for p in printers]
             plate_printer_map[str(plate.pk)] = compatible
 
-        context["job_printer_map_json"] = _json.dumps(plate_printer_map)
+        context["job_printer_map_json"] = plate_printer_map
         return context
 
     def form_valid(self, form):
