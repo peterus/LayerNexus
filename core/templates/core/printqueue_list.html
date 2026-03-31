@@ -52,9 +52,7 @@
           <td class="text-end"><small>{% if entry.plate.filament_used_grams %}{{ entry.plate.filament_used_grams|floatformat:1 }}&nbsp;g{% else %}—{% endif %}</small></td>
           <td class="text-end"><small>{% if entry.plate.print_time_estimate %}{{ entry.plate.print_time_estimate|duration_format }}{% else %}—{% endif %}</small></td>
           <td>
-            <span class="badge {% if entry.priority == 4 %}bg-danger{% elif entry.priority == 3 %}bg-warning text-dark{% elif entry.priority == 2 %}bg-info{% else %}bg-secondary{% endif %}">
-              {{ entry.get_priority_display }}
-            </span>
+            {% include "core/includes/_priority_badge.html" with priority=entry.priority display=entry.get_priority_display %}
           </td>
           <td>
             {% if entry.status == 'printing' %}
@@ -101,28 +99,23 @@
 </div>
 {% endif %}
 
+{% load static %}
 {# Poll Moonraker for entries that are currently printing #}
+<script src="{% static 'js/polling.js' %}"></script>
 <script>
 (function() {
-  const POLL_INTERVAL = 30000; // 30 seconds
-  function pollPrinting() {
-    document.querySelectorAll('tr[data-entry-status="printing"]').forEach(function(row) {
-      const pk = row.dataset.entryPk;
-      fetch('/api/queue/' + pk + '/check-status/')
-        .then(r => r.json())
-        .then(data => {
-          if (data.status === 'awaiting_review') {
-            // Reload the page to show the updated status
-            location.reload();
-          }
-        })
-        .catch(() => {});  // silently ignore poll errors
-    });
-  }
-  // Only poll if there are printing entries
-  if (document.querySelector('tr[data-entry-status="printing"]')) {
-    setInterval(pollPrinting, POLL_INTERVAL);
-  }
+  var rows = document.querySelectorAll('tr[data-entry-status="printing"]');
+  if (!rows.length) return;
+
+  rows.forEach(function(row) {
+    var pk = row.dataset.entryPk;
+    startPolling('/api/queue/' + pk + '/check-status/', function(data) {
+      if (data.status === 'awaiting_review') {
+        location.reload();
+        return false;
+      }
+    }, 30000);
+  });
 })();
 </script>
 {% endblock %}

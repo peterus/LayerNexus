@@ -17,7 +17,7 @@
   <div class="col">
     <div class="card h-100 shadow-sm">
       {% if project.image %}
-      <img src="{{ project.image.url }}" class="card-img-top" alt="{{ project.name }}" style="height:160px;object-fit:cover;">
+      <img src="{{ project.image.url }}" class="card-img-top project-card-img" alt="{{ project.name }}">
       {% endif %}
       <div class="card-body">
         <h5 class="card-title">
@@ -36,7 +36,7 @@
           </span>
           {% endwith %}
         </div>
-        <div class="progress mb-1" style="height: 8px;">
+        <div class="progress progress-thin mb-1">
           <div class="progress-bar bg-success" role="progressbar" style="width: {{ project.progress_percent }}%;" aria-valuenow="{{ project.progress_percent }}" aria-valuemin="0" aria-valuemax="100"></div>
         </div>
         <small class="text-body-secondary">{{ project.progress_percent }}% printed</small>

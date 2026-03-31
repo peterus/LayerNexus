@@ -39,43 +39,8 @@
 {{ job_printer_map_json|json_script:"job-printer-map" }}
 {% endblock %}
 
+{% load static %}
 {% block extra_js %}
-<script>
-// Dynamically filter printers based on selected plate's machine profile
-document.addEventListener('DOMContentLoaded', function() {
-  var plateSelect = document.getElementById('id_plate');
-  var printerSelect = document.getElementById('id_printer');
-  if (!plateSelect || !printerSelect) return;
-
-  var jobPrinterMap = JSON.parse(document.getElementById('job-printer-map').textContent);
-  var allPrinterOptions = Array.from(printerSelect.options).map(function(opt) {
-    return { value: opt.value, text: opt.textContent, selected: opt.selected };
-  });
-
-  function filterPrinters() {
-    var platePk = plateSelect.value;
-    var compatiblePks = jobPrinterMap[platePk] || null;
-    var currentVal = printerSelect.value;
-    printerSelect.innerHTML = '';
-
-    allPrinterOptions.forEach(function(opt) {
-      if (!opt.value) {
-        // empty/placeholder option
-        printerSelect.appendChild(new Option(opt.text, opt.value));
-      } else if (!compatiblePks || compatiblePks.indexOf(parseInt(opt.value)) !== -1) {
-        printerSelect.appendChild(new Option(opt.text, opt.value));
-      }
-    });
-
-    // Try to restore previous selection
-    if (currentVal) {
-      printerSelect.value = currentVal;
-    }
-  }
-
-  plateSelect.addEventListener('change', filterPrinters);
-  // Apply filter on page load
-  filterPrinters();
-});
-</script>
+<script src="{% static 'js/printer-filter.js' %}"></script>
+<script>document.addEventListener('DOMContentLoaded', function() { initPrinterFilter(); });</script>
 {% endblock %}

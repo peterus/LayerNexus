@@ -13,25 +13,6 @@
     <li class="breadcrumb-item active">Delete</li>
   </ol>
 </nav>
-
-<div class="row justify-content-center">
-  <div class="col-lg-6">
-    <div class="card border-danger shadow-sm">
-      <div class="card-header bg-danger text-white">
-        <h4 class="mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Delete Project</h4>
-      </div>
-      <div class="card-body">
-        <p>Are you sure you want to delete <strong>{{ project.name }}</strong>?</p>
-        <p class="text-body-secondary">This will permanently remove the project and all its parts ({{ project.parts.count }} parts). This action cannot be undone.</p>
-        <form method="post">
-          {% csrf_token %}
-          <div class="d-flex gap-2">
-            <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-1"></i>Delete Project</button>
-            <a href="{% url 'core:project_detail' project.pk %}" class="btn btn-outline-secondary">Cancel</a>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
-</div>
+{% url 'core:project_detail' project.pk as cancel %}
+{% include "core/includes/_confirm_delete.html" with object_name=project.name object_type="Project" cancel_url=cancel warning_message="This will permanently remove the project and all its parts. This action cannot be undone." delete_label="Delete Project" %}
 {% endblock %}

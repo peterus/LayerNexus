@@ -196,38 +196,30 @@
 </div>
 {% endif %}
 
+{% load static %}
 {# ── Moonraker polling for active prints ─────────────────────────────────── #}
+<script src="{% static 'js/polling.js' %}"></script>
 <script>
 (function() {
-  const POLL_INTERVAL = 15000; // 15 seconds – faster for the dashboard
-  const cards = document.querySelectorAll('[data-poll-entry]');
+  var cards = document.querySelectorAll('[data-poll-entry]');
   if (!cards.length) return;
 
-  function pollEntry(card) {
-    const pk = card.dataset.pollEntry;
-    fetch('/api/queue/' + pk + '/check-status/')
-      .then(r => r.json())
-      .then(data => {
-        if (data.status === 'awaiting_review') {
-          location.reload();
-          return;
-        }
-        // Update progress bar
-        if (data.progress !== undefined) {
-          const pct = Math.round(data.progress * 100);
-          const bar = document.querySelector('[data-progress-bar="' + pk + '"] .progress-bar');
-          const txt = document.querySelector('[data-progress-text="' + pk + '"]');
-          if (bar) bar.style.width = pct + '%';
-          if (txt) txt.textContent = pct + '% complete';
-        }
-      })
-      .catch(() => {});
-  }
-
-  // Initial poll immediately
-  cards.forEach(pollEntry);
-  // Then every POLL_INTERVAL
-  setInterval(function() { cards.forEach(pollEntry); }, POLL_INTERVAL);
+  cards.forEach(function(card) {
+    var pk = card.dataset.pollEntry;
+    startPolling('/api/queue/' + pk + '/check-status/', function(data) {
+      if (data.status === 'awaiting_review') {
+        location.reload();
+        return false;
+      }
+      if (data.progress !== undefined) {
+        var pct = Math.round(data.progress * 100);
+        var bar = document.querySelector('[data-progress-bar="' + pk + '"] .progress-bar');
+        var txt = document.querySelector('[data-progress-text="' + pk + '"]');
+        if (bar) bar.style.width = pct + '%';
+        if (txt) txt.textContent = pct + '% complete';
+      }
+    }, 15000);
+  });
 })();
 </script>
 {% endblock %}

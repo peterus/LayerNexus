@@ -332,7 +332,7 @@
           </div>
         </div>
         {% if total_parts > 0 %}
-        <div class="progress mt-3" style="height: 8px;">
+        <div class="progress progress-thin mt-3">
           {% widthratio parts_estimated total_parts 100 as pct_ok %}
           {% widthratio parts_estimating_count total_parts 100 as pct_estimating %}
           {% widthratio parts_pending_count total_parts 100 as pct_pending %}
@@ -417,9 +417,7 @@
             <br>
             <small class="text-body-secondary">{{ job.created_by|default:"—" }}</small>
           </div>
-          <span class="badge {% if job.status == 'completed' %}bg-success{% elif job.status == 'failed' %}bg-danger{% elif job.status == 'printing' %}bg-primary{% elif job.status == 'slicing' %}bg-warning text-dark{% else %}bg-secondary{% endif %}">
-            {{ job.get_status_display }}
-          </span>
+          {% include "core/includes/_job_status_badge.html" with status=job.status display=job.get_status_display %}
         </li>
         {% empty %}
         <li class="list-group-item text-body-secondary">No jobs yet.</li>
@@ -432,92 +430,15 @@
 </div><!-- /admin-content -->
 {% endblock %}
 
-{% block extra_js %}
-<script>
-(function() {
-  const STORAGE_KEY = 'admin_refresh_interval';
-  const select = document.getElementById('refresh-interval');
-  const btn = document.getElementById('refresh-btn');
-  const status = document.getElementById('refresh-status');
-  let timerId = null;
-
-  // Restore saved preference
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved !== null) {
-    select.value = saved;
-  }
-
-  function updateStatus(msg) {
-    status.textContent = msg;
-    setTimeout(() => { status.textContent = ''; }, 3000);
-  }
-
-  function doRefresh() {
-    const scrollY = window.scrollY;
-    const icon = btn.querySelector('i');
-    icon.classList.add('spin-animation');
-
-    // Save collapse states before refresh
-    const collapseStates = {};
-    document.querySelectorAll('#admin-content .collapse').forEach(el => {
-      collapseStates[el.id] = el.classList.contains('show');
-    });
-
-    fetch(window.location.href, {
-      headers: { 'X-Requested-With': 'XMLHttpRequest' }
-    })
-    .then(r => r.text())
-    .then(html => {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(html, 'text/html');
-      const newContent = doc.querySelector('#admin-content');
-      const current = document.getElementById('admin-content');
-      if (newContent && current) {
-        current.innerHTML = newContent.innerHTML;
-      }
-      // Restore collapse states
-      for (const [id, wasOpen] of Object.entries(collapseStates)) {
-        const el = document.getElementById(id);
-        if (el && wasOpen) {
-          el.classList.add('show');
-        }
-      }
-      window.scrollTo({ top: scrollY, behavior: 'instant' });
-      updateStatus('Updated ' + new Date().toLocaleTimeString());
-    })
-    .catch(() => {
-      updateStatus('Refresh failed');
-    })
-    .finally(() => {
-      icon.classList.remove('spin-animation');
-    });
-  }
-
-  function scheduleRefresh() {
-    if (timerId) { clearInterval(timerId); timerId = null; }
-    const secs = parseInt(select.value, 10);
-    localStorage.setItem(STORAGE_KEY, secs);
-    if (secs > 0) {
-      timerId = setInterval(doRefresh, secs * 1000);
-    }
-  }
-
-  select.addEventListener('change', scheduleRefresh);
-  btn.addEventListener('click', doRefresh);
-  scheduleRefresh();
-
-  // Pause auto-refresh when tab is hidden
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-      if (timerId) { clearInterval(timerId); timerId = null; }
-    } else {
-      scheduleRefresh();
-    }
-  });
-})();
-</script>
+{% load static %}
+{% block extra_css %}
 <style>
   .spin-animation { animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 </style>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/admin-refresh.js' %}"></script>
+<script>initAdminRefresh();</script>
 {% endblock %}
