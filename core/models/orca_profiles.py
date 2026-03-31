@@ -92,7 +92,7 @@ class OrcaProfileBase(models.Model):
         abstract = True
         ordering = ["name"]
         indexes = [
-            Index(fields=["state", "instantiation"], name="%(class)s_state_inst_idx"),
+            Index(fields=["state", "instantiation"], name="%(class)s_st_ins_idx"),
         ]
 
     def __str__(self) -> str:

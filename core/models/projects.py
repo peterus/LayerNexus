@@ -73,7 +73,7 @@ class Project(models.Model):
         ordering = ["-updated_at"]
         constraints = [
             CheckConstraint(
-                check=Q(quantity__gte=1),
+                condition=Q(quantity__gte=1),
                 name="project_quantity_gte_1",
             ),
         ]

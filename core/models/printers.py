@@ -188,7 +188,7 @@ class CostProfile(models.Model):
     class Meta:
         constraints = [
             CheckConstraint(
-                check=Q(printer_lifespan_hours__gt=0),
+                condition=Q(printer_lifespan_hours__gt=0),
                 name="costprofile_lifespan_hours_gt_0",
             ),
         ]

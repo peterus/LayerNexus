@@ -86,7 +86,7 @@ class Part(models.Model):
         ordering = ["name"]
         constraints = [
             CheckConstraint(
-                check=Q(quantity__gte=1),
+                condition=Q(quantity__gte=1),
                 name="part_quantity_gte_1",
             ),
         ]

@@ -78,11 +78,11 @@ class PrintQueue(models.Model):
         ]
         constraints = [
             CheckConstraint(
-                check=Q(priority__gte=1, priority__lte=4),
+                condition=Q(priority__gte=1, priority__lte=4),
                 name="printqueue_priority_between_1_and_4",
             ),
             CheckConstraint(
-                check=Q(position__gte=0),
+                condition=Q(position__gte=0),
                 name="printqueue_position_gte_0",
             ),
             UniqueConstraint(

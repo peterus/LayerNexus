@@ -200,7 +200,7 @@ class PrintJobPlate(models.Model):
         unique_together = ["print_job", "plate_number"]
         constraints = [
             CheckConstraint(
-                check=Q(plate_number__gte=1),
+                condition=Q(plate_number__gte=1),
                 name="printjobplate_plate_number_gte_1",
             ),
         ]
