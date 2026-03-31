@@ -1,10 +1,13 @@
 """OrcaSlicer background worker for estimation and slicing jobs."""
 
+from __future__ import annotations
+
 import fcntl
 import logging
 import threading
 from datetime import timedelta
 from pathlib import Path
+from typing import IO
 
 from django.conf import settings
 
@@ -38,18 +41,26 @@ _orcaslicer_worker_active = False
 _LOCK_FILE = Path(settings.BASE_DIR) / "data" / ".orcaslicer_worker.lock"
 
 
-def _acquire_file_lock() -> object | None:
+def _acquire_file_lock() -> "IO[str] | None":
     """Try to acquire an exclusive file lock (non-blocking).
 
     Returns the open file handle on success, or None if another
     process already holds the lock.
     """
+    import errno
+
     _LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fh = None
     try:
         fh = open(_LOCK_FILE, "w")  # noqa: SIM115
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return fh
-    except OSError:
+    except OSError as exc:
+        if fh is not None:
+            fh.close()
+        if exc.errno in (errno.EACCES, errno.EAGAIN):
+            return None
+        logger.error("Unexpected error acquiring OrcaSlicer worker lock: %s", exc)
         return None
 
 
@@ -154,12 +165,8 @@ def _orcaslicer_worker_loop() -> None:
             logger.info("OrcaSlicer worker: no more pending work, stopping")
             break
     finally:
-        # Release the file lock
-        fcntl.flock(lock_fh, fcntl.LOCK_UN)
-        lock_fh.close()
-
-        # Re-check for work inside the lock to prevent a second worker
-        # from being spawned between clearing the flag and re-checking.
+        # Re-check for work while still holding the file lock to prevent
+        # another process from acquiring it and causing churn.
         with _orcaslicer_worker_lock:
             has_pending = (
                 Part.objects.filter(
@@ -174,6 +181,10 @@ def _orcaslicer_worker_loop() -> None:
                 pass
             else:
                 _orcaslicer_worker_active = False
+
+        # Release the file lock after the re-check
+        fcntl.flock(lock_fh, fcntl.LOCK_UN)
+        lock_fh.close()
 
         connection.close()
 
