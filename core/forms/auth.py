@@ -5,6 +5,7 @@ from typing import Any
 from django import forms
 from django.contrib.auth.forms import UserCreationForm
 from django.contrib.auth.models import Group, User
+from django.contrib.auth.password_validation import validate_password
 
 __all__ = [
     "UserRegistrationForm",
@@ -86,6 +87,7 @@ class UserManagementForm(forms.ModelForm):
         user = super().save(commit=False)
         pw = self.cleaned_data.get("password1")
         if pw:
+            validate_password(pw, user)
             user.set_password(pw)
         role_name = self.cleaned_data["role"]
         if role_name == "Admin":

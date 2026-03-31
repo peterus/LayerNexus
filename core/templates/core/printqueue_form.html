@@ -36,6 +36,7 @@
     </form>
   </div>
 </div>
+{{ job_printer_map_json|json_script:"job-printer-map" }}
 {% endblock %}
 
 {% block extra_js %}
@@ -46,7 +47,7 @@ document.addEventListener('DOMContentLoaded', function() {
   var printerSelect = document.getElementById('id_printer');
   if (!plateSelect || !printerSelect) return;
 
-  var jobPrinterMap = {{ job_printer_map_json|safe }};
+  var jobPrinterMap = JSON.parse(document.getElementById('job-printer-map').textContent);
   var allPrinterOptions = Array.from(printerSelect.options).map(function(opt) {
     return { value: opt.value, text: opt.textContent, selected: opt.selected };
   });

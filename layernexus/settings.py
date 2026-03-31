@@ -20,15 +20,20 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
+# SECURITY WARNING: don't run with debug turned on in production!
+DEBUG = os.environ.get("DEBUG", "0") == "1"
+
 # SECURITY WARNING: keep the secret key used in production secret!
 # In production, set the DJANGO_SECRET_KEY environment variable.
-SECRET_KEY = os.environ.get(
-    "DJANGO_SECRET_KEY",
-    "django-insecure-#o1n*!%z1a(5-!j7#9met3d@9#piuuf5y%k7qavf=5pml0al4x",
-)
-
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get("DEBUG", "1") == "1"
+_secret_key = os.environ.get("DJANGO_SECRET_KEY", "")
+if not _secret_key:
+    if DEBUG:
+        _secret_key = "django-insecure-dev-only-key-not-for-production"
+    else:
+        raise RuntimeError(
+            "DJANGO_SECRET_KEY environment variable is required when DEBUG is off."
+        )
+SECRET_KEY = _secret_key
 
 ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
@@ -213,3 +218,19 @@ ORCASLICER_API_URL = os.environ.get("ORCASLICER_API_URL", "http://localhost:3000
 # Spoolman
 # URL of the Spoolman instance for filament tracking (https://github.com/Donkie/Spoolman)
 SPOOLMAN_URL = os.environ.get("SPOOLMAN_URL", "")
+
+# Security settings
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_BROWSER_XSS_FILTER = True
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_AGE = 28800  # 8 hours
+CSRF_COOKIE_HTTPONLY = True
+X_FRAME_OPTIONS = "DENY"
+
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31536000  # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True

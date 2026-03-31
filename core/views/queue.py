@@ -247,8 +247,8 @@ class RunNextQueueView(PrinterControlMixin, View):
                 f'Started printing plate {plate.plate_number} of "{job}" on {printer.name}.',
             )
         except MoonrakerError as exc:
-            logger.exception("Failed to run queue entry %s", entry.pk)
-            messages.error(request, f"Failed to start print: {exc}")
+            logger.exception("Failed to run queue entry %s: %s", entry.pk, exc)
+            messages.error(request, "Failed to start print. Please check the printer connection and try again.")
 
         return redirect("core:printqueue_list")
 
@@ -512,7 +512,7 @@ class QueueCheckPrinterStatusView(LoginRequiredMixin, View):
 
         except MoonrakerError as exc:
             logger.warning("Moonraker poll failed for entry %s: %s", pk, exc)
-            return JsonResponse({"status": "error", "message": str(exc)})
+            return JsonResponse({"status": "error", "message": "Could not communicate with printer. Check server logs for details."})
 
 
 class CancelQueueEntryView(PrinterControlMixin, View):
@@ -540,7 +540,7 @@ class CancelQueueEntryView(PrinterControlMixin, View):
                 logger.warning("Cancel command failed for entry %s: %s", pk, exc)
                 messages.warning(
                     request,
-                    f"Moonraker cancel command failed ({exc}), but entry marked for review.",
+                    "Cancel command failed, but entry marked for review. Check server logs for details.",
                 )
 
         entry.status = PrintQueue.STATUS_AWAITING_REVIEW

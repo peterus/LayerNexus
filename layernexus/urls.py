@@ -19,9 +19,16 @@ import re
 
 from django.conf import settings
 from django.contrib import admin
+from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.urls import include, path, re_path
 from django.views.static import serve
+
+
+@login_required
+def authenticated_media(request, path, document_root=None):
+    """Serve media files only to authenticated users."""
+    return serve(request, path, document_root=document_root)
 
 
 def health_check(request):
@@ -39,10 +46,12 @@ urlpatterns = [
 # Always serve user-uploaded media (STL, gcode).  LayerNexus is a
 # self-hosted application — Django's static() helper is a no-op when
 # DEBUG=False, so we register the pattern unconditionally.
+# In production, media is served only to authenticated users.
+_media_view = serve if settings.DEBUG else authenticated_media
 urlpatterns += [
     re_path(
         rf"^{re.escape(settings.MEDIA_URL.lstrip('/'))}(?P<path>.*)$",
-        serve,
+        _media_view,
         {"document_root": settings.MEDIA_ROOT},
     ),
 ]

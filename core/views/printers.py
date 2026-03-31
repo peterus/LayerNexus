@@ -129,8 +129,8 @@ class PrinterStatusView(LoginRequiredMixin, View):
             status = client.get_printer_status()
             return JsonResponse({"status": status})
         except MoonrakerError as exc:
-            logger.exception("Moonraker error for printer %s", printer.pk)
-            return JsonResponse({"error": str(exc)}, status=502)
+            logger.exception("Moonraker error for printer %s: %s", printer.pk, exc)
+            return JsonResponse({"error": "Could not retrieve printer status. Check server logs for details."}, status=502)
 
 
 class UploadToPrinterView(PrinterControlMixin, View):
@@ -158,8 +158,8 @@ class UploadToPrinterView(PrinterControlMixin, View):
             plate.save(update_fields=["status"])
             messages.success(request, f"G-code for plate {plate.plate_number} uploaded to printer.")
         except MoonrakerError as exc:
-            logger.exception("Upload error for plate %s", plate.pk)
-            messages.error(request, f"Upload failed: {exc}")
+            logger.exception("Upload error for plate %s: %s", plate.pk, exc)
+            messages.error(request, "G-code upload failed. Please check the printer connection and try again.")
 
         return redirect("core:printjob_detail", pk=job.pk)
 

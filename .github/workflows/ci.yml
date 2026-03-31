@@ -94,7 +94,6 @@ jobs:
 
       - name: Audit dependencies (pip-audit)
         run: pip-audit
-        continue-on-error: true
 
       - name: Django deployment checklist
         run: |
@@ -102,7 +101,6 @@ jobs:
           DEBUG=0 \
           ALLOWED_HOSTS=localhost \
           python manage.py check --deploy --fail-level WARNING
-        continue-on-error: true
 
   docker:
     name: Docker Build & Smoke Test

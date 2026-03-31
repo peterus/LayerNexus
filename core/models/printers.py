@@ -2,8 +2,38 @@
 
 from __future__ import annotations
 
+import ipaddress
+import os
+from urllib.parse import urlparse
+
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
+
+
+def _is_cloud_metadata_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Check if the address is a cloud metadata endpoint (always blocked)."""
+    return str(addr) == "169.254.169.254"
+
+
+def _is_private_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Check if the address falls within private/internal IP ranges."""
+    private_ranges_v4 = [
+        ipaddress.IPv4Network("127.0.0.0/8"),
+        ipaddress.IPv4Network("10.0.0.0/8"),
+        ipaddress.IPv4Network("172.16.0.0/12"),
+        ipaddress.IPv4Network("169.254.0.0/16"),
+    ]
+    private_ranges_v6 = [
+        ipaddress.IPv6Network("::1/128"),
+        ipaddress.IPv6Network("fd00::/8"),
+    ]
+
+    if isinstance(addr, ipaddress.IPv4Address):
+        return any(addr in net for net in private_ranges_v4)
+    if isinstance(addr, ipaddress.IPv6Address):
+        return any(addr in net for net in private_ranges_v6)
+    return False
 
 
 class PrinterProfile(models.Model):
@@ -51,6 +81,43 @@ class PrinterProfile(models.Model):
             ("can_manage_printers", "Can create, edit, and delete printers"),
             ("can_control_printer", "Can start prints and cancel running prints"),
         ]
+
+    def clean(self) -> None:
+        """Validate moonraker_url against SSRF attacks.
+
+        Cloud metadata endpoints (169.254.169.254) are ALWAYS blocked.
+        Private/internal IPs are allowed by default (ALLOW_PRIVATE_IPS=true)
+        since this project typically runs in a LAN. Set ALLOW_PRIVATE_IPS=false
+        to block private IPs (e.g. in cloud deployments).
+        """
+        super().clean()
+        if not self.moonraker_url:
+            return
+
+        parsed = urlparse(self.moonraker_url)
+        hostname = parsed.hostname
+        if not hostname:
+            raise ValidationError({"moonraker_url": "Invalid URL: no hostname found."})
+
+        try:
+            addr = ipaddress.ip_address(hostname)
+        except ValueError:
+            # hostname is a DNS name, not a raw IP – resolve is not done here
+            # to avoid DNS rebinding; raw IP checks are sufficient for model validation
+            return
+
+        # Always block cloud metadata endpoint
+        if _is_cloud_metadata_ip(addr):
+            raise ValidationError(
+                {"moonraker_url": "Access to cloud metadata endpoints is not allowed."}
+            )
+
+        # Check private IPs (default: allowed for LAN setups)
+        allow_private = os.environ.get("ALLOW_PRIVATE_IPS", "true").lower() in ("true", "1", "yes")
+        if not allow_private and _is_private_ip(addr):
+            raise ValidationError(
+                {"moonraker_url": "Private/internal IP addresses are not allowed."}
+            )
 
     def __str__(self) -> str:
         return self.name

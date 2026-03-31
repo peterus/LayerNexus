@@ -47,6 +47,11 @@ LABEL org.opencontainers.image.title="LayerNexus" \
 
 RUN DJANGO_SECRET_KEY=build-placeholder python manage.py collectstatic --noinput
 
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser \
+    && chown -R appuser:appgroup /app/media /app/data /app/staticfiles
+
+USER appuser
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
