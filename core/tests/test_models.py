@@ -275,9 +275,12 @@ class CostProfileModelTests(TestDataMixin, TestCase):
         self.assertEqual(result["maintenance_cost"], 0.1)  # 0.05 * 2
 
     def test_depreciation_zero_lifespan(self):
+        """Zero lifespan hours is rejected by DB constraint."""
+        from django.db import IntegrityError
+
         self.cost.printer_lifespan_hours = 0
-        self.cost.save()
-        self.assertEqual(self.cost.depreciation_per_hour, 0)
+        with self.assertRaises(IntegrityError):
+            self.cost.save()
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
