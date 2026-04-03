@@ -20,7 +20,7 @@ class Part(models.Model):
         blank=True,
         help_text="Optional — derived from the uploaded filename if left empty.",
     )
-    stl_file = models.FileField(upload_to="stl_files/", blank=True, null=True)
+    stl_file = models.FileField(upload_to="stl_files/", blank=True, null=True)  # also stores 3MF files
     color = models.CharField(
         max_length=100,
         blank=True,
@@ -101,6 +101,11 @@ class Part(models.Model):
         for link in self.project_links.select_related("project").all():
             seen.setdefault(link.project_id, link.project)
         return list(seen.values())
+
+    @property
+    def is_3mf(self) -> bool:
+        """Return True if the uploaded model file is a 3MF file."""
+        return bool(self.stl_file) and self.stl_file.name.lower().endswith(".3mf")
 
     @property
     def effective_print_preset_id(self) -> Optional[int]:
