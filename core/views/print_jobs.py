@@ -194,7 +194,7 @@ class AddPartToJobView(RoleRequiredMixin, View):
         part = get_object_or_404(Part, pk=part_pk)
 
         if not part.stl_file:
-            messages.error(request, f"Part '{part.name}' has no STL file.")
+            messages.error(request, f"Part '{part.name}' has no model file.")
             return redirect("core:part_detail", pk=part.pk)
 
         form = AddPartToJobForm(request.POST, user=request.user)
@@ -295,7 +295,7 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
         eligible = [p for p in parts if p.stl_file and p.remaining_quantity > 0]
 
         if not eligible:
-            messages.warning(request, "No eligible parts found (all printed or missing STL).")
+            messages.warning(request, "No eligible parts found (all printed or missing model file).")
             return redirect("core:project_detail", pk=project.pk)
 
         # Group by (effective_print_preset_id, spoolman_filament_id)
@@ -394,12 +394,12 @@ class PrintJobSliceView(RoleRequiredMixin, View):
             messages.error(request, "Job has no parts to slice.")
             return redirect("core:printjob_detail", pk=pk)
 
-        # Validate all parts have STL files
-        missing_stl = [jp.part.name for jp in job_parts if not jp.part.stl_file]
-        if missing_stl:
+        # Validate all parts have model files
+        missing_files = [jp.part.name for jp in job_parts if not jp.part.stl_file]
+        if missing_files:
             messages.error(
                 request,
-                f"Parts without STL files: {', '.join(missing_stl)}",
+                f"Parts without model files: {', '.join(missing_files)}",
             )
             return redirect("core:printjob_detail", pk=pk)
 

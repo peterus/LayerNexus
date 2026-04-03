@@ -361,6 +361,31 @@ class PartFormFileValidationTests(TestCase):
         )
         self.assertTrue(form.is_valid())
 
+    def test_3mf_file_valid(self):
+        threemf = SimpleUploadedFile("model.3mf", b"PK\x03\x04", content_type="application/vnd.ms-package.3dmanufacturing-3dmodel+xml")
+        form = PartForm(
+            data={"name": "Part", "quantity": 1, "color": "black", "material": "PLA"},
+            files={"stl_file": threemf},
+        )
+        self.assertTrue(form.is_valid())
+
+    def test_3mf_mixed_case_extension(self):
+        threemf = SimpleUploadedFile("model.3MF", b"PK\x03\x04", content_type="application/octet-stream")
+        form = PartForm(
+            data={"name": "Part", "quantity": 1, "color": "black", "material": "PLA"},
+            files={"stl_file": threemf},
+        )
+        self.assertTrue(form.is_valid())
+
+    def test_3mf_file_name_derivation(self):
+        threemf = SimpleUploadedFile("MyModel_v2.3mf", b"PK\x03\x04", content_type="application/octet-stream")
+        form = PartForm(
+            data={"name": "", "quantity": 1, "color": "black", "material": "PLA"},
+            files={"stl_file": threemf},
+        )
+        self.assertTrue(form.is_valid())
+        self.assertEqual(form.cleaned_data["name"], "MyModel_v2")
+
     def test_quantity_zero_rejected(self):
         form = PartForm(data={"name": "Part", "quantity": 0, "color": "black", "material": "PLA"})
         self.assertFalse(form.is_valid())

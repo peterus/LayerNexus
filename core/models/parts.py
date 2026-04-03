@@ -21,8 +21,13 @@ class Part(models.Model):
         blank=True,
         help_text="Optional — derived from the uploaded filename if left empty.",
     )
-    stl_file = models.FileField(upload_to="stl_files/", blank=True, null=True)
+    stl_file = models.FileField(upload_to="stl_files/", blank=True, null=True)  # also stores 3MF files
     quantity = models.PositiveIntegerField(default=1, validators=[MinValueValidator(1)])
+
+    @property
+    def is_3mf(self) -> bool:
+        """Return True if the uploaded model file is a 3MF file."""
+        return bool(self.stl_file) and self.stl_file.name.lower().endswith(".3mf")
     color = models.CharField(
         max_length=100,
         blank=True,

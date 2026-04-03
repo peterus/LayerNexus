@@ -177,6 +177,24 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
         self.assertEqual(call_order[0], ("slice", job.pk))
         self.assertEqual(call_order[1], ("estimate", part.pk))
 
+    def test_3mf_estimation_bypasses_bundle_creation(self):
+        """3MF files should be passed directly to the slicer, not re-bundled."""
+        from core.models import Part
+
+        self.part.stl_file = SimpleUploadedFile("model.3mf", b"PK\x03\x04fake")
+        self.part.print_preset = self.preset
+        self.part.save()
+
+        # Verify the is_3mf property works
+        self.part.refresh_from_db()
+        self.assertTrue(self.part.is_3mf)
+
+        # Verify STL files are not detected as 3MF
+        self.part.stl_file = SimpleUploadedFile("model.stl", b"solid test")
+        self.part.save()
+        self.part.refresh_from_db()
+        self.assertFalse(self.part.is_3mf)
+
     @patch("core.views.print_jobs._start_orcaslicer_worker")
     def test_slice_view_queues_job_as_pending(self, mock_start: "patch"):
         """PrintJobSliceView sets job to PENDING and starts worker."""

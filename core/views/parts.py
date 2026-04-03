@@ -302,7 +302,7 @@ class PartReEstimateView(ProjectManageMixin, View):
         part = get_object_or_404(Part, pk=pk)
 
         if not part.stl_file:
-            messages.warning(request, "No STL file — cannot estimate.")
+            messages.warning(request, "No model file — cannot estimate.")
             return redirect("core:part_detail", pk=part.pk)
 
         preset = part.effective_print_preset
