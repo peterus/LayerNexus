@@ -1,12 +1,10 @@
-/* STL Viewer using Three.js (ES module) */
+/* 3D Model Viewer using Three.js (ES module) — supports STL and 3MF */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { ThreeMFLoader } from 'three/addons/loaders/3MFLoader.js';
 
-export function initSTLViewer(containerId, stlUrl) {
-  var container = document.getElementById(containerId);
-  if (!container || !stlUrl) return;
-
+function setupScene(container) {
   container.innerHTML = '';
   var width = container.clientWidth;
   var height = container.clientHeight;
@@ -25,7 +23,6 @@ export function initSTLViewer(containerId, stlUrl) {
   controls.enableDamping = true;
   controls.dampingFactor = 0.1;
 
-  // Lighting -- multiple lights to avoid black faces
   var ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
   scene.add(ambientLight);
 
@@ -36,34 +33,6 @@ export function initSTLViewer(containerId, stlUrl) {
   var dirLight2 = new THREE.DirectionalLight(0xffffff, 0.3);
   dirLight2.position.set(-1, -1, -1);
   scene.add(dirLight2);
-
-  var loader = new STLLoader();
-  loader.load(stlUrl, function (geometry) {
-    geometry.computeVertexNormals();
-    var material = new THREE.MeshStandardMaterial({
-      color: 0x4dabf7,
-      metalness: 0.1,
-      roughness: 0.6,
-    });
-    var mesh = new THREE.Mesh(geometry, material);
-    scene.add(mesh);
-
-    geometry.computeBoundingBox();
-    var bb = geometry.boundingBox;
-    var center = new THREE.Vector3();
-    bb.getCenter(center);
-    mesh.position.sub(center);
-
-    var size = new THREE.Vector3();
-    bb.getSize(size);
-    var maxDim = Math.max(size.x, size.y, size.z);
-    camera.position.set(maxDim * 1.2, maxDim * 0.8, maxDim * 1.5);
-    camera.lookAt(0, 0, 0);
-    controls.target.set(0, 0, 0);
-    controls.update();
-  }, undefined, function () {
-    container.innerHTML = '<span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>Failed to load 3D model</span>';
-  });
 
   function animate() {
     requestAnimationFrame(animate);
@@ -79,4 +48,63 @@ export function initSTLViewer(containerId, stlUrl) {
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
   });
+
+  return { scene: scene, camera: camera, controls: controls };
+}
+
+var defaultMaterial = new THREE.MeshStandardMaterial({
+  color: 0x4dabf7,
+  metalness: 0.1,
+  roughness: 0.6,
+});
+
+function fitCameraToObject(object, camera, controls) {
+  var box = new THREE.Box3().setFromObject(object);
+  var center = new THREE.Vector3();
+  box.getCenter(center);
+  object.position.sub(center);
+
+  var size = new THREE.Vector3();
+  box.getSize(size);
+  var maxDim = Math.max(size.x, size.y, size.z);
+  camera.position.set(maxDim * 1.2, maxDim * 0.8, maxDim * 1.5);
+  camera.lookAt(0, 0, 0);
+  controls.target.set(0, 0, 0);
+  controls.update();
+}
+
+export function initSTLViewer(containerId, modelUrl) {
+  var container = document.getElementById(containerId);
+  if (!container || !modelUrl) return;
+
+  var is3MF = modelUrl.toLowerCase().endsWith('.3mf');
+  var ctx = setupScene(container);
+
+  function onError() {
+    container.innerHTML = '<span class="text-danger"><i class="bi bi-exclamation-triangle me-1"></i>Failed to load 3D model</span>';
+  }
+
+  if (is3MF) {
+    var loader = new ThreeMFLoader();
+    loader.load(modelUrl, function (group) {
+      // Apply default material to meshes that don't have one
+      group.traverse(function (child) {
+        if (child.isMesh) {
+          if (!child.material || (child.material.color && child.material.color.getHex() === 0xffffff)) {
+            child.material = defaultMaterial;
+          }
+        }
+      });
+      ctx.scene.add(group);
+      fitCameraToObject(group, ctx.camera, ctx.controls);
+    }, undefined, onError);
+  } else {
+    var loader = new STLLoader();
+    loader.load(modelUrl, function (geometry) {
+      geometry.computeVertexNormals();
+      var mesh = new THREE.Mesh(geometry, defaultMaterial);
+      ctx.scene.add(mesh);
+      fitCameraToObject(mesh, ctx.camera, ctx.controls);
+    }, undefined, onError);
+  }
 }
