@@ -363,7 +363,9 @@ class PartFormFileValidationTests(TestCase):
 
     def test_3mf_file_valid(self):
         threemf = SimpleUploadedFile(
-            "model.3mf", b"PK\x03\x04", content_type="model/3mf",
+            "model.3mf",
+            b"PK\x03\x04",
+            content_type="model/3mf",
         )
         form = PartForm(
             data={"name": "Part", "quantity": 1, "color": "black", "material": "PLA"},

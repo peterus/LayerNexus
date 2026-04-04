@@ -214,19 +214,23 @@ def extract_meshes_from_3mf(
 
         vertices = []
         for v in vertices_elem.findall(f"{ns}vertex"):
-            vertices.append((
-                float(v.get("x", "0")),
-                float(v.get("y", "0")),
-                float(v.get("z", "0")),
-            ))
+            vertices.append(
+                (
+                    float(v.get("x", "0")),
+                    float(v.get("y", "0")),
+                    float(v.get("z", "0")),
+                )
+            )
 
         triangles = []
         for t in triangles_elem.findall(f"{ns}triangle"):
-            triangles.append((
-                int(t.get("v1", "0")),
-                int(t.get("v2", "0")),
-                int(t.get("v3", "0")),
-            ))
+            triangles.append(
+                (
+                    int(t.get("v1", "0")),
+                    int(t.get("v2", "0")),
+                    int(t.get("v3", "0")),
+                )
+            )
 
         if vertices and triangles:
             meshes.append((vertices, triangles))
