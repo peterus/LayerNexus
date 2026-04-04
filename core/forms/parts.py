@@ -31,18 +31,18 @@ class PartForm(forms.ModelForm):
         }
 
     def clean_stl_file(self) -> UploadedFile | None:
-        """Validate uploaded STL file for size and extension.
+        """Validate uploaded model file (STL or 3MF) for size and extension.
 
         Returns:
-            The validated STL file or None.
+            The validated file or None.
 
         Raises:
             forms.ValidationError: If file extension is invalid or size exceeds 100 MB.
         """
         stl_file = self.cleaned_data.get("stl_file")
         if stl_file:
-            if not stl_file.name.lower().endswith(".stl"):
-                raise forms.ValidationError("Only STL files are allowed.")
+            if not stl_file.name.lower().endswith((".stl", ".3mf")):
+                raise forms.ValidationError("Only STL and 3MF files are allowed.")
             if stl_file.size > 100 * 1024 * 1024:  # 100 MB limit
                 raise forms.ValidationError("File size must be under 100 MB.")
         return stl_file
@@ -63,5 +63,5 @@ class PartForm(forms.ModelForm):
 
                 cleaned_data["name"] = PurePosixPath(self.instance.stl_file.name).stem
             else:
-                self.add_error("name", "Name is required when no STL file is uploaded.")
+                self.add_error("name", "Name is required when no model file is uploaded.")
         return cleaned_data

@@ -159,47 +159,144 @@ def _build_3dmodel_xml(
     return b'<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(root, encoding="unicode").encode("utf-8")
 
 
-def create_3mf_bundle(parts: list[tuple[Path, int]]) -> bytes:
-    """Create a 3MF package containing multiple STL models.
+def extract_meshes_from_3mf(
+    data: bytes,
+) -> list[tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]]:
+    """Extract mesh data from a 3MF file.
 
-    Each STL file is parsed, deduplicated, and added as a separate
-    ``<object>`` in the 3MF model.  The ``quantity`` determines how
-    many ``<item>`` references are created in the ``<build>`` section.
+    Reads the ``3D/3dmodel.model`` XML inside the 3MF ZIP and parses
+    all ``<object>`` elements with mesh geometry.
 
     Args:
-        parts: List of (stl_path, quantity) tuples.
+        data: Raw bytes of a 3MF ZIP archive.
+
+    Returns:
+        List of (vertices, triangles) tuples — same format as
+        :func:`_parse_binary_stl`.
+
+    Raises:
+        ThreeMFError: If the 3MF file is invalid or contains no meshes.
+    """
+    from defusedxml.ElementTree import fromstring
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
+            # Find the 3D model file
+            model_path = None
+            for name in zf.namelist():
+                if name.lower().endswith(".model") and "3d/" in name.lower():
+                    model_path = name
+                    break
+            if model_path is None:
+                raise ThreeMFError("No 3D model file found in 3MF archive")
+
+            model_xml = zf.read(model_path)
+    except zipfile.BadZipFile as exc:
+        raise ThreeMFError(f"Invalid 3MF file: {exc}") from exc
+
+    root = fromstring(model_xml)
+
+    # Detect namespace from root tag
+    ns = ""
+    if root.tag.startswith("{"):
+        ns = root.tag.split("}")[0] + "}"
+
+    meshes = []
+    for obj in root.iter(f"{ns}object"):
+        mesh = obj.find(f"{ns}mesh")
+        if mesh is None:
+            continue
+
+        vertices_elem = mesh.find(f"{ns}vertices")
+        triangles_elem = mesh.find(f"{ns}triangles")
+        if vertices_elem is None or triangles_elem is None:
+            continue
+
+        vertices = []
+        for v in vertices_elem.findall(f"{ns}vertex"):
+            vertices.append(
+                (
+                    float(v.get("x", "0")),
+                    float(v.get("y", "0")),
+                    float(v.get("z", "0")),
+                )
+            )
+
+        triangles = []
+        for t in triangles_elem.findall(f"{ns}triangle"):
+            triangles.append(
+                (
+                    int(t.get("v1", "0")),
+                    int(t.get("v2", "0")),
+                    int(t.get("v3", "0")),
+                )
+            )
+
+        if vertices and triangles:
+            meshes.append((vertices, triangles))
+
+    if not meshes:
+        raise ThreeMFError("No mesh objects found in 3MF file")
+
+    logger.debug("Extracted %d mesh(es) from 3MF file", len(meshes))
+    return meshes
+
+
+def create_3mf_bundle(parts: list[tuple[Path, int]]) -> bytes:
+    """Create a 3MF package containing multiple model files.
+
+    Accepts both STL and 3MF files.  Each file is parsed into mesh
+    data and added as ``<object>`` elements in the output 3MF model.
+    The ``quantity`` determines how many ``<item>`` references are
+    created in the ``<build>`` section.
+
+    Args:
+        parts: List of (model_path, quantity) tuples.
 
     Returns:
         Bytes of the 3MF ZIP archive.
 
     Raises:
-        ThreeMFError: If any STL file cannot be parsed.
-        FileNotFoundError: If any STL file does not exist.
+        ThreeMFError: If any file cannot be parsed.
+        FileNotFoundError: If any file does not exist.
     """
     if not parts:
         raise ThreeMFError("No parts provided for 3MF bundle")
 
     objects = []
-    for stl_path, quantity in parts:
-        stl_path = Path(stl_path)
-        if not stl_path.exists():
-            raise FileNotFoundError(f"STL file not found: {stl_path}")
+    for model_path, quantity in parts:
+        model_path = Path(model_path)
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model file not found: {model_path}")
 
-        stl_data = stl_path.read_bytes()
+        file_data = model_path.read_bytes()
 
-        # Detect ASCII STL (starts with "solid") vs binary
-        if stl_data[:5] == b"solid" and b"\n" in stl_data[:100]:
-            raise ThreeMFError(f"ASCII STL files are not supported: {stl_path.name}. Please convert to binary STL.")
+        if model_path.suffix.lower() == ".3mf":
+            meshes = extract_meshes_from_3mf(file_data)
+            for vertices, triangles in meshes:
+                objects.append((vertices, triangles, quantity))
+            logger.debug(
+                "Parsed 3MF %s: %d mesh(es), qty=%d",
+                model_path.name,
+                len(meshes),
+                quantity,
+            )
+        else:
+            # Detect ASCII STL (starts with "solid") vs binary
+            if file_data[:5] == b"solid" and b"\n" in file_data[:100]:
+                raise ThreeMFError(
+                    f"ASCII STL files are not supported: {model_path.name}. Please convert to binary STL."
+                )
 
-        vertices, triangles = _parse_binary_stl(stl_data)
-        objects.append((vertices, triangles, quantity))
-        logger.debug(
-            "Parsed STL %s: %d vertices, %d triangles, qty=%d",
-            stl_path.name,
-            len(vertices),
-            len(triangles),
-            quantity,
-        )
+            vertices, triangles = _parse_binary_stl(file_data)
+            objects.append((vertices, triangles, quantity))
+            logger.debug(
+                "Parsed STL %s: %d vertices, %d triangles, qty=%d",
+                model_path.name,
+                len(vertices),
+                len(triangles),
+                quantity,
+            )
 
     # Build the 3MF ZIP archive in memory
     buffer = io.BytesIO()

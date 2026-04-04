@@ -257,9 +257,12 @@ def _estimate_part_in_background(part_pk: int) -> None:
             if mapping and mapping.orca_filament_profile:
                 filament_profile = mapping.orca_filament_profile
 
-        # Build 3MF with single copy
-        stl_path = FSPath(part.stl_file.path)
-        threemf_content = create_3mf_bundle([(stl_path, 1)])
+        # Build 3MF with single copy (or use uploaded 3MF directly)
+        if part.is_3mf:
+            threemf_content = FSPath(part.stl_file.path).read_bytes()
+        else:
+            stl_path = FSPath(part.stl_file.path)
+            threemf_content = create_3mf_bundle([(stl_path, 1)])
 
         slice_kwargs = _build_slicer_kwargs(
             machine_profile=machine_profile,

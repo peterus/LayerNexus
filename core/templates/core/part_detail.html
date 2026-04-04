@@ -52,7 +52,7 @@
           {% if part.stl_file %}
           <span class="text-body-secondary">Loading 3D model…</span>
           {% else %}
-          <span class="text-body-secondary"><i class="bi bi-file-earmark-x me-1"></i>No STL file uploaded</span>
+          <span class="text-body-secondary"><i class="bi bi-file-earmark-x me-1"></i>No model file uploaded</span>
           {% endif %}
         </div>
       </div>
@@ -182,7 +182,7 @@
       </div>
       <div class="card-body">
         <dl class="row mb-0">
-          <dt class="col-sm-5">STL File</dt>
+          <dt class="col-sm-5">Model File</dt>
           <dd class="col-sm-7">
             {% if part.stl_file %}
             <a href="{{ part.stl_file.url }}" class="text-decoration-none"><i
@@ -221,7 +221,7 @@
         {% elif not part.stl_file %}
         <div class="alert alert-warning mb-0">
           <i class="bi bi-exclamation-triangle me-1"></i>
-          Upload an STL file to enable adding this part to a print job.
+          Upload a model file (STL or 3MF) to enable adding this part to a print job.
         </div>
         {% endif %}
       </div>
