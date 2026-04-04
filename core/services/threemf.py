@@ -177,7 +177,7 @@ def extract_meshes_from_3mf(
     Raises:
         ThreeMFError: If the 3MF file is invalid or contains no meshes.
     """
-    from xml.etree.ElementTree import fromstring
+    from defusedxml.ElementTree import fromstring
 
     try:
         with zipfile.ZipFile(io.BytesIO(data), "r") as zf:

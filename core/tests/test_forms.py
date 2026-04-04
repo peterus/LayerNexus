@@ -362,7 +362,9 @@ class PartFormFileValidationTests(TestCase):
         self.assertTrue(form.is_valid())
 
     def test_3mf_file_valid(self):
-        threemf = SimpleUploadedFile("model.3mf", b"PK\x03\x04", content_type="application/vnd.ms-package.3dmanufacturing-3dmodel+xml")
+        threemf = SimpleUploadedFile(
+            "model.3mf", b"PK\x03\x04", content_type="model/3mf",
+        )
         form = PartForm(
             data={"name": "Part", "quantity": 1, "color": "black", "material": "PLA"},
             files={"stl_file": threemf},

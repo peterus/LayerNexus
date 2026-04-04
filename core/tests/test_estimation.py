@@ -179,8 +179,6 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
 
     def test_3mf_estimation_bypasses_bundle_creation(self):
         """3MF files should be passed directly to the slicer, not re-bundled."""
-        from core.models import Part
-
         self.part.stl_file = SimpleUploadedFile("model.3mf", b"PK\x03\x04fake")
         self.part.print_preset = self.preset
         self.part.save()
