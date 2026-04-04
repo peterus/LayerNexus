@@ -1,0 +1,43 @@
+name: PR Cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  packages: write
+
+jobs:
+  cleanup:
+    name: Delete PR preview image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete image by tag via API
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_TAG: pr-${{ github.event.pull_request.number }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          # Find the version with the PR tag
+          if ! RESPONSE=$(gh api \
+            "/users/${OWNER}/packages/container/layernexus/versions" \
+            --paginate 2>&1); then
+            echo "::warning::Failed to list package versions: ${RESPONSE}"
+            exit 1
+          fi
+
+          VERSION_ID=$(echo "$RESPONSE" | jq -r ".[] | select(.metadata.container.tags[] == \"${PR_TAG}\") | .id")
+
+          if [ -z "$VERSION_ID" ]; then
+            echo "No image found with tag ${PR_TAG}, nothing to clean up"
+            exit 0
+          fi
+
+          echo "Deleting version ${VERSION_ID} (tag: ${PR_TAG})"
+          if ! DELETE_RESPONSE=$(gh api --method DELETE \
+            "/users/${OWNER}/packages/container/layernexus/versions/${VERSION_ID}" 2>&1); then
+            echo "::error::Failed to delete version ${VERSION_ID}: ${DELETE_RESPONSE}"
+            exit 1
+          fi
+
+          echo "Deleted successfully"
