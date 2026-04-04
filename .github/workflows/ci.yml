@@ -173,8 +173,14 @@ jobs:
           message: |
             ### Preview image ready
 
+            **By tag:**
+            ```
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}
+            ```
+
+            **By digest:**
             ```
             docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
             ```
 
-            <sub>Image: <code>${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}</code> · Commit: ${{ github.event.pull_request.head.sha }} </sub>
+            <sub>Commit: `${{ github.event.pull_request.head.sha }}`</sub>
