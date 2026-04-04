@@ -19,10 +19,14 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           # Find the version with the PR tag
-          VERSION_ID=$(gh api \
+          if ! RESPONSE=$(gh api \
             "/users/${OWNER}/packages/container/layernexus/versions" \
-            --paginate --jq ".[] | select(.metadata.container.tags[] == \"${PR_TAG}\") | .id" \
-            2>/dev/null || true)
+            --paginate 2>&1); then
+            echo "::warning::Failed to list package versions: ${RESPONSE}"
+            exit 1
+          fi
+
+          VERSION_ID=$(echo "$RESPONSE" | jq -r ".[] | select(.metadata.container.tags[] == \"${PR_TAG}\") | .id")
 
           if [ -z "$VERSION_ID" ]; then
             echo "No image found with tag ${PR_TAG}, nothing to clean up"
@@ -30,7 +34,10 @@ jobs:
           fi
 
           echo "Deleting version ${VERSION_ID} (tag: ${PR_TAG})"
-          gh api --method DELETE \
-            "/users/${OWNER}/packages/container/layernexus/versions/${VERSION_ID}" \
-            2>/dev/null && echo "Deleted successfully" \
-            || echo "Could not delete (may require org-level token permissions)"
+          if ! DELETE_RESPONSE=$(gh api --method DELETE \
+            "/users/${OWNER}/packages/container/layernexus/versions/${VERSION_ID}" 2>&1); then
+            echo "::error::Failed to delete version ${VERSION_ID}: ${DELETE_RESPONSE}"
+            exit 1
+          fi
+
+          echo "Deleted successfully"

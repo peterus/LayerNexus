@@ -8,8 +8,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
-  pull-requests: write
 
 jobs:
   lint:
@@ -129,12 +127,19 @@ jobs:
 
   pr-preview:
     name: PR Preview Image
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     needs: [lint, test, security, docker]
+    concurrency:
+      group: pr-preview-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
     env:
       REGISTRY: ghcr.io
-      IMAGE_NAME: ${{ github.repository }}
+      IMAGE_NAME: ${{ github.repository_owner }}/layernexus
     steps:
       - uses: actions/checkout@v4
 
@@ -157,7 +162,7 @@ jobs:
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}
           build-args: |
-            APP_VERSION=pr-${{ github.event.pull_request.number }}-${{ github.sha }}
+            APP_VERSION=pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -172,4 +177,4 @@ jobs:
             docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
             ```
 
-            <sub>Image: <code>${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}</code> &bull; Commit: ${{ github.sha }} &bull; Updated: ${{ github.event.pull_request.updated_at }}</sub>
+            <sub>Image: <code>${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}</code> · Commit: ${{ github.event.pull_request.head.sha }} </sub>
