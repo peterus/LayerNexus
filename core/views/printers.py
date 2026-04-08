@@ -18,7 +18,7 @@ from core.models import (
     PrinterProfile,
     PrintJobPlate,
 )
-from core.services.moonraker import MoonrakerClient, MoonrakerError
+from core.services.printer_backend import PrinterError, get_printer_backend
 
 logger = logging.getLogger(__name__)
 
@@ -42,18 +42,18 @@ class PrinterProfileListView(LoginRequiredMixin, ListView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        # Check real Moonraker connectivity for each printer
+        # Check real printer backend connectivity for each printer
         statuses = {}
         for printer in context["printer_profiles"]:
-            if printer.moonraker_url:
-                try:
-                    client = MoonrakerClient(printer.moonraker_url, printer.moonraker_api_key)
-                    client.get_printer_status()
-                    statuses[printer.pk] = "online"
-                except MoonrakerError:
-                    statuses[printer.pk] = "offline"
-            else:
+            if not printer.moonraker_url:
                 statuses[printer.pk] = "unconfigured"
+                continue
+            try:
+                backend = get_printer_backend(printer)
+                backend.get_printer_status()
+                statuses[printer.pk] = "online"
+            except PrinterError:
+                statuses[printer.pk] = "offline"
         context["printer_statuses"] = statuses
         return context
 
@@ -121,15 +121,12 @@ class PrinterStatusView(LoginRequiredMixin, View):
 
     def get(self, request, printer_pk):
         printer = get_object_or_404(PrinterProfile, pk=printer_pk)
-        if not printer.moonraker_url:
-            return JsonResponse({"error": "Moonraker URL not configured."}, status=400)
-
-        client = MoonrakerClient(printer.moonraker_url, printer.moonraker_api_key)
         try:
-            status = client.get_printer_status()
+            backend = get_printer_backend(printer)
+            status = backend.get_printer_status()
             return JsonResponse({"status": status})
-        except MoonrakerError as exc:
-            logger.exception("Moonraker error for printer %s: %s", printer.pk, exc)
+        except PrinterError as exc:
+            logger.exception("Printer backend error for printer %s: %s", printer.pk, exc)
             msg = "Could not retrieve printer status. Check server logs for details."
             return JsonResponse({"error": msg}, status=502)
 
@@ -148,17 +145,17 @@ class UploadToPrinterView(PrinterControlMixin, View):
             messages.error(request, "No G-code file for this plate.")
             return redirect("core:printjob_detail", pk=job.pk)
 
-        if not job.printer or not job.printer.moonraker_url:
-            messages.error(request, "No printer with Moonraker configured.")
+        if not job.printer:
+            messages.error(request, "No printer configured.")
             return redirect("core:printjob_detail", pk=job.pk)
 
-        client = MoonrakerClient(job.printer.moonraker_url, job.printer.moonraker_api_key)
         try:
-            client.upload_gcode(plate.gcode_file.path)
+            backend = get_printer_backend(job.printer)
+            backend.upload_gcode(plate.gcode_file.path)
             plate.status = PrintJobPlate.STATUS_PRINTING
             plate.save(update_fields=["status"])
             messages.success(request, f"G-code for plate {plate.plate_number} uploaded to printer.")
-        except MoonrakerError as exc:
+        except PrinterError as exc:
             logger.exception("Upload error for plate %s: %s", plate.pk, exc)
             messages.error(request, "G-code upload failed. Please check the printer connection and try again.")
 

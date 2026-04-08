@@ -45,8 +45,8 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
 
         self.assertIn("No G-code file", str(ctx.exception))
 
-    @patch("core.services.queue.MoonrakerClient")
-    def test_success(self, MockClientCls):
+    @patch("core.services.queue.get_printer_backend")
+    def test_success(self, mock_get_backend):
         """Successful print start updates all statuses."""
         # Set up a mock gcode file
         mock_gcode = MagicMock()
@@ -58,27 +58,27 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
         # Instead, directly set on the entry's plate
         self.entry.plate = self.plate
 
-        mock_client = MagicMock()
-        MockClientCls.return_value = mock_client
+        mock_backend = MagicMock()
+        mock_get_backend.return_value = mock_backend
 
         # Mock save methods to avoid DB issues with the mock file
         with patch.object(PrintQueue, "save"), patch.object(PrintJobPlate, "save"), patch.object(PrintJob, "save"):
             remote_filename = start_print_for_queue_entry(self.entry)
 
-        # Verify MoonrakerClient was constructed with correct args
-        MockClientCls.assert_called_once_with("http://printer:7125", "test-key")
+        # Verify factory was called with the printer
+        mock_get_backend.assert_called_once_with(self.printer)
 
         # Verify upload and start were called
-        mock_client.upload_gcode.assert_called_once()
-        mock_client.start_print.assert_called_once_with(remote_filename)
+        mock_backend.upload_gcode.assert_called_once()
+        mock_backend.start_print.assert_called_once_with(remote_filename)
 
         # Verify remote filename format
         self.assertTrue(remote_filename.startswith("LN_"))
         self.assertTrue(remote_filename.endswith(".gcode"))
         self.assertIn("_p1", remote_filename)
 
-    @patch("core.services.queue.MoonrakerClient")
-    def test_moonraker_upload_error(self, MockClientCls):
+    @patch("core.services.queue.get_printer_backend")
+    def test_moonraker_upload_error(self, mock_get_backend):
         """MoonrakerError during upload should propagate."""
         mock_gcode = MagicMock()
         mock_gcode.path = "/test.gcode"
@@ -86,15 +86,15 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
         self.plate.gcode_file = mock_gcode
         self.entry.plate = self.plate
 
-        mock_client = MagicMock()
-        mock_client.upload_gcode.side_effect = MoonrakerError("Connection refused")
-        MockClientCls.return_value = mock_client
+        mock_backend = MagicMock()
+        mock_backend.upload_gcode.side_effect = MoonrakerError("Connection refused")
+        mock_get_backend.return_value = mock_backend
 
         with self.assertRaises(MoonrakerError):
             start_print_for_queue_entry(self.entry)
 
-    @patch("core.services.queue.MoonrakerClient")
-    def test_moonraker_start_error(self, MockClientCls):
+    @patch("core.services.queue.get_printer_backend")
+    def test_moonraker_start_error(self, mock_get_backend):
         """MoonrakerError during start_print should propagate."""
         mock_gcode = MagicMock()
         mock_gcode.path = "/test.gcode"
@@ -102,16 +102,16 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
         self.plate.gcode_file = mock_gcode
         self.entry.plate = self.plate
 
-        mock_client = MagicMock()
-        mock_client.upload_gcode.return_value = {"item": {"path": "test.gcode"}}
-        mock_client.start_print.side_effect = MoonrakerError("Printer busy")
-        MockClientCls.return_value = mock_client
+        mock_backend = MagicMock()
+        mock_backend.upload_gcode.return_value = {"item": {"path": "test.gcode"}}
+        mock_backend.start_print.side_effect = MoonrakerError("Printer busy")
+        mock_get_backend.return_value = mock_backend
 
         with self.assertRaises(MoonrakerError):
             start_print_for_queue_entry(self.entry)
 
-    @patch("core.services.queue.MoonrakerClient")
-    def test_status_updates_on_success(self, MockClientCls):
+    @patch("core.services.queue.get_printer_backend")
+    def test_status_updates_on_success(self, mock_get_backend):
         """Verify that queue entry, plate, and job statuses are updated."""
         mock_gcode = MagicMock()
         mock_gcode.path = "/test.gcode"
@@ -119,8 +119,8 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
         self.plate.gcode_file = mock_gcode
         self.entry.plate = self.plate
 
-        mock_client = MagicMock()
-        MockClientCls.return_value = mock_client
+        mock_backend = MagicMock()
+        mock_get_backend.return_value = mock_backend
 
         # Use a mock for save to track calls but also check field assignments
         entry_save = MagicMock()
@@ -140,7 +140,7 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
 
         self.assertEqual(self.plate.status, PrintJobPlate.STATUS_PRINTING)
         self.assertIsNotNone(self.plate.started_at)
-        self.assertTrue(self.plate.klipper_job_id.startswith("LN_"))
+        self.assertTrue(self.plate.remote_job_id.startswith("LN_"))
 
         self.assertEqual(self.job.status, PrintJob.STATUS_PRINTING)
         self.assertIsNotNone(self.job.started_at)
