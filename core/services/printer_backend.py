@@ -22,6 +22,15 @@ class PrinterError(Exception):
     """Base exception for all printer backend errors."""
 
 
+class PrinterNotConfiguredError(PrinterError):
+    """Raised when a printer has no backend configuration (e.g. missing URL).
+
+    Distinct from generic ``PrinterError`` so views can report a
+    user-actionable "not configured" state with a 400 status rather
+    than a 502 "backend unreachable".
+    """
+
+
 @dataclass
 class NormalizedJobStatus:
     """Normalized print job status returned by all backends.
@@ -135,10 +144,11 @@ def get_printer_backend(printer: PrinterProfile) -> PrinterBackend:
         A backend instance implementing :class:`PrinterBackend`.
 
     Raises:
-        PrinterError: If the printer is not configured.
+        PrinterNotConfiguredError: If the printer has no backend
+            configuration (e.g. missing Moonraker URL).
     """
     from core.services.moonraker import MoonrakerClient
 
     if not printer.moonraker_url:
-        raise PrinterError(f"Printer '{printer.name}' has no Moonraker URL configured.")
+        raise PrinterNotConfiguredError(f"Printer '{printer.name}' has no Moonraker URL configured.")
     return MoonrakerClient(printer.moonraker_url, printer.moonraker_api_key)

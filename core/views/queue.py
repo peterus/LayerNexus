@@ -20,7 +20,11 @@ from core.models import (
     PrintJobPlate,
     PrintQueue,
 )
-from core.services.printer_backend import PrinterError, get_printer_backend
+from core.services.printer_backend import (
+    PrinterError,
+    PrinterNotConfiguredError,
+    get_printer_backend,
+)
 from core.services.queue import PrintStartError, start_print_for_queue_entry
 
 logger = logging.getLogger(__name__)
@@ -399,7 +403,7 @@ class QueueCheckPrinterStatusView(LoginRequiredMixin, View):
 
     def get(self, request: HttpRequest, pk: int) -> JsonResponse:
         entry = get_object_or_404(
-            PrintQueue.objects.select_related("print_job", "printer"),
+            PrintQueue.objects.select_related("plate__print_job", "printer"),
             pk=pk,
         )
 
@@ -435,6 +439,8 @@ class QueueCheckPrinterStatusView(LoginRequiredMixin, View):
                 }
             )
 
+        except PrinterNotConfiguredError as exc:
+            return JsonResponse({"status": "error", "message": str(exc)})
         except PrinterError as exc:
             logger.warning("Printer poll failed for entry %s: %s", pk, exc)
             msg = "Could not communicate with printer. Check server logs for details."

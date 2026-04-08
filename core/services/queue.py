@@ -1,8 +1,8 @@
 """Print queue service functions.
 
-Provides reusable logic for starting prints via Moonraker, extracted
-from the queue views so it can be called from both ``RunNextQueueView``
-and ``RunAllQueuesView`` without duplication.
+Provides reusable logic for starting prints via the printer backend
+abstraction, extracted from the queue views so it can be called from
+both ``RunNextQueueView`` and ``RunAllQueuesView`` without duplication.
 """
 
 import logging
@@ -32,8 +32,8 @@ def start_print_for_queue_entry(entry: PrintQueue) -> str:
     G-code file present).  This function handles:
 
     1. Building a filesystem-safe remote filename.
-    2. Uploading the G-code to Moonraker.
-    3. Starting the print via Moonraker.
+    2. Uploading the G-code via the printer backend.
+    3. Starting the print via the printer backend.
     4. Updating the queue entry, plate, and job status/timestamps.
 
     Args:

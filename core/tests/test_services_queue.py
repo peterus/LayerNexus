@@ -78,8 +78,8 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
         self.assertIn("_p1", remote_filename)
 
     @patch("core.services.queue.get_printer_backend")
-    def test_moonraker_upload_error(self, mock_get_backend):
-        """MoonrakerError during upload should propagate."""
+    def test_backend_upload_error(self, mock_get_backend):
+        """PrinterError during upload should propagate."""
         mock_gcode = MagicMock()
         mock_gcode.path = "/test.gcode"
         mock_gcode.__bool__ = MagicMock(return_value=True)
@@ -94,8 +94,8 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
             start_print_for_queue_entry(self.entry)
 
     @patch("core.services.queue.get_printer_backend")
-    def test_moonraker_start_error(self, mock_get_backend):
-        """MoonrakerError during start_print should propagate."""
+    def test_backend_start_error(self, mock_get_backend):
+        """PrinterError during start_print should propagate."""
         mock_gcode = MagicMock()
         mock_gcode.path = "/test.gcode"
         mock_gcode.__bool__ = MagicMock(return_value=True)

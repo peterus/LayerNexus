@@ -18,7 +18,11 @@ from core.models import (
     PrinterProfile,
     PrintJobPlate,
 )
-from core.services.printer_backend import PrinterError, get_printer_backend
+from core.services.printer_backend import (
+    PrinterError,
+    PrinterNotConfiguredError,
+    get_printer_backend,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +49,12 @@ class PrinterProfileListView(LoginRequiredMixin, ListView):
         # Check real printer backend connectivity for each printer
         statuses = {}
         for printer in context["printer_profiles"]:
-            if not printer.moonraker_url:
-                statuses[printer.pk] = "unconfigured"
-                continue
             try:
                 backend = get_printer_backend(printer)
                 backend.get_printer_status()
                 statuses[printer.pk] = "online"
+            except PrinterNotConfiguredError:
+                statuses[printer.pk] = "unconfigured"
             except PrinterError:
                 statuses[printer.pk] = "offline"
         context["printer_statuses"] = statuses
@@ -117,7 +120,7 @@ class PrinterProfileDeleteView(PrinterManageMixin, DeleteView):
 
 
 class PrinterStatusView(LoginRequiredMixin, View):
-    """API proxy to get printer status from Moonraker."""
+    """API proxy to get printer status from the configured backend."""
 
     def get(self, request, printer_pk):
         printer = get_object_or_404(PrinterProfile, pk=printer_pk)
@@ -125,6 +128,8 @@ class PrinterStatusView(LoginRequiredMixin, View):
             backend = get_printer_backend(printer)
             status = backend.get_printer_status()
             return JsonResponse({"status": status})
+        except PrinterNotConfiguredError as exc:
+            return JsonResponse({"error": str(exc)}, status=400)
         except PrinterError as exc:
             logger.exception("Printer backend error for printer %s: %s", printer.pk, exc)
             msg = "Could not retrieve printer status. Check server logs for details."
@@ -132,7 +137,7 @@ class PrinterStatusView(LoginRequiredMixin, View):
 
 
 class UploadToPrinterView(PrinterControlMixin, View):
-    """Upload a plate's G-code to a Klipper printer via Moonraker."""
+    """Upload a plate's G-code to the printer via the configured backend."""
 
     def post(self, request, plate_pk):
         plate = get_object_or_404(
@@ -146,7 +151,7 @@ class UploadToPrinterView(PrinterControlMixin, View):
             return redirect("core:printjob_detail", pk=job.pk)
 
         if not job.printer:
-            messages.error(request, "No printer configured.")
+            messages.error(request, "No printer assigned to this job.")
             return redirect("core:printjob_detail", pk=job.pk)
 
         try:
@@ -155,6 +160,8 @@ class UploadToPrinterView(PrinterControlMixin, View):
             plate.status = PrintJobPlate.STATUS_PRINTING
             plate.save(update_fields=["status"])
             messages.success(request, f"G-code for plate {plate.plate_number} uploaded to printer.")
+        except PrinterNotConfiguredError as exc:
+            messages.error(request, str(exc))
         except PrinterError as exc:
             logger.exception("Upload error for plate %s: %s", plate.pk, exc)
             messages.error(request, "G-code upload failed. Please check the printer connection and try again.")
