@@ -108,14 +108,17 @@ class MoonrakerWebSocketClient:
         self.printer = printer
         self.on_event = on_event
         self._ws_url = build_ws_url(printer.moonraker_url)
+        self._reconnect_delay = RECONNECT_INITIAL_DELAY
 
     async def run(self) -> None:
         """Connect, subscribe, and pump events until cancelled.
 
         Reconnects on unexpected disconnects with exponential backoff.
-        Cancellation (``asyncio.CancelledError``) propagates out cleanly.
+        The backoff is reset to :data:`RECONNECT_INITIAL_DELAY` after
+        every successful subscription so that a transient outage
+        doesn't permanently increase reconnect sleeps.  Cancellation
+        (``asyncio.CancelledError``) propagates out cleanly.
         """
-        delay = RECONNECT_INITIAL_DELAY
         while True:
             try:
                 await self._connect_and_listen()
@@ -128,8 +131,8 @@ class MoonrakerWebSocketClient:
             except Exception:  # noqa: BLE001
                 logger.exception("%s: unexpected worker error", self.printer.name)
 
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, RECONNECT_MAX_DELAY)
+            await asyncio.sleep(self._reconnect_delay)
+            self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
 
     async def _connect_and_listen(self) -> None:
         # Run the blocking token fetch in the default executor so we
@@ -142,7 +145,9 @@ class MoonrakerWebSocketClient:
         async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
             await self._subscribe(ws)
             logger.info("%s: subscribed, listening for events", self.printer.name)
-            # On successful connect, reset the outer backoff.
+            # A successful subscribe means the connection is healthy;
+            # reset the backoff so the next outage starts fresh.
+            self._reconnect_delay = RECONNECT_INITIAL_DELAY
             async for raw in ws:
                 try:
                     event = json.loads(raw)

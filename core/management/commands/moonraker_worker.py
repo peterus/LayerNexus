@@ -169,10 +169,10 @@ async def _reconcile_printers(
 
 async def _reconcile_loop(
     task_group: Any,
+    active: dict[int, tuple[asyncio.Task, PrinterSnapshot]],
     interval: float,
     stop_event: asyncio.Event,
 ) -> None:
-    active: dict[int, tuple[asyncio.Task, PrinterSnapshot]] = {}
     while not stop_event.is_set():
         try:
             await _reconcile_printers(active, task_group)
@@ -190,15 +190,23 @@ async def _main(reload_interval: float) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop_event.set)
 
+    # Shared between _main and the reconciler so we can cancel all
+    # per-printer tasks on shutdown. Without this, exiting the
+    # TaskGroup context would hang waiting for long-running printer
+    # tasks that never observe stop_event.
+    active: dict[int, tuple[asyncio.Task, PrinterSnapshot]] = {}
+
     async with asyncio.TaskGroup() as tg:
         reconciler = tg.create_task(
-            _reconcile_loop(tg, reload_interval, stop_event),
+            _reconcile_loop(tg, active, reload_interval, stop_event),
             name="moonraker_reconciler",
         )
-        # Wait for stop signal, then cancel reconciler so the TG exits.
         await stop_event.wait()
         logger.info("Shutdown signal received, stopping worker")
         reconciler.cancel()
+        for pk, (task, _snap) in list(active.items()):
+            logger.debug("Cancelling worker task for printer %s", pk)
+            task.cancel()
 
 
 class Command(BaseCommand):

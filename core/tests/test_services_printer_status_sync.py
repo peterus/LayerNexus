@@ -62,6 +62,18 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         self.assertEqual(self.entry.status, PrintQueue.STATUS_AWAITING_REVIEW)
         self.assertIn("cancelled", self.entry.last_error)
 
+    def test_history_finished_completed_clears_previous_last_error(self):
+        self.entry.last_error = "old failure from previous retry"
+        self.entry.save(update_fields=["last_error"])
+        event = {
+            "method": "notify_history_changed",
+            "params": [{"action": "finished", "job": {"status": "completed"}}],
+        }
+        apply_status_event(self.entry, event)
+        self.entry.refresh_from_db()
+        self.assertEqual(self.entry.status, PrintQueue.STATUS_AWAITING_REVIEW)
+        self.assertEqual(self.entry.last_error, "")
+
     def test_history_finished_error_sets_last_error(self):
         event = {
             "method": "notify_history_changed",

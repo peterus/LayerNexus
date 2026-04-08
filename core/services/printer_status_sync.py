@@ -136,6 +136,9 @@ def _transition_to_review(entry: PrintQueue, normalized_state: str, raw_state: s
         NormalizedJobStatus.STATE_CANCELLED,
     ):
         entry.last_error = f"Printer reported: {raw_state}"
+    else:
+        # Clear any leftover error from a previous retry.
+        entry.last_error = ""
     entry.save(
         update_fields=[
             "status",
