@@ -189,8 +189,12 @@ class PrintJobPlate(models.Model):
     filament_used_grams = models.FloatField(null=True, blank=True)
     print_time_estimate = models.DurationField(null=True, blank=True)
 
-    # Klipper job tracking (per plate)
-    klipper_job_id = models.CharField(max_length=255, blank=True)
+    # Remote printer job tracking (per plate)
+    remote_job_id = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Filename or job ID on the remote printer after upload",
+    )
 
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)

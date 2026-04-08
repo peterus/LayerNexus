@@ -1,8 +1,8 @@
 """Print queue service functions.
 
-Provides reusable logic for starting prints via Moonraker, extracted
-from the queue views so it can be called from both ``RunNextQueueView``
-and ``RunAllQueuesView`` without duplication.
+Provides reusable logic for starting prints via the printer backend
+abstraction, extracted from the queue views so it can be called from
+both ``RunNextQueueView`` and ``RunAllQueuesView`` without duplication.
 """
 
 import logging
@@ -11,7 +11,7 @@ import re
 from django.utils import timezone
 
 from core.models import PrintJob, PrintJobPlate, PrintQueue
-from core.services.moonraker import MoonrakerClient
+from core.services.printer_backend import get_printer_backend
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +32,8 @@ def start_print_for_queue_entry(entry: PrintQueue) -> str:
     G-code file present).  This function handles:
 
     1. Building a filesystem-safe remote filename.
-    2. Uploading the G-code to Moonraker.
-    3. Starting the print via Moonraker.
+    2. Uploading the G-code via the printer backend.
+    3. Starting the print via the printer backend.
     4. Updating the queue entry, plate, and job status/timestamps.
 
     Args:
@@ -45,7 +45,7 @@ def start_print_for_queue_entry(entry: PrintQueue) -> str:
 
     Raises:
         PrintStartError: If the entry has no G-code file.
-        MoonrakerError: If the Moonraker API call fails.
+        PrinterError: If the printer backend call fails.
     """
     plate = entry.plate
     job = plate.print_job
@@ -55,15 +55,15 @@ def start_print_for_queue_entry(entry: PrintQueue) -> str:
     if not gcode_file:
         raise PrintStartError(f"No G-code file for plate {plate.plate_number}. Slice the job first.")
 
-    # Build a descriptive, filesystem-safe filename for Klipper
+    # Build a descriptive, filesystem-safe remote filename
     safe_name = re.sub(r"[^\w\-]", "_", str(job))[:50]
     remote_filename = f"LN_{safe_name}_p{plate.plate_number}.gcode"
 
-    client = MoonrakerClient(printer.moonraker_url, printer.moonraker_api_key)
+    backend = get_printer_backend(printer)
 
     # Upload gcode and start the print
-    client.upload_gcode(gcode_file.path, filename=remote_filename)
-    client.start_print(remote_filename)
+    backend.upload_gcode(gcode_file.path, filename=remote_filename)
+    backend.start_print(remote_filename)
 
     # Update queue entry
     entry.status = PrintQueue.STATUS_PRINTING
@@ -72,9 +72,9 @@ def start_print_for_queue_entry(entry: PrintQueue) -> str:
 
     # Update plate status
     plate.status = PrintJobPlate.STATUS_PRINTING
-    plate.klipper_job_id = remote_filename
+    plate.remote_job_id = remote_filename
     plate.started_at = timezone.now()
-    plate.save(update_fields=["status", "klipper_job_id", "started_at"])
+    plate.save(update_fields=["status", "remote_job_id", "started_at"])
 
     # Update job status
     job.status = PrintJob.STATUS_PRINTING

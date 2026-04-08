@@ -6,6 +6,7 @@ import requests
 from django.test import TestCase
 
 from core.services.moonraker import MoonrakerClient, MoonrakerError
+from core.services.printer_backend import NormalizedJobStatus, PrinterError
 
 
 class MoonrakerHeaderTests(TestCase):
@@ -278,7 +279,7 @@ class MoonrakerGetJobStatusTests(TestCase):
 
     @patch("requests.request")
     def test_get_job_status_success(self, mock_request):
-        expected = {
+        raw = {
             "result": {
                 "status": {
                     "print_stats": {"state": "printing", "filename": "test.gcode"},
@@ -287,15 +288,75 @@ class MoonrakerGetJobStatusTests(TestCase):
             }
         }
         mock_response = MagicMock()
-        mock_response.json.return_value = expected
+        mock_response.json.return_value = raw
         mock_response.raise_for_status.return_value = None
         mock_request.return_value = mock_response
 
         result = self.client.get_job_status()
 
-        self.assertEqual(result, expected)
+        self.assertIsInstance(result, NormalizedJobStatus)
+        self.assertEqual(result.state, NormalizedJobStatus.STATE_PRINTING)
+        self.assertAlmostEqual(result.progress, 0.42)
+        self.assertEqual(result.filename, "test.gcode")
+        self.assertFalse(result.is_terminal)
         call_args = mock_request.call_args
         self.assertIn("printer/objects/query", call_args[0][1])
+
+    @patch("requests.request")
+    def test_get_job_status_complete_is_terminal(self, mock_request):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "result": {
+                "status": {
+                    "print_stats": {"state": "complete", "filename": "done.gcode"},
+                    "virtual_sdcard": {"progress": 1.0},
+                }
+            }
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_request.return_value = mock_response
+
+        result = self.client.get_job_status()
+
+        self.assertEqual(result.state, NormalizedJobStatus.STATE_COMPLETE)
+        self.assertTrue(result.is_terminal)
+
+    @patch("requests.request")
+    def test_get_job_status_paused_maps_to_printing(self, mock_request):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "result": {
+                "status": {
+                    "print_stats": {"state": "paused", "filename": "x.gcode"},
+                    "virtual_sdcard": {"progress": 0.5},
+                }
+            }
+        }
+        mock_response.raise_for_status.return_value = None
+        mock_request.return_value = mock_response
+
+        result = self.client.get_job_status()
+
+        self.assertEqual(result.state, NormalizedJobStatus.STATE_PRINTING)
+
+    @patch("requests.request")
+    def test_get_job_status_raw(self, mock_request):
+        raw = {
+            "result": {
+                "status": {
+                    "print_stats": {"state": "printing"},
+                    "virtual_sdcard": {"progress": 0.1},
+                }
+            }
+        }
+        mock_response = MagicMock()
+        mock_response.json.return_value = raw
+        mock_response.raise_for_status.return_value = None
+        mock_request.return_value = mock_response
+
+        result = self.client.get_job_status_raw()
+
+        self.assertEqual(result, raw)
 
     @patch("requests.request")
     def test_get_job_status_error(self, mock_request):
@@ -303,3 +364,7 @@ class MoonrakerGetJobStatusTests(TestCase):
 
         with self.assertRaises(MoonrakerError):
             self.client.get_job_status()
+
+    def test_moonraker_error_is_printer_error(self):
+        """MoonrakerError must extend PrinterError so views can catch uniformly."""
+        self.assertTrue(issubclass(MoonrakerError, PrinterError))
