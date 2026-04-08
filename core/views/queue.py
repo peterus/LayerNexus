@@ -22,7 +22,6 @@ from core.models import (
 )
 from core.services.printer_backend import (
     PrinterError,
-    PrinterNotConfiguredError,
     get_printer_backend,
 )
 from core.services.queue import PrintStartError, start_print_for_queue_entry
@@ -393,12 +392,19 @@ class QueueEntryReviewView(PrinterControlMixin, View):
         return redirect("core:printqueue_list")
 
 
-class QueueCheckPrinterStatusView(LoginRequiredMixin, View):
-    """JSON endpoint: poll Moonraker for a printing queue entry.
+#: If ``status_updated_at`` is older than this, the worker is
+#: considered stale and the client is told so via ``worker_stale``.
+WORKER_STALE_THRESHOLD_SECONDS = 60
 
-    Returns ``{"status": "printing"|"awaiting_review"|"error", ...}``.
-    If the printer reports the job as complete the queue entry is moved
-    to *awaiting_review*.
+
+class QueueCheckPrinterStatusView(LoginRequiredMixin, View):
+    """JSON endpoint: return the current status of a printing queue entry.
+
+    Data is served entirely from the database.  The ``moonraker_worker``
+    management command is responsible for pushing live progress and
+    terminal-state transitions into the DB via its WebSocket
+    connection to Moonraker, so this endpoint no longer talks to the
+    printer directly.
     """
 
     def get(self, request: HttpRequest, pk: int) -> JsonResponse:
@@ -408,43 +414,24 @@ class QueueCheckPrinterStatusView(LoginRequiredMixin, View):
         )
 
         if entry.status != PrintQueue.STATUS_PRINTING:
-            return JsonResponse({"status": entry.status})
+            payload: dict = {"status": entry.status}
+            if entry.last_error:
+                payload["message"] = entry.last_error
+            return JsonResponse(payload)
 
-        printer = entry.printer
-        try:
-            backend = get_printer_backend(printer)
-            job_status = backend.get_job_status()
-            state = job_status.state
-            progress = job_status.progress
-
-            if job_status.is_terminal:
-                # complete / error / cancelled / standby all mean the
-                # print is no longer running -> operator review.
-                entry.status = PrintQueue.STATUS_AWAITING_REVIEW
-                entry.completed_at = timezone.now()
-                entry.save(update_fields=["status", "completed_at"])
-                message = "Print finished — awaiting review." if state == "complete" else f"Printer reported: {state}"
-                return JsonResponse(
-                    {
-                        "status": "awaiting_review",
-                        "message": message,
-                    }
-                )
-
-            return JsonResponse(
-                {
-                    "status": "printing",
-                    "printer_state": state,
-                    "progress": progress,
-                }
-            )
-
-        except PrinterNotConfiguredError as exc:
-            return JsonResponse({"status": "error", "message": str(exc)})
-        except PrinterError as exc:
-            logger.warning("Printer poll failed for entry %s: %s", pk, exc)
-            msg = "Could not communicate with printer. Check server logs for details."
-            return JsonResponse({"status": "error", "message": msg})
+        payload = {
+            "status": "printing",
+            "progress": entry.progress,
+        }
+        if entry.status_updated_at is not None:
+            payload["status_updated_at"] = entry.status_updated_at.isoformat()
+            age = (timezone.now() - entry.status_updated_at).total_seconds()
+            if age > WORKER_STALE_THRESHOLD_SECONDS:
+                payload["worker_stale"] = True
+        else:
+            # No update yet -> worker either hasn't connected or just started.
+            payload["worker_stale"] = True
+        return JsonResponse(payload)
 
 
 class CancelQueueEntryView(PrinterControlMixin, View):

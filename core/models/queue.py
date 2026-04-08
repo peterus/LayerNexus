@@ -71,6 +71,23 @@ class PrintQueue(models.Model):
     started_at = models.DateTimeField(null=True, blank=True, help_text="When printing started")
     completed_at = models.DateTimeField(null=True, blank=True, help_text="When the printer finished (before review)")
 
+    # Live status from the printer backend (populated by moonraker_worker) ---
+    progress = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Live print progress 0..1 from the printer backend",
+    )
+    status_updated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Last time the status was updated from the printer backend",
+    )
+    last_error = models.TextField(
+        blank=True,
+        default="",
+        help_text="Last error reported by the printer backend (if any)",
+    )
+
     class Meta:
         ordering = ["-priority", "position", "added_at"]
         indexes = [
