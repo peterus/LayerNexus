@@ -419,11 +419,7 @@ class QueueCheckPrinterStatusView(LoginRequiredMixin, View):
                 entry.status = PrintQueue.STATUS_AWAITING_REVIEW
                 entry.completed_at = timezone.now()
                 entry.save(update_fields=["status", "completed_at"])
-                message = (
-                    "Print finished — awaiting review."
-                    if state == "complete"
-                    else f"Printer reported: {state}"
-                )
+                message = "Print finished — awaiting review." if state == "complete" else f"Printer reported: {state}"
                 return JsonResponse(
                     {
                         "status": "awaiting_review",
