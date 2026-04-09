@@ -13,6 +13,24 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = 15  # seconds
 
 
+_KLIPPER_STATE_MAP = {
+    "printing": NormalizedJobStatus.STATE_PRINTING,
+    "complete": NormalizedJobStatus.STATE_COMPLETE,
+    "error": NormalizedJobStatus.STATE_ERROR,
+    "cancelled": NormalizedJobStatus.STATE_CANCELLED,
+    "standby": NormalizedJobStatus.STATE_STANDBY,
+    "paused": NormalizedJobStatus.STATE_PRINTING,
+}
+
+
+def map_klipper_state(raw_state: str) -> str:
+    """Map a raw Klipper/Moonraker ``print_stats.state`` to a normalized state.
+
+    Unknown states fall back to :attr:`NormalizedJobStatus.STATE_IDLE`.
+    """
+    return _KLIPPER_STATE_MAP.get(raw_state, NormalizedJobStatus.STATE_IDLE)
+
+
 class MoonrakerError(PrinterError):
     """Raised when a Moonraker API operation fails."""
 
@@ -161,19 +179,8 @@ class MoonrakerClient:
         print_stats = status_data.get("print_stats", {})
         virtual_sd = status_data.get("virtual_sdcard", {})
 
-        raw_state = print_stats.get("state", "unknown")
-        state_map = {
-            "printing": NormalizedJobStatus.STATE_PRINTING,
-            "complete": NormalizedJobStatus.STATE_COMPLETE,
-            "error": NormalizedJobStatus.STATE_ERROR,
-            "cancelled": NormalizedJobStatus.STATE_CANCELLED,
-            "standby": NormalizedJobStatus.STATE_STANDBY,
-            "paused": NormalizedJobStatus.STATE_PRINTING,
-        }
-        state = state_map.get(raw_state, NormalizedJobStatus.STATE_IDLE)
-
         return NormalizedJobStatus(
-            state=state,
+            state=map_klipper_state(print_stats.get("state", "unknown")),
             progress=virtual_sd.get("progress", 0.0),
             filename=print_stats.get("filename", ""),
         )
