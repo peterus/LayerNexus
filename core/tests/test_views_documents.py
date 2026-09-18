@@ -88,13 +88,15 @@ class ProjectDocumentDownloadViewTests(TestDataMixin, TestCase):
 
 @override_settings(MEDIA_ROOT="/tmp/layernexus_test_media_sec/")  # noqa: S108
 class MediaSecurityHeaderTests(TestDataMixin, TestCase):
-    """``/media/`` responses must be served safely against stored XSS.
+    """Potentially-active ``/media/`` uploads must be served safely against stored XSS.
 
     An uploaded SVG rendered inline in the app origin could execute
-    JavaScript.  Every media response must therefore force a download
-    (``Content-Disposition: attachment``) and carry a locked-down
-    ``Content-Security-Policy`` so the browser will not run embedded
-    scripts.
+    JavaScript.  Such potentially-active media (SVG, PDFs, arbitrary
+    uploads — everything except non-scriptable raster images) must
+    therefore force a download (``Content-Disposition: attachment``) and
+    carry a locked-down ``Content-Security-Policy`` so the browser will
+    not run embedded scripts.  Raster images stay inline and are covered
+    by ``RasterImageMediaTests``.
 
     The media view functions are exercised directly (rather than through
     the ``/media/`` URL) because the URLconf captures ``document_root`` at

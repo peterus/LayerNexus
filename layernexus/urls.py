@@ -55,6 +55,10 @@ def _harden_media_response(response, path):
     response["X-Content-Type-Options"] = "nosniff"
     if PurePosixPath(path).suffix.lower() in INLINE_IMAGE_EXTENSIONS:
         return response
+    # Fail safe: any type not on the raster allowlist (SVG, PDF, unknown
+    # suffixes) is downloaded and sandboxed.  The worst case for a raster
+    # cover uploaded with an uncommon suffix is that it downloads instead of
+    # rendering inline — never a security regression.
     response["Content-Disposition"] = "attachment"
     response["Content-Security-Policy"] = MEDIA_CSP
     return response
