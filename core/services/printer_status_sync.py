@@ -119,6 +119,13 @@ def _handle_status_update(entry: PrintQueue, params: list[Any]) -> bool:
     if entry.status_updated_at and (now - entry.status_updated_at) < PROGRESS_WRITE_INTERVAL:
         return False
 
+    # Reject booleans explicitly: bool is an int subclass, so float(True)
+    # is 1.0 and would pass the range guard below (True == 1). A JSON
+    # boolean is malformed progress data, not a real fraction.
+    if isinstance(new_progress, bool):
+        logger.debug("Ignoring boolean virtual_sdcard.progress: %r", new_progress)
+        return False
+
     try:
         progress_value = float(new_progress)
     except (TypeError, ValueError, OverflowError):

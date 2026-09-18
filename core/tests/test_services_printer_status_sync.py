@@ -249,6 +249,24 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
             self.assertFalse(changed, f"{bad!r} should be ignored")
             self.assertAlmostEqual(self.entry.progress, 0.40)
 
+    def test_status_update_boolean_progress_ignored(self):
+        """A JSON boolean converts via float() (True->1.0, False->0.0) and
+        would sneak past the range guard (True == 1). Reject it as
+        malformed instead of persisting a bogus progress."""
+        for bad in (True, False):
+            self.entry.progress = 0.40
+            self.entry.status_updated_at = timezone.now() - PROGRESS_WRITE_INTERVAL - timedelta(seconds=1)
+            self.entry.save(update_fields=["progress", "status_updated_at"])
+
+            event = {
+                "method": "notify_status_update",
+                "params": [{"virtual_sdcard": {"progress": bad}}],
+            }
+            changed = apply_status_event(self.entry, event)
+            self.entry.refresh_from_db()
+            self.assertFalse(changed, f"{bad!r} should be ignored")
+            self.assertAlmostEqual(self.entry.progress, 0.40)
+
     # ----- unknown events ---------------------------------------------------
 
     def test_unknown_method_ignored(self):

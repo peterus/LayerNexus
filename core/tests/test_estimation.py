@@ -283,6 +283,38 @@ class SlicingWorkerLockTests(TestCase):
         fake_fh.close.assert_called_once()
         self.assertFalse(worker_mod._orcaslicer_worker_active)
 
+    def test_no_pending_releases_lock_before_clearing_active_flag(self):
+        """Race guard: on the no-work path the cross-process file lock must
+        be released BEFORE the in-process ``_orcaslicer_worker_active`` flag
+        is cleared. Otherwise a concurrent enqueue could clear->see the flag,
+        spawn a worker that fails to acquire the still-held lock, give up,
+        and strand the newly pending item."""
+        import core.services.slicing_worker as worker_mod
+        from core.services.slicing_worker import _orcaslicer_worker_loop
+
+        fake_fh = MagicMock()
+        self._set_active(True)
+        observed = {}
+
+        def record_flock(fh, op):
+            # Capture whether the worker still advertises itself as active
+            # at the moment the file lock is released.
+            observed["active_at_release"] = worker_mod._orcaslicer_worker_active
+
+        with (
+            patch.object(worker_mod, "_acquire_file_lock", return_value=fake_fh),
+            patch.object(worker_mod, "_has_pending_work", return_value=False),
+            patch("core.services.slicing_worker.fcntl") as mock_fcntl,
+        ):
+            mock_fcntl.flock.side_effect = record_flock
+            _orcaslicer_worker_loop()
+
+        self.assertTrue(
+            observed.get("active_at_release"),
+            "file lock was released only after the active flag was cleared",
+        )
+        self.assertFalse(worker_mod._orcaslicer_worker_active)
+
     def test_inherited_lock_is_not_reacquired(self):
         """A continuation loop given a lock handle must not re-acquire it."""
         import core.services.slicing_worker as worker_mod

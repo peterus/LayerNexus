@@ -188,10 +188,21 @@ def _orcaslicer_worker_loop(lock_fh: IO[str] | None = None) -> None:
             break
     finally:
         # Re-check for work while still holding the file lock to prevent
-        # another process from acquiring it and causing churn.
+        # another process from acquiring it and causing churn. Serialize the
+        # decision against _start_orcaslicer_worker() via the in-process lock
+        # so the active-flag and file-lock state stay consistent.
         with _orcaslicer_worker_lock:
             has_pending = _has_pending_work()
             if not has_pending:
+                # Release the cross-process file lock BEFORE clearing the
+                # active flag. If we cleared the flag while still holding the
+                # lock, a concurrent enqueue could observe active=False, spawn
+                # a new worker that fails to acquire the lock we still hold,
+                # reset the flag and exit — stranding the newly pending item
+                # once we finally release. Releasing first guarantees any
+                # worker spawned after active=False can acquire the lock.
+                fcntl.flock(lock_fh, fcntl.LOCK_UN)
+                lock_fh.close()
                 _orcaslicer_worker_active = False
 
         # Close this thread's DB connection regardless of continuation.
@@ -223,10 +234,6 @@ def _orcaslicer_worker_loop(lock_fh: IO[str] | None = None) -> None:
                     _orcaslicer_worker_active = False
             else:
                 logger.info("OrcaSlicer worker: restarted for newly queued work (lock retained)")
-        else:
-            # No more work: release the cross-process file lock.
-            fcntl.flock(lock_fh, fcntl.LOCK_UN)
-            lock_fh.close()
 
 
 def _estimate_part_in_background(part_pk: int) -> None:
