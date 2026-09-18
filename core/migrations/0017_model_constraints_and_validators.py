@@ -4,6 +4,24 @@ import django.core.validators
 from django.db import migrations, models
 
 
+def _clamp_negative_cost_values(apps, schema_editor):
+    """Sanitise any legacy negative CostProfile values before the CHECK constraints.
+
+    The fields below had no ``MinValueValidator`` previously, so an existing
+    deployment could hold negative rows that would make the ``AddConstraint``
+    operations fail. Clamp them to ``0`` first so the migration applies cleanly
+    on any database.
+    """
+    CostProfile = apps.get_model('core', 'CostProfile')
+    for field in (
+        'printer_power_watts',
+        'printer_purchase_cost',
+        'electricity_cost_per_kwh',
+        'maintenance_cost_per_hour',
+    ):
+        CostProfile.objects.filter(**{f'{field}__lt': 0}).update(**{field: 0})
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -11,6 +29,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunPython(_clamp_negative_cost_values, migrations.RunPython.noop),
         migrations.AlterField(
             model_name='costprofile',
             name='electricity_cost_per_kwh',
