@@ -20,7 +20,7 @@ Local venv (`.venv`, Python 3.13) — no pytest; use Django's test runner:
 .venv/bin/python manage.py makemigrations --check --dry-run   # CI gate: fails on missing migration
 .venv/bin/python manage.py check --fail-level WARNING
 ruff check . && ruff format --check .                         # lint + format (CI gate)
-coverage run manage.py test core && coverage report          # coverage (gate: >=55%)
+.venv/bin/python -m coverage run manage.py test core && .venv/bin/python -m coverage report  # coverage (gate: >=55%)
 ```
 
 Docker (full stack: `web` + `worker` + `orcaslicer` + `spoolman`):
@@ -129,7 +129,7 @@ raw `request.user.is_staff` check.
   `Project._collect_parts_with_multiplier()` (and `_collect_hardware_with_multiplier`,
   `_collect_documents`) as the reference shape.
 - **File uploads:** define allowed extensions + max size as constants in the form,
-  validate in `clean_<field>()`, use `upload_to='<subfolder>/'`, template needs
+  validate in `clean_<field>()`, use `upload_to="<subfolder>/"`, template needs
   `enctype="multipart/form-data"`. `ProjectDocumentForm` (75 MB, 9 types) is the
   reference form (it wraps the `ProjectDocument` model).
 - **Adding a model:** define in `core/models/<domain>.py` → re-export in

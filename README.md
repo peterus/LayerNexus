@@ -167,7 +167,7 @@ LayerNexus is configured through environment variables or directly in `layernexu
 | `ORCASLICER_API_URL` | URL of the orca-slicer-api service | `http://localhost:3000` |
 | `SPOOLMAN_URL` | URL of the Spoolman instance (required for filament management) | `` |
 | `ALLOW_REGISTRATION` | Allow new users to self-register (`true` or `false`) | `true` |
-| `LOG_LEVEL` | Log level for the worker process | `INFO` |
+| `LOG_LEVEL` | Log level for the worker process | `DEBUG` when `DEBUG=1`, else `INFO` |
 | `WORKER_RELOAD_INTERVAL` | Printer-poll interval (seconds) for the moonraker worker | `10` |
 
 ## External Services Setup
