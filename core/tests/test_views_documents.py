@@ -149,6 +149,51 @@ class MediaSecurityHeaderTests(TestDataMixin, TestCase):
         self.assertIn("sandbox", resp.get("Content-Security-Policy", ""))
 
 
+@override_settings(MEDIA_ROOT="/tmp/layernexus_test_media_img/")  # noqa: S108
+class RasterImageMediaTests(TestDataMixin, TestCase):
+    """Raster images must stay viewable inline.
+
+    Project cover images are ``ImageField`` uploads (raster only — Pillow
+    rejects SVG) rendered via ``<img>`` and opened via ``<a target=_blank>``.
+    They cannot execute scripts, so forcing ``attachment`` on them would be a
+    UX regression with no security benefit.  They are served inline (with
+    ``nosniff``); only potentially-active content (SVG, PDF, other uploads) is
+    forced to download.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # 1x1 transparent PNG.
+        png = bytes.fromhex(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+            "890000000a49444154789c6360000002000154a24f8b0000000049454e44ae426082"
+        )
+        self.doc = ProjectDocument.objects.create(
+            project=self.project,
+            name="cover",
+            file=SimpleUploadedFile("cover.png", png, content_type="image/png"),
+        )
+
+    def _serve(self):
+        from layernexus.urls import serve_media
+
+        request = RequestFactory().get(settings.MEDIA_URL + self.doc.file.name)
+        request.user = User.objects.get(username="testuser")
+        return serve_media(request, self.doc.file.name, document_root=settings.MEDIA_ROOT)
+
+    def test_png_served_inline(self):
+        resp = self._serve()
+        self.assertNotIn("attachment", resp.get("Content-Disposition", ""))
+
+    def test_png_has_no_sandbox_csp(self):
+        # A sandbox/deny CSP would block the "open image in new tab" link.
+        self.assertNotIn("sandbox", resp_csp := self._serve().get("Content-Security-Policy", ""))
+        self.assertEqual(resp_csp, "")
+
+    def test_png_still_has_nosniff(self):
+        self.assertEqual(self._serve().get("X-Content-Type-Options", ""), "nosniff")
+
+
 class GlobalSecurityHeaderTests(TestDataMixin, TestCase):
     """Regular app pages carry a conservative baseline CSP (defense in depth)."""
 

@@ -5,7 +5,7 @@ import logging
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db.models import Max
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.utils import timezone
@@ -170,6 +170,20 @@ class PrintQueueDeleteView(QueueDequeueMixin, DeleteView):
         return queryset
 
     def form_valid(self, form):
+        if not self.request.user.has_perm("core.can_control_printer"):
+            # Close the TOCTOU window: the queryset check above ran at SELECT
+            # time, but a printer worker could flip the row to printing /
+            # awaiting_review before we delete it.  Delete conditionally on the
+            # status so a live entry can never be removed by a Designer.
+            deleted, _ = PrintQueue.objects.filter(
+                pk=self.object.pk,
+                status=PrintQueue.STATUS_WAITING,
+            ).delete()
+            if not deleted:
+                raise Http404("Queue entry is no longer waiting.")
+            messages.success(self.request, "Removed from queue.")
+            return HttpResponseRedirect(self.get_success_url())
+
         messages.success(self.request, "Removed from queue.")
         return super().form_valid(form)
 

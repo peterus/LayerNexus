@@ -1,10 +1,13 @@
 """Tests for print queue views."""
 
+from unittest import mock
+
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
 from core.models import PrinterProfile, PrintJob, PrintJobPlate, PrintQueue
 from core.tests.mixins import TestDataMixin, _RBACTestBase
+from core.views.queue import PrintQueueDeleteView
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -30,11 +33,13 @@ class PrintQueueViewTests(TestDataMixin, TestCase):
 class PrintQueueDeleteStatusGuardTests(_RBACTestBase):
     """A Designer may only dequeue *waiting* entries.
 
-    Both Operator and Designer hold ``can_dequeue_job``, but a Designer
-    lacks ``can_manage_print_queue``.  Deleting a ``printing`` or
-    ``awaiting_review`` entry would desync the DB from the real printer,
-    so those must be blocked for Designers while Operators/Admins may
-    remove entries in any state.
+    Both Operator and Designer hold ``can_dequeue_job`` *and*
+    ``can_manage_print_queue``; the discriminator is that a Designer
+    lacks ``can_control_printer`` (see
+    ``core/migrations/0002_create_role_groups.py``).  Deleting a
+    ``printing`` or ``awaiting_review`` entry would desync the DB from
+    the real printer, so those must be blocked for Designers while
+    Operators/Admins may remove entries in any state.
     """
 
     def setUp(self):
@@ -98,3 +103,27 @@ class PrintQueueDeleteStatusGuardTests(_RBACTestBase):
         resp = self._delete(self.review_entry)
         self.assertEqual(resp.status_code, 302)
         self.assertFalse(PrintQueue.objects.filter(pk=self.review_entry.pk).exists())
+
+    def test_designer_delete_is_atomic_against_status_race(self):
+        """A status change between SELECT and DELETE must not let a live entry go.
+
+        Simulates the TOCTOU window: ``get_object`` selects the entry while it
+        is still ``waiting``, but a printer worker flips it to ``printing``
+        before the row is deleted.  The delete must be conditional on the
+        status so the live entry survives and the Designer gets a 404.
+        """
+        self.client.login(username="designer_user", password="testpass123")
+        entry = self.waiting_entry
+        original_get_object = PrintQueueDeleteView.get_object
+
+        def racing_get_object(view_self, queryset=None):
+            obj = original_get_object(view_self, queryset)
+            # Worker transitions the row after it was fetched as "waiting".
+            PrintQueue.objects.filter(pk=entry.pk).update(status=PrintQueue.STATUS_PRINTING)
+            return obj
+
+        with mock.patch.object(PrintQueueDeleteView, "get_object", racing_get_object):
+            resp = self._delete(entry)
+
+        self.assertEqual(resp.status_code, 404)
+        self.assertTrue(PrintQueue.objects.filter(pk=entry.pk, status=PrintQueue.STATUS_PRINTING).exists())
