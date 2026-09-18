@@ -49,7 +49,14 @@ class ProjectEditForm(forms.ModelForm):
         }
 
     def clean(self) -> dict:
-        """Ensure quantity is 1 when no parent is set."""
+        """Normalise quantity for top-level projects.
+
+        Cyclic re-parenting (``parent`` == self or a descendant) is rejected by
+        :meth:`Project.clean`, which ``ModelForm._post_clean`` runs via
+        ``instance.full_clean()`` — the resulting ``ValidationError`` is already
+        attached to the ``parent`` field, so no separate descendant walk is
+        needed here (that only added a query per validation).
+        """
         cleaned_data = super().clean()
         parent = cleaned_data.get("parent")
         if not parent:

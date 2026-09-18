@@ -44,8 +44,14 @@ class ProjectListView(LoginRequiredMixin, ListView):
     context_object_name = "projects"
 
     def get_queryset(self) -> QuerySet:
-        """Return only root-level projects (no parent)."""
-        return Project.objects.filter(parent__isnull=True)
+        """Return only root-level projects (no parent).
+
+        Prefetches the sub-project/part/job tree so the per-card status badges
+        and progress bars are computed from cache instead of issuing a query
+        per project (and per part) — see
+        :meth:`Project.aggregate_prefetch_lookups`.
+        """
+        return Project.objects.filter(parent__isnull=True).prefetch_related(*Project.aggregate_prefetch_lookups())
 
 
 class ProjectDetailView(LoginRequiredMixin, DetailView):
@@ -54,6 +60,11 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
     model = Project
     template_name = "core/project_detail.html"
     context_object_name = "project"
+
+    def get_queryset(self) -> QuerySet:
+        """Prefetch the aggregate tree so status/progress for the project and its
+        sub-projects render without an N+1 explosion."""
+        return Project.objects.prefetch_related(*Project.aggregate_prefetch_lookups())
 
     def get_context_data(self, **kwargs) -> dict:
         """Add filament requirements, sub-projects, breadcrumb ancestors, and filament name lookup to context."""

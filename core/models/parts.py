@@ -135,17 +135,50 @@ class Part(models.Model):
 
     @property
     def printed_quantity(self) -> int:
-        """Number of this part already printed (across all completed job plates)."""
-        completed_qty = (
-            self.job_entries.filter(
-                print_job__plates__status="completed",
-            )
-            .values("print_job")
-            .distinct()
-            .aggregate(total=Sum("quantity"))["total"]
-            or 0
+        """Number of this part already printed, summed over completed print jobs.
+
+        Semantics: a print job counts as *printed* for this part as soon as it
+        has **at least one** plate in the ``completed`` state. Each qualifying
+        job contributes this part's job ``quantity`` exactly **once**, no matter
+        how many completed plates it has.
+
+        Two evaluation paths keep this correct *and* efficient for every caller:
+
+        * **Prefetched** — when the whole ``job_entries__print_job__plates``
+          chain is in the instance cache (see
+          :meth:`Project.aggregate_prefetch_lookups`), the count is summed in
+          Python with **no** extra query, which keeps project-list/detail/
+          dashboard rendering off the N+1 path. The branch is only taken when the
+          nested ``print_job`` and ``plates`` caches are present too, so a
+          partial ``job_entries``-only prefetch can never silently fan out into a
+          per-entry query.
+        * **Not prefetched** — fall back to a single DB aggregate: the distinct
+          completed-``job_entries`` PKs become an ``IN`` subquery inside the
+          ``Sum`` query, so a lone caller such as ``PartDetailView`` pays one
+          query no matter how many job entries exist (no per-entry N+1).
+
+        Both paths count each job's ``quantity`` once — there is no plate join
+        that fans the rows out.
+        """
+        completed = "completed"
+        prefetched = getattr(self, "_prefetched_objects_cache", None)
+        if prefetched is not None and "job_entries" in prefetched:
+            entries = prefetched["job_entries"]
+            if all(
+                "print_job" in entry._state.fields_cache
+                and "plates" in getattr(entry.print_job, "_prefetched_objects_cache", {})
+                for entry in entries
+            ):
+                return sum(
+                    entry.quantity
+                    for entry in entries
+                    if any(plate.status == completed for plate in entry.print_job.plates.all())
+                )
+
+        completed_entry_pks = (
+            self.job_entries.filter(print_job__plates__status=completed).values_list("pk", flat=True).distinct()
         )
-        return completed_qty
+        return self.job_entries.filter(pk__in=completed_entry_pks).aggregate(total=Sum("quantity"))["total"] or 0
 
     @property
     def remaining_quantity(self) -> int:

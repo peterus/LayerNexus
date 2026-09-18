@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import CheckConstraint, Q
@@ -84,6 +85,64 @@ class Project(models.Model):
     def __str__(self) -> str:
         return self.name
 
+    def save(self, *args, **kwargs) -> None:
+        """Persist the project, refusing to store a cyclic ``parent``.
+
+        Django never calls :meth:`clean` implicitly, so the cycle check is run
+        here too — a ``project.parent = descendant; project.save()`` from a shell
+        or import raises :class:`ValidationError` instead of persisting a graph
+        that would later blow up the recursive aggregate properties.
+        """
+        self._assert_parent_acyclic()
+        super().save(*args, **kwargs)
+
+    def clean(self) -> None:
+        """Validate that the parent assignment does not create a cycle.
+
+        Runs on every ``full_clean()`` path — ``ProjectEditForm``, the admin,
+        etc. The same check is also enforced in :meth:`save` so a bare
+        shell/import ``save()`` cannot persist a cycle either. The visited-set
+        guards on the recursive traversals (:meth:`get_descendant_ids` and the
+        ``_collect_*`` aggregators) remain as a runtime safety net for any cycle
+        that somehow reaches the database (e.g. a raw SQL / bulk ``update``).
+        """
+        super().clean()
+        self._assert_parent_acyclic()
+
+    def _assert_parent_acyclic(self) -> None:
+        """Raise :class:`ValidationError` if ``parent`` puts this project in a cycle.
+
+        Walks the ``parent`` chain upward; if this project is encountered anywhere
+        in its own ancestry the assignment would create a cycle. A visited-set
+        guard makes the walk terminate even if a corrupt cycle already exists in
+        the database.
+
+        Limitation: this is an application-level check and therefore not fully
+        concurrency-safe — two simultaneous re-parent transactions (A→B and B→A)
+        can each pass the check on stale reads and commit a cycle. Fully
+        preventing that would need DB-level enforcement (serializable isolation /
+        row locks / a recursive-CTE constraint). The consequence is bounded, not
+        catastrophic: **every** parent-chain traversal in this model
+        (:meth:`get_ancestors`, :meth:`get_descendant_ids`,
+        :meth:`effective_default_print_preset`, the ``_collect_*`` aggregators)
+        carries a visited-set guard, so a raced cycle degrades to a logically
+        odd graph rather than an infinite loop / ``RecursionError`` at render.
+        """
+        if self.parent_id is None:
+            return
+
+        visited: set[int] = set()
+        ancestor = self.parent
+        while ancestor is not None:
+            if self.pk is not None and ancestor.pk == self.pk:
+                raise ValidationError(
+                    {"parent": "A project cannot be a sub-project of itself or one of its descendants."}
+                )
+            if ancestor.pk in visited:
+                break
+            visited.add(ancestor.pk)
+            ancestor = ancestor.parent
+
     @property
     def is_subproject(self) -> bool:
         """Return True if this project is a sub-project of another project."""
@@ -97,8 +156,10 @@ class Project(models.Model):
             direct parent (empty list for top-level projects).
         """
         ancestors: list[Project] = []
+        visited: set[int] = set()
         current = self.parent
-        while current is not None:
+        while current is not None and current.pk not in visited:
+            visited.add(current.pk)
             ancestors.insert(0, current)
             current = current.parent
         return ancestors
@@ -117,8 +178,10 @@ class Project(models.Model):
         """
         if self.default_print_preset_id is not None:
             return self.default_print_preset
+        visited: set[int] = set()
         current = self.parent
-        while current is not None:
+        while current is not None and current.pk not in visited:
+            visited.add(current.pk)
             if current.default_print_preset_id is not None:
                 return current.default_print_preset
             current = current.parent
@@ -134,28 +197,76 @@ class Project(models.Model):
         """
         if self.default_print_preset_id is not None:
             return self.default_print_preset_id
+        visited: set[int] = set()
         current = self.parent
-        while current is not None:
+        while current is not None and current.pk not in visited:
+            visited.add(current.pk)
             if current.default_print_preset_id is not None:
                 return current.default_print_preset_id
             current = current.parent
         return None
 
-    def get_descendant_ids(self) -> set[int]:
+    #: Relation that carries everything ``aggregated_status`` / ``progress_percent``
+    #: need for one project node (parts, their completed-plate job info).
+    _AGGREGATE_PART_LEAF = "parts__job_entries__print_job__plates"
+
+    @classmethod
+    def aggregate_prefetch_lookups(cls, depth: int = 3) -> list[str]:
+        """Prefetch lookups that make the recursive aggregate properties query-flat.
+
+        Returns the ``prefetch_related`` arguments a list/detail view should use
+        so that ``total_parts_count``, ``progress_percent``, ``aggregated_status``
+        and ``total_filament_grams`` traverse the sub-project tree entirely from
+        cache instead of issuing a query per node/part (the N+1 that made project
+        lists with status badges slow).
+
+        The self-referential ``subprojects`` relation cannot be prefetched to
+        unbounded depth, so the tree is covered up to ``depth`` levels — deep
+        enough for realistic project nesting; levels below that degrade
+        gracefully to lazy queries (never worse than before).
+
+        Args:
+            depth: Number of sub-project levels to cover (root counts as 0).
+
+        Returns:
+            List of ``prefetch_related`` lookup strings.
+        """
+        lookups: list[str] = []
+        prefix = ""
+        for _ in range(depth + 1):
+            lookups.append(f"{prefix}{cls._AGGREGATE_PART_LEAF}")
+            lookups.append(f"{prefix}subprojects".rstrip("_"))
+            prefix += "subprojects__"
+        return lookups
+
+    def get_descendant_ids(self, _visited: set[int] | None = None) -> set[int]:
         """Return set of IDs for all descendant projects (recursive).
 
         Used to prevent circular parent references when editing a project.
 
+        Args:
+            _visited: Internal accumulator of already-seen project PKs. It acts
+                as a safety net so a corrupt cycle already persisted in the
+                database (e.g. inserted outside model validation) terminates the
+                recursion instead of raising ``RecursionError``.
+
         Returns:
             Set of project PKs that are descendants of this project.
         """
+        if _visited is None:
+            _visited = set()
         ids: set[int] = set()
         for sub in self.subprojects.all():
+            if sub.pk in _visited:
+                continue
+            _visited.add(sub.pk)
             ids.add(sub.pk)
-            ids |= sub.get_descendant_ids()
+            ids |= sub.get_descendant_ids(_visited)
         return ids
 
-    def _collect_parts_with_multiplier(self, multiplier: int = 1) -> list[tuple[Part, int]]:
+    def _collect_parts_with_multiplier(
+        self, multiplier: int = 1, _visited: set[int] | None = None
+    ) -> list[tuple[Part, int]]:
         """Collect all parts recursively with their effective quantity multiplier.
 
         Traverses the sub-project tree and accumulates the product of all
@@ -165,13 +276,21 @@ class Project(models.Model):
         Args:
             multiplier: Accumulated parent quantity factor (default 1 for
                 the project itself).
+            _visited: Internal set of already-visited project PKs; a safety net
+                so a corrupt cycle persisted outside validation terminates the
+                recursion instead of raising ``RecursionError``.
 
         Returns:
             List of ``(part, effective_multiplier)`` tuples.
         """
+        if _visited is None:
+            _visited = set()
+        if self.pk in _visited:
+            return []
+        _visited.add(self.pk)
         result = [(part, multiplier) for part in self.parts.all()]
         for subproject in self.subprojects.all():
-            result.extend(subproject._collect_parts_with_multiplier(multiplier * subproject.quantity))
+            result.extend(subproject._collect_parts_with_multiplier(multiplier * subproject.quantity, _visited))
         return result
 
     @property
@@ -371,21 +490,31 @@ class Project(models.Model):
     # Document & hardware aggregation
     # ------------------------------------------------------------------
 
-    def _collect_documents(self) -> list[tuple[ProjectDocument, Project]]:
+    def _collect_documents(self, _visited: set[int] | None = None) -> list[tuple[ProjectDocument, Project]]:
         """Recursively collect all documents from this project and sub-projects.
+
+        Args:
+            _visited: Internal cycle-guard set (see
+                :meth:`_collect_parts_with_multiplier`).
 
         Returns:
             List of ``(ProjectDocument, project)`` tuples so the template can
             group documents by their owning project using a stable identifier.
         """
+        if _visited is None:
+            _visited = set()
+        if self.pk in _visited:
+            return []
+        _visited.add(self.pk)
         result = [(doc, self) for doc in self.documents.all()]
         for subproject in self.subprojects.all():
-            result.extend(subproject._collect_documents())
+            result.extend(subproject._collect_documents(_visited))
         return result
 
     def _collect_hardware_with_multiplier(
         self,
         multiplier: int = 1,
+        _visited: set[int] | None = None,
     ) -> list[tuple[ProjectHardware, int]]:
         """Recursively collect hardware assignments with quantity multiplier.
 
@@ -394,13 +523,20 @@ class Project(models.Model):
 
         Args:
             multiplier: Accumulated parent quantity factor.
+            _visited: Internal cycle-guard set (see
+                :meth:`_collect_parts_with_multiplier`).
 
         Returns:
             List of ``(ProjectHardware, effective_multiplier)`` tuples.
         """
+        if _visited is None:
+            _visited = set()
+        if self.pk in _visited:
+            return []
+        _visited.add(self.pk)
         result = [(hw, multiplier) for hw in self.hardware_assignments.select_related("hardware_part").all()]
         for subproject in self.subprojects.all():
-            result.extend(subproject._collect_hardware_with_multiplier(multiplier * subproject.quantity))
+            result.extend(subproject._collect_hardware_with_multiplier(multiplier * subproject.quantity, _visited))
         return result
 
     @property

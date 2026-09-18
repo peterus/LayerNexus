@@ -73,7 +73,13 @@ class ProjectEditFormTests(TestCase):
         self.assertEqual(form.cleaned_data["quantity"], 1)
 
     def test_cannot_set_self_as_parent(self):
-        """A project cannot be its own parent (prevented via view queryset)."""
+        """A project cannot be its own parent — now enforced by the form itself.
+
+        Previously the form accepted this and relied solely on the edit view's
+        filtered ``parent`` queryset. ``ProjectEditForm.clean`` now rejects
+        cyclic re-parenting directly (see ``Project.clean``), so a stray self
+        reference is caught on every code path.
+        """
         project = Project.objects.create(name="Self Ref")
         form = ProjectEditForm(
             data={
@@ -84,9 +90,8 @@ class ProjectEditFormTests(TestCase):
             },
             instance=project,
         )
-        # The form itself doesn't prevent this — the view filters the queryset.
-        # But this test verifies the form accepts valid parent PKs.
-        self.assertTrue(form.is_valid())
+        self.assertFalse(form.is_valid())
+        self.assertIn("parent", form.errors)
 
 
 class PartFormTests(TestCase):
