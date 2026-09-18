@@ -4,7 +4,7 @@ from django.contrib.auth.models import Group
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
-from core.models import Part
+from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate, Project
 from core.tests.mixins import TestDataMixin
 
 
@@ -24,6 +24,27 @@ class DashboardViewTests(TestDataMixin, TestCase):
         resp = self.client.get(reverse("core:dashboard"))
         self.assertIn("projects", resp.context)
         self.assertIn("recent_jobs", resp.context)
+
+    def test_dashboard_cards_prefetch_aggregates_no_n_plus_1(self):
+        """Shown dashboard cards must render aggregates from cache (no N+1)."""
+        root = Project.objects.create(name="Deep Root")
+        sub = Project.objects.create(name="Deep Sub", parent=root, quantity=2)
+        for proj in (root, sub):
+            part = Part.objects.create(project=proj, name=f"{proj.name}-p", quantity=2)
+            job = PrintJob.objects.create(status="completed")
+            PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
+            PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
+
+        resp = self.client.get(reverse("core:dashboard"))
+        self.assertEqual(resp.status_code, 200)
+        shown = list(resp.context["projects"])
+        self.assertTrue(any(p.pk == root.pk for p in shown))
+        # Every shown card's recursive aggregates must already be prefetched.
+        with self.assertNumQueries(0):
+            for p in shown:
+                _ = p.total_parts_count
+                _ = p.progress_percent
+                _ = p.aggregated_status
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])

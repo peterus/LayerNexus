@@ -120,6 +120,29 @@ class ProjectCycleGuardTests(TestCase):
         with self.assertRaises(ValidationError):
             root.full_clean()
 
+    def test_save_rejects_self_parent(self):
+        """A bare ``save()`` (shell/import path) must also reject a self parent."""
+        from django.core.exceptions import ValidationError
+
+        project = Project.objects.create(name="Selfie")
+        project.parent = project
+        with self.assertRaises(ValidationError):
+            project.save()
+
+    def test_save_rejects_descendant_parent(self):
+        """A bare ``save()`` must reject re-parenting under a descendant (no cycle persisted)."""
+        from django.core.exceptions import ValidationError
+
+        root = Project.objects.create(name="Root")
+        child = Project.objects.create(name="Child", parent=root)
+        grandchild = Project.objects.create(name="Grandchild", parent=child)
+        root.parent = grandchild
+        with self.assertRaises(ValidationError):
+            root.save()
+        # Nothing was persisted: root is still a top-level project.
+        root.refresh_from_db()
+        self.assertIsNone(root.parent_id)
+
     def test_valid_parent_accepted(self):
         """A normal, acyclic parent assignment passes validation."""
         root = Project.objects.create(name="Root")
@@ -148,6 +171,25 @@ class ProjectCycleGuardTests(TestCase):
         # Must terminate and include both nodes rather than RecursionError.
         ids = a.get_descendant_ids()
         self.assertEqual(ids, {a.pk, b.pk})
+
+    def test_aggregate_collectors_guarded_against_corrupt_cycle(self):
+        """A persisted cycle must not RecursionError in the aggregate properties.
+
+        The visited-set guard extends to ``_collect_parts_with_multiplier`` /
+        ``_collect_documents`` / ``_collect_hardware_with_multiplier`` so status
+        badges and totals render on a corrupt graph instead of blowing the stack.
+        """
+        a = Project.objects.create(name="A")
+        b = Project.objects.create(name="B", parent=a)
+        Part.objects.create(project=a, name="ap", quantity=1)
+        Part.objects.create(project=b, name="bp", quantity=1)
+        Project.objects.filter(pk=a.pk).update(parent=b)  # a <-> b cycle
+        a.refresh_from_db()
+        # None of these may raise RecursionError.
+        self.assertGreaterEqual(a.total_parts_count, 2)
+        self.assertIsInstance(a.aggregated_status, str)
+        self.assertEqual(a._collect_documents(), [])
+        self.assertEqual(a._collect_hardware_with_multiplier(), [])
 
 
 class ProjectEditFormCycleTests(TestCase):

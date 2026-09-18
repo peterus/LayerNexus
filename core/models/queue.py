@@ -39,12 +39,16 @@ class PrintQueue(models.Model):
         (4, "Urgent"),
     ]
 
+    # ``null=True`` exists only so historical rows/backfills without a plate can
+    # persist; the application treats a plate as REQUIRED — ``PrintQueueForm``
+    # keeps it mandatory (``blank`` stays False) and every consumer dereferences
+    # ``plate.plate_number``. Do NOT add ``blank=True`` here: it would make the
+    # form field optional and let a plateless entry crash the queue views.
     plate = models.ForeignKey(
         "PrintJobPlate",
         on_delete=models.CASCADE,
         related_name="queue_entries",
         null=True,
-        blank=True,
         help_text="The specific plate (G-code) to print",
     )
     printer = models.ForeignKey("core.PrinterProfile", on_delete=models.CASCADE, related_name="queue")

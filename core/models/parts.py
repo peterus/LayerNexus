@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Optional
 
 from django.core.validators import MinValueValidator
 from django.db import models
-from django.db.models import CheckConstraint, Q
+from django.db.models import CheckConstraint, Q, Sum
 
 if TYPE_CHECKING:
     from core.models.orca_profiles import OrcaPrintPreset
@@ -142,22 +142,34 @@ class Part(models.Model):
         job contributes this part's job ``quantity`` exactly **once**, no matter
         how many completed plates it has.
 
-        Computed in Python over the related managers so the result is:
+        Two evaluation paths keep this correct *and* efficient for every caller:
 
-        * **Correct** — counting ``quantity`` once per job is explicit; there is
-          no plate join that could fan the rows out (the previous ORM aggregate
-          relied on subtle ``DISTINCT``/aggregate query-compiler behaviour).
-        * **Prefetch-friendly** — when the caller prefetches
-          ``job_entries__print_job__plates`` (see
-          :meth:`Project.aggregate_prefetch_lookups`) no extra query is issued,
-          which is what keeps project-list rendering off the N+1 path.
+        * **Prefetched** — when ``job_entries__print_job__plates`` is already in
+          the instance cache (see :meth:`Project.aggregate_prefetch_lookups`),
+          the count is summed in Python with **no** extra query, which is what
+          keeps project-list/detail rendering off the N+1 path.
+        * **Not prefetched** — fall back to an explicit two-step DB aggregate
+          (distinct completed ``job_entries`` PKs, then ``Sum`` without a plate
+          join). This is a fixed two queries regardless of how many job entries
+          exist, so lone callers such as ``PartDetailView`` do not regress into
+          one query per job entry.
+
+        Both paths count each job's ``quantity`` once — there is no plate join
+        that fans the rows out.
         """
         completed = "completed"
-        return sum(
-            entry.quantity
-            for entry in self.job_entries.all()
-            if any(plate.status == completed for plate in entry.print_job.plates.all())
+        prefetched = getattr(self, "_prefetched_objects_cache", None)
+        if prefetched is not None and "job_entries" in prefetched:
+            return sum(
+                entry.quantity
+                for entry in self.job_entries.all()
+                if any(plate.status == completed for plate in entry.print_job.plates.all())
+            )
+
+        completed_entry_pks = (
+            self.job_entries.filter(print_job__plates__status=completed).values_list("pk", flat=True).distinct()
         )
+        return self.job_entries.filter(pk__in=completed_entry_pks).aggregate(total=Sum("quantity"))["total"] or 0
 
     @property
     def remaining_quantity(self) -> int:

@@ -122,8 +122,9 @@ class PartModelTests(TestDataMixin, TestCase):
     def test_printed_quantity_multiple_completed_plates_counts_once(self):
         """A job with several completed plates must count its quantity only once.
 
-        Regression test: the aggregate previously joined through plates, so a
-        job with N completed plates counted ``quantity`` N times.
+        Locks in the one-job-one-contribution semantics: no matter how many
+        completed plates a job has, this part's job ``quantity`` is counted a
+        single time (guards against a plate join fanning the rows out).
         """
         job = PrintJob.objects.create(status="completed", created_by=self.user)
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
@@ -139,6 +140,17 @@ class PartModelTests(TestDataMixin, TestCase):
         PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         PrintJobPlate.objects.create(print_job=job, plate_number=2, status=PrintJobPlate.STATUS_WAITING)
         self.assertEqual(self.part.printed_quantity, 2)
+
+    def test_printed_quantity_no_n_plus_1_without_prefetch(self):
+        """Without a prefetch, printed_quantity is a single query (no per-entry N+1)."""
+        for _i in range(5):
+            job = PrintJob.objects.create(status="completed", created_by=self.user)
+            PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
+            PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
+        # Reload without any prefetch so the DB fallback path is exercised.
+        part = Part.objects.get(pk=self.part.pk)
+        with self.assertNumQueries(1):
+            self.assertEqual(part.printed_quantity, 5)
 
     def test_remaining_quantity(self):
         job = PrintJob.objects.create(status="completed", created_by=self.user)
@@ -355,11 +367,17 @@ class PrintQueueModelTests(TestDataMixin, TestCase):
         PrintJobPart.objects.create(print_job=self.job, part=self.part, quantity=1)
         self.plate = PrintJobPlate.objects.create(print_job=self.job, plate_number=1)
 
-    def test_plate_field_allows_blank(self):
-        """``plate`` is nullable, so it must also be blank for form/admin consistency."""
+    def test_plate_field_is_application_required(self):
+        """``plate`` stays required in forms/admin despite DB ``null=True``.
+
+        The application always needs a plate (every queue view dereferences
+        ``plate.plate_number``); ``null=True`` only exists for historical rows.
+        Adding ``blank=True`` would make ``PrintQueueForm.plate`` optional and
+        allow a plateless entry that crashes those views, so it must stay False.
+        """
         field = PrintQueue._meta.get_field("plate")
         self.assertTrue(field.null)
-        self.assertTrue(field.blank)
+        self.assertFalse(field.blank)
 
     def test_str(self):
         entry = PrintQueue.objects.create(plate=self.plate, printer=self.printer, priority=3, position=0)
