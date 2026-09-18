@@ -54,6 +54,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "layernexus.settings.SecurityHeadersMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -232,3 +233,46 @@ if not DEBUG:
     SECURE_HSTS_PRELOAD = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
+
+# Baseline Content-Security-Policy (defense in depth).
+#
+# This is a *conservative* policy: it still permits ``'unsafe-inline'`` and
+# ``'unsafe-eval'`` because the UI relies on inline event handlers, inline
+# ``<script type="importmap">`` / ES-module blocks, inline styles, Bootstrap
+# and three.js (loaded from jsDelivr).  A stricter nonce-based policy would
+# require reworking every template and is intentionally out of scope here.
+#
+# The concrete wins over "no CSP" are: locking active content to our own
+# origin plus jsDelivr, forbidding plugins/objects, pinning the document
+# base URI, forbidding framing (clickjacking), and restricting form targets.
+# Uploaded media is served under a much stricter per-response CSP
+# (see ``layernexus.urls.MEDIA_CSP``), which this middleware must not weaken.
+BASELINE_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "img-src 'self' data: blob:; "
+    "font-src 'self' https://cdn.jsdelivr.net; "
+    "connect-src 'self'; "
+    "worker-src 'self' blob:; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'; "
+    "object-src 'none'"
+)
+
+
+class SecurityHeadersMiddleware:
+    """Attach the baseline CSP to responses that do not already set one.
+
+    ``HttpResponseBase.setdefault`` is used so responses that intentionally
+    declare a stricter policy (e.g. the sandboxed media responses) keep it.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        response = self.get_response(request)
+        response.setdefault("Content-Security-Policy", BASELINE_CSP)
+        return response
