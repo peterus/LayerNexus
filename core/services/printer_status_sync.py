@@ -119,7 +119,16 @@ def _handle_status_update(entry: PrintQueue, params: list[Any]) -> bool:
     if entry.status_updated_at and (now - entry.status_updated_at) < PROGRESS_WRITE_INTERVAL:
         return False
 
-    entry.progress = float(new_progress)
+    try:
+        progress_value = float(new_progress)
+    except (TypeError, ValueError):
+        # A malformed progress value from the printer must not raise —
+        # the broad except in the WS layer would swallow it and silently
+        # stall all further progress. Skip this update instead.
+        logger.debug("Ignoring non-numeric virtual_sdcard.progress: %r", new_progress)
+        return False
+
+    entry.progress = progress_value
     entry.status_updated_at = now
     entry.save(update_fields=["progress", "status_updated_at"])
     return True

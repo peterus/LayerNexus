@@ -77,16 +77,14 @@ static/                # CSS, JavaScript, favicon, images
 from typing import Optional, Dict, List, Any
 from django.http import HttpRequest, HttpResponse
 
-def calculate_filament_usage(
-    parts: List[Part],
-    material_density: float = 1.25
-) -> Dict[str, float]:
+
+def calculate_filament_usage(parts: List[Part], material_density: float = 1.25) -> Dict[str, float]:
     """Calculate total filament usage for a list of parts.
-    
+
     Args:
         parts: List of Part instances to calculate
         material_density: Density in g/cm³ (default PLA)
-        
+
     Returns:
         Dictionary with 'grams' and 'meters' keys
     """
@@ -107,10 +105,10 @@ error_msg = "Invalid file format"
 logger.error(f"Failed to upload {filename}: {exc}")
 
 # ❌ Avoid
-name = 'Alice'
-message = 'Hello ' + name + ', welcome!'
+name = "Alice"
+message = "Hello " + name + ", welcome!"
 message = "Hello " + name + ", welcome!"  # Concatenation instead of f-string
-error_msg = 'Invalid file format'
+error_msg = "Invalid file format"
 ```
 
 ### Docstrings
@@ -149,21 +147,21 @@ def slice_part(part: Part, profile: OrcaSlicerProfile) -> Path:
 ```python
 class Part(models.Model):
     """A printable part within a 3D printing project."""
-    
+
     project = models.ForeignKey(
         Project,
         on_delete=models.CASCADE,
-        related_name='parts',
+        related_name="parts",
     )
     name = models.CharField(max_length=255)
     quantity = models.PositiveIntegerField(
         default=1,
         validators=[MinValueValidator(1)],
     )
-    
+
     class Meta:
-        ordering = ['name']
-        
+        ordering = ["name"]
+
     def __str__(self) -> str:
         return f"{self.name} ({self.project.name})"
 ```
@@ -179,27 +177,27 @@ class Part(models.Model):
 ```python
 class PartCreateView(LoginRequiredMixin, CreateView):
     """Create a new part for a project."""
-    
+
     model = Part
     form_class = PartForm
-    template_name = 'core/part_form.html'
-    
+    template_name = "core/part_form.html"
+
     def form_valid(self, form: PartForm) -> HttpResponse:
         """Save part and optionally trigger slicing."""
         part = form.save(commit=False)
-        part.project = get_object_or_404(Project, pk=self.kwargs['project_id'])
+        part.project = get_object_or_404(Project, pk=self.kwargs["project_id"])
         part.save()
-        
-        if form.cleaned_data.get('slice_on_create'):
+
+        if form.cleaned_data.get("slice_on_create"):
             try:
-                slice_part(part, form.cleaned_data['slicer_profile'])
+                slice_part(part, form.cleaned_data["slicer_profile"])
                 messages.success(self.request, f"Part '{part.name}' created and sliced.")
             except OrcaSlicerError as e:
                 messages.warning(self.request, f"Part created but slicing failed: {e}")
         else:
             messages.success(self.request, f"Part '{part.name}' created.")
-            
-        return redirect('core:part_detail', pk=part.pk)
+
+        return redirect("core:part_detail", pk=part.pk)
 ```
 
 ### Forms
@@ -220,23 +218,23 @@ class PartCreateView(LoginRequiredMixin, CreateView):
 ```python
 class MoonrakerClient:
     """Client for interacting with the Klipper/Moonraker API."""
-    
+
     def __init__(self, base_url: str, api_key: Optional[str] = None):
-        self.base_url = base_url.rstrip('/')
+        self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.session = requests.Session()
         self.logger = logging.getLogger(__name__)
-        
+
     def upload_gcode(self, file_path: Path, filename: str) -> Dict[str, Any]:
         """Upload G-code file to Moonraker.
-        
+
         Args:
             file_path: Local path to G-code file
             filename: Target filename on the printer
-            
+
         Returns:
             Response data from Moonraker API
-            
+
         Raises:
             MoonrakerError: If upload fails
         """
@@ -274,9 +272,10 @@ from django.test import TestCase
 from core.models import Part, Project
 from core.services.orcaslicer import OrcaSlicerClient
 
+
 class PartModelTest(TestCase):
     """Test Part model methods and properties."""
-    
+
     def setUp(self):
         self.project = Project.objects.create(name="Test Project")
         self.part = Part.objects.create(
@@ -285,20 +284,21 @@ class PartModelTest(TestCase):
             quantity=5,
             filament_used_grams=50.0,
         )
-        
+
     def test_total_filament_requirement(self):
         """Test that total filament calculates quantity * usage."""
         self.assertEqual(self.part.total_filament_grams, 250.0)
-        
-@patch('core.services.orcaslicer.requests.post')
+
+
+@patch("core.services.orcaslicer.requests.post")
 class OrcaSlicerClientTest(TestCase):
     """Test OrcaSlicer API integration."""
-    
+
     def test_slice_success(self, mock_post: MagicMock):
         """Test successful slicing operation."""
-        mock_post.return_value = MagicMock(status_code=200, json=lambda: {'success': True})
-        client = OrcaSlicerClient(base_url='http://orcaslicer:5000')
-        result = client.slice('test.stl', 'test.gcode')
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"success": True})
+        client = OrcaSlicerClient(base_url="http://orcaslicer:5000")
+        result = client.slice("test.stl", "test.gcode")
         self.assertTrue(result.success)
 ```
 
@@ -320,14 +320,14 @@ The first registered user becomes **Admin**. Subsequent self-registered users re
 
 ```python
 from core.mixins import (
-    AdminRequiredMixin,         # User management only
-    ProjectManageMixin,         # Create/edit/delete projects and parts
-    PrinterManageMixin,         # Create/edit/delete printer profiles & cost profiles
-    PrinterControlMixin,        # Upload G-code, start/cancel prints
-    OrcaProfileManageMixin,     # Import/delete OrcaSlicer profiles
-    FilamentMappingManageMixin, # Manage Spoolman filament mappings
-    QueueManageMixin,           # Add jobs to print queue
-    QueueDequeueMixin,          # Remove jobs from queue
+    AdminRequiredMixin,  # User management only
+    ProjectManageMixin,  # Create/edit/delete projects and parts
+    PrinterManageMixin,  # Create/edit/delete printer profiles & cost profiles
+    PrinterControlMixin,  # Upload G-code, start/cancel prints
+    OrcaProfileManageMixin,  # Import/delete OrcaSlicer profiles
+    FilamentMappingManageMixin,  # Manage Spoolman filament mappings
+    QueueManageMixin,  # Add jobs to print queue
+    QueueDequeueMixin,  # Remove jobs from queue
 )
 ```
 
@@ -371,6 +371,7 @@ except MoonrakerError as e:
 
 ```python
 import logging
+
 logger = logging.getLogger(__name__)
 
 # Use appropriate log levels

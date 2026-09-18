@@ -167,6 +167,38 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         self.assertTrue(changed)
         self.assertAlmostEqual(self.entry.progress, 0.55)
 
+    def test_status_update_non_numeric_progress_ignored(self):
+        """A non-numeric ``virtual_sdcard.progress`` must not raise; it is
+        skipped so the flawed value doesn't stall progress via the broad
+        except in the WS layer."""
+        self.entry.progress = 0.10
+        self.entry.status_updated_at = timezone.now() - PROGRESS_WRITE_INTERVAL - timedelta(seconds=1)
+        self.entry.save(update_fields=["progress", "status_updated_at"])
+
+        event = {
+            "method": "notify_status_update",
+            "params": [{"virtual_sdcard": {"progress": "not-a-number"}}],
+        }
+        changed = apply_status_event(self.entry, event)
+        self.entry.refresh_from_db()
+        self.assertFalse(changed)
+        self.assertAlmostEqual(self.entry.progress, 0.10)
+
+    def test_status_update_none_progress_string_ignored(self):
+        """A ``None``-ish garbage value (e.g. list) is skipped gracefully."""
+        self.entry.progress = 0.20
+        self.entry.status_updated_at = timezone.now() - PROGRESS_WRITE_INTERVAL - timedelta(seconds=1)
+        self.entry.save(update_fields=["progress", "status_updated_at"])
+
+        event = {
+            "method": "notify_status_update",
+            "params": [{"virtual_sdcard": {"progress": [1, 2, 3]}}],
+        }
+        changed = apply_status_event(self.entry, event)
+        self.entry.refresh_from_db()
+        self.assertFalse(changed)
+        self.assertAlmostEqual(self.entry.progress, 0.20)
+
     # ----- unknown events ---------------------------------------------------
 
     def test_unknown_method_ignored(self):

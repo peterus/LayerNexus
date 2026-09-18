@@ -1,6 +1,6 @@
 """Tests for the estimation worker queue."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
@@ -103,7 +103,14 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
         with worker_mod._orcaslicer_worker_lock:
             worker_mod._orcaslicer_worker_active = True
 
-        _orcaslicer_worker_loop()
+        # Mock the cross-process file lock so the test is hermetic and does
+        # not contend on the shared on-disk lock file (a source of flaky
+        # failures when tests run in parallel across processes).
+        with (
+            patch.object(worker_mod, "_acquire_file_lock", return_value=MagicMock()),
+            patch("core.services.slicing_worker.fcntl"),
+        ):
+            _orcaslicer_worker_loop()
 
         # Both parts should have been processed
         self.assertEqual(mock_estimate.call_count, 2)
@@ -123,7 +130,11 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
         with worker_mod._orcaslicer_worker_lock:
             worker_mod._orcaslicer_worker_active = True
 
-        _orcaslicer_worker_loop()
+        with (
+            patch.object(worker_mod, "_acquire_file_lock", return_value=MagicMock()),
+            patch("core.services.slicing_worker.fcntl"),
+        ):
+            _orcaslicer_worker_loop()
 
         mock_estimate.assert_not_called()
         # Worker should have set itself as inactive
@@ -170,7 +181,11 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
         with worker_mod._orcaslicer_worker_lock:
             worker_mod._orcaslicer_worker_active = True
 
-        _orcaslicer_worker_loop()
+        with (
+            patch.object(worker_mod, "_acquire_file_lock", return_value=MagicMock()),
+            patch("core.services.slicing_worker.fcntl"),
+        ):
+            _orcaslicer_worker_loop()
 
         # Slicing should have been processed first
         self.assertEqual(len(call_order), 2)
@@ -204,3 +219,83 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
         self.assertEqual(job.status, PrintJob.STATUS_PENDING)
         mock_start.assert_called_once()
         self.assertEqual(resp.status_code, 302)
+
+
+class SlicingWorkerLockTests(TestCase):
+    """Tests for the cross-process file-lock handoff of the OrcaSlicer worker.
+
+    The lock must be held *continuously* across the thread handoff so a
+    second gunicorn process cannot slip in and start a parallel worker.
+    """
+
+    def _set_active(self, value: bool) -> None:
+        import core.services.slicing_worker as worker_mod
+
+        with worker_mod._orcaslicer_worker_lock:
+            worker_mod._orcaslicer_worker_active = value
+
+    def tearDown(self):
+        self._set_active(False)
+        super().tearDown()
+
+    def test_continuation_thread_inherits_lock_without_releasing(self):
+        """When work remains at handoff, the file lock is passed to the new
+        thread and NOT released in between (no window for another process)."""
+        import core.services.slicing_worker as worker_mod
+        from core.services.slicing_worker import _orcaslicer_worker_loop
+
+        fake_fh = MagicMock()
+        self._set_active(True)
+
+        with (
+            patch.object(worker_mod, "_acquire_file_lock", return_value=fake_fh),
+            patch.object(worker_mod, "_has_pending_work", return_value=True),
+            patch("core.services.slicing_worker.fcntl") as mock_fcntl,
+            patch("threading.Thread") as mock_thread,
+        ):
+            _orcaslicer_worker_loop()
+
+        mock_thread.assert_called_once()
+        passed_kwargs = mock_thread.call_args.kwargs
+        self.assertEqual(passed_kwargs["kwargs"]["lock_fh"], fake_fh)
+        # Lock must NOT be released (no flock(UN), no close) during handoff.
+        mock_fcntl.flock.assert_not_called()
+        fake_fh.close.assert_not_called()
+
+    def test_lock_released_when_no_pending_work(self):
+        """With no work left, the lock is released and the worker deactivates."""
+        import core.services.slicing_worker as worker_mod
+        from core.services.slicing_worker import _orcaslicer_worker_loop
+
+        fake_fh = MagicMock()
+        self._set_active(True)
+
+        with (
+            patch.object(worker_mod, "_acquire_file_lock", return_value=fake_fh),
+            patch.object(worker_mod, "_has_pending_work", return_value=False),
+            patch("core.services.slicing_worker.fcntl") as mock_fcntl,
+            patch("threading.Thread") as mock_thread,
+        ):
+            _orcaslicer_worker_loop()
+
+        mock_thread.assert_not_called()
+        mock_fcntl.flock.assert_called_once()  # LOCK_UN
+        fake_fh.close.assert_called_once()
+        self.assertFalse(worker_mod._orcaslicer_worker_active)
+
+    def test_inherited_lock_is_not_reacquired(self):
+        """A continuation loop given a lock handle must not re-acquire it."""
+        import core.services.slicing_worker as worker_mod
+        from core.services.slicing_worker import _orcaslicer_worker_loop
+
+        fake_fh = MagicMock()
+        self._set_active(True)
+
+        with (
+            patch.object(worker_mod, "_acquire_file_lock") as mock_acquire,
+            patch.object(worker_mod, "_has_pending_work", return_value=False),
+            patch("core.services.slicing_worker.fcntl"),
+        ):
+            _orcaslicer_worker_loop(lock_fh=fake_fh)
+
+        mock_acquire.assert_not_called()

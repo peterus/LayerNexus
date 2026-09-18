@@ -1,9 +1,11 @@
 """Comprehensive tests for the OrcaSlicer API client."""
 
+import io
+import zipfile
 from unittest.mock import MagicMock, patch
 
 import requests
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from core.services.orcaslicer import (
     MultiPlateSliceResult,
@@ -355,3 +357,73 @@ class SliceMethodTests(TestCase):
         self.assertIsNone(result.filament_used_grams)
         self.assertIsNone(result.filament_used_mm)
         self.assertIsNone(result.print_time_seconds)
+
+
+class SliceBundleZipTests(TestCase):
+    """Tests for multi-plate ZIP response handling in slice_bundle(),
+    including zip-bomb protection."""
+
+    def setUp(self):
+        self.client = OrcaSlicerAPIClient("http://orcaslicer:3000")
+
+    @staticmethod
+    def _build_zip(entries: dict[str, bytes]) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for name, data in entries.items():
+                zf.writestr(name, data)
+        return buf.getvalue()
+
+    def _mock_zip_response(self, mock_post, zip_bytes: bytes) -> None:
+        mock_response = MagicMock()
+        mock_response.content = zip_bytes
+        mock_response.raise_for_status.return_value = None
+        mock_response.headers = {"Content-Type": "application/zip"}
+        mock_post.return_value = mock_response
+
+    @patch("requests.post")
+    def test_multi_plate_zip_extracted(self, mock_post):
+        zip_bytes = self._build_zip(
+            {
+                "plate_1.gcode": b"G28\n; filament used [g] = 5.0\n",
+                "plate_2.gcode": b"G28\n; filament used [g] = 7.0\n",
+            }
+        )
+        self._mock_zip_response(mock_post, zip_bytes)
+
+        result = self.client.slice_bundle(model_content=b"3mf", model_filename="b.3mf")
+
+        self.assertEqual(len(result.plates), 2)
+
+    @override_settings(ORCASLICER_MAX_ZIP_ENTRY_BYTES=16)
+    @patch("requests.post")
+    def test_zip_entry_over_per_entry_limit_raises(self, mock_post):
+        # A single G-code entry whose uncompressed size exceeds the
+        # per-entry limit must abort with OrcaSlicerError before read().
+        big = b"G1 X1 Y1\n" * 100  # ~900 bytes uncompressed
+        zip_bytes = self._build_zip({"plate_1.gcode": big})
+        self._mock_zip_response(mock_post, zip_bytes)
+
+        with self.assertRaises(OrcaSlicerError) as ctx:
+            self.client.slice_bundle(model_content=b"3mf", model_filename="b.3mf")
+
+        self.assertIn("zip bomb", str(ctx.exception).lower())
+
+    @override_settings(ORCASLICER_MAX_ZIP_TOTAL_BYTES=32)
+    @patch("requests.post")
+    def test_zip_total_over_budget_raises(self, mock_post):
+        # Each entry is under the per-entry limit, but together they
+        # exceed the total decompression budget.
+        entry = b"G1 X1\n" * 4  # 24 bytes each
+        zip_bytes = self._build_zip(
+            {
+                "plate_1.gcode": entry,
+                "plate_2.gcode": entry,
+            }
+        )
+        self._mock_zip_response(mock_post, zip_bytes)
+
+        with self.assertRaises(OrcaSlicerError) as ctx:
+            self.client.slice_bundle(model_content=b"3mf", model_filename="b.3mf")
+
+        self.assertIn("zip bomb", str(ctx.exception).lower())
