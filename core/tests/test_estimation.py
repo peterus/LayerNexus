@@ -412,6 +412,31 @@ class SlicingWorkerLockTests(TestCase):
         self.assertFalse(worker_mod._orcaslicer_worker_active)
         mock_close.assert_called()
 
+    def test_cleanup_pending_check_error_fully_releases(self):
+        """A DB error in the finally-block pending re-check must not escape:
+        it would otherwise leave the file lock held, the active flag set,
+        and the connection open — permanently wedging the worker. Treat it
+        as no-pending and fully clean up."""
+        import core.services.slicing_worker as worker_mod
+        from core.services.slicing_worker import _orcaslicer_worker_loop
+
+        fake_fh = MagicMock()
+        self._set_active(True)
+        with (
+            patch.object(worker_mod, "_acquire_file_lock", return_value=fake_fh),
+            patch.object(worker_mod, "_has_pending_work", side_effect=Exception("db down")),
+            patch("core.services.slicing_worker.fcntl") as mock_fcntl,
+            patch("django.db.connection.close") as mock_close,
+            patch("threading.Thread") as mock_thread,
+        ):
+            _orcaslicer_worker_loop()  # must not raise
+
+        self.assertFalse(worker_mod._orcaslicer_worker_active)
+        mock_fcntl.flock.assert_called()  # LOCK_UN
+        fake_fh.close.assert_called_once()
+        mock_close.assert_called()  # DB connection closed
+        mock_thread.assert_not_called()  # no handoff on error
+
     def test_handoff_failure_releases_lock_under_worker_lock(self):
         """If the continuation Thread.start() fails, the file lock must be
         released and the active flag cleared while holding

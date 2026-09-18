@@ -230,7 +230,17 @@ def _orcaslicer_worker_loop(lock_fh: IO[str] | None = None) -> None:
         # decision against _start_orcaslicer_worker() via the in-process lock
         # so the active-flag and file-lock state stay consistent.
         with _orcaslicer_worker_lock:
-            has_pending = _has_pending_work()
+            try:
+                has_pending = _has_pending_work()
+            except Exception:
+                # A DB error during the final re-check must not escape: that
+                # would leave the file lock held, _orcaslicer_worker_active
+                # set, and the connection open, permanently wedging the
+                # worker (no future enqueue could ever start one). Treat as
+                # no pending work and fall through to full cleanup; a later
+                # enqueue starts a fresh worker.
+                logger.exception("OrcaSlicer worker: pending-work re-check failed during cleanup")
+                has_pending = False
             if not has_pending:
                 # Release the cross-process file lock BEFORE clearing the
                 # active flag. If we cleared the flag while still holding the
