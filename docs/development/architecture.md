@@ -110,34 +110,26 @@ All write/delete views use mixins from `core/mixins.py`:
 class RoleRequiredMixin(LoginRequiredMixin, PermissionRequiredMixin):
     raise_exception = True  # 403 for authenticated users without permission
 
-
 class AdminRequiredMixin(RoleRequiredMixin):
     permission_required = "auth.change_user"
-
 
 class ProjectManageMixin(RoleRequiredMixin):
     permission_required = "core.can_manage_projects"
 
-
 class PrinterManageMixin(RoleRequiredMixin):
     permission_required = "core.can_manage_printers"
-
 
 class PrinterControlMixin(RoleRequiredMixin):
     permission_required = "core.can_control_printer"
 
-
 class OrcaProfileManageMixin(RoleRequiredMixin):
     permission_required = "core.can_manage_orca_profiles"
-
 
 class FilamentMappingManageMixin(RoleRequiredMixin):
     permission_required = "core.can_manage_filament_mappings"
 
-
 class QueueManageMixin(RoleRequiredMixin):
     permission_required = "core.can_manage_print_queue"
-
 
 class QueueDequeueMixin(RoleRequiredMixin):
     permission_required = "core.can_dequeue_job"
