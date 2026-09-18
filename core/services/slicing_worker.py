@@ -121,9 +121,12 @@ def _orcaslicer_worker_loop(lock_fh: IO[str] | None = None) -> None:
     actively waiting for sliced G-code.
 
     A file lock ensures only one worker runs across all gunicorn
-    processes.  If the lock cannot be acquired, the thread exits
-    immediately — the process that holds the lock is already
-    processing the queue.
+    processes.  If the lock cannot be acquired but work is pending, the
+    thread retries acquisition up to ``LOCK_ACQUIRE_RETRIES`` times with a
+    ``LOCK_ACQUIRE_RETRY_DELAY`` backoff (to cover the window where the
+    current holder is about to stop), then gives up — the process that
+    holds the lock is already processing the queue.  With no pending work
+    it gives up immediately.
 
     Args:
         lock_fh: An already-held file-lock handle, passed in by a
@@ -147,14 +150,29 @@ def _orcaslicer_worker_loop(lock_fh: IO[str] | None = None) -> None:
         # pending item. Retrying lets us take over once it releases instead
         # of exiting and stranding the item until the next enqueue.
         attempts = 0
-        while lock_fh is None and attempts < LOCK_ACQUIRE_RETRIES and _has_pending_work():
+        while lock_fh is None and attempts < LOCK_ACQUIRE_RETRIES:
+            # Guard the ORM check: a transient DB error must not propagate
+            # out of the worker thread, leave _orcaslicer_worker_active
+            # stuck True, or skip the connection cleanup below.
+            try:
+                pending = _has_pending_work()
+            except Exception:
+                logger.exception("OrcaSlicer worker: pending-work check failed during lock retry")
+                break
+            if not pending:
+                break
             attempts += 1
             time.sleep(LOCK_ACQUIRE_RETRY_DELAY)
             lock_fh = _acquire_file_lock()
         if lock_fh is None:
+            # This early return runs before the try/finally, so clear the
+            # active flag and close this thread's DB connection here — the
+            # retry loop's pending-work query opened one that would
+            # otherwise leak.
             logger.debug("OrcaSlicer worker: another process holds the lock, exiting")
             with _orcaslicer_worker_lock:
                 _orcaslicer_worker_active = False
+            connection.close()
             return
 
     try:

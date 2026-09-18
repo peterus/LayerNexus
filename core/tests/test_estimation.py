@@ -374,6 +374,44 @@ class SlicingWorkerLockTests(TestCase):
         self.assertEqual(mock_acq.call_count, 1)  # no retry when nothing pending
         mock_sleep.assert_not_called()
 
+    def test_lock_acquire_give_up_closes_connection(self):
+        """The lock-acquisition give-up path runs before the try/finally, so
+        it must close this thread's DB connection itself (the retry loop
+        opened one via _has_pending_work) to avoid leaking connections."""
+        import core.services.slicing_worker as worker_mod
+        from core.services.slicing_worker import _orcaslicer_worker_loop
+
+        self._set_active(True)
+        with (
+            patch.object(worker_mod, "_acquire_file_lock", return_value=None),
+            patch.object(worker_mod, "_has_pending_work", return_value=True),
+            patch("core.services.slicing_worker.time.sleep"),
+            patch("django.db.connection.close") as mock_close,
+        ):
+            _orcaslicer_worker_loop()
+
+        self.assertFalse(worker_mod._orcaslicer_worker_active)
+        mock_close.assert_called()
+
+    def test_pending_check_error_during_retry_is_handled(self):
+        """A DB error in the retry-loop pending check must not propagate,
+        must not leave the worker flag stuck True, and must close the
+        connection."""
+        import core.services.slicing_worker as worker_mod
+        from core.services.slicing_worker import _orcaslicer_worker_loop
+
+        self._set_active(True)
+        with (
+            patch.object(worker_mod, "_acquire_file_lock", return_value=None),
+            patch.object(worker_mod, "_has_pending_work", side_effect=Exception("db down")),
+            patch("core.services.slicing_worker.time.sleep"),
+            patch("django.db.connection.close") as mock_close,
+        ):
+            _orcaslicer_worker_loop()  # must not raise
+
+        self.assertFalse(worker_mod._orcaslicer_worker_active)
+        mock_close.assert_called()
+
     def test_handoff_failure_releases_lock_under_worker_lock(self):
         """If the continuation Thread.start() fails, the file lock must be
         released and the active flag cleared while holding
