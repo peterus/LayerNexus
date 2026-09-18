@@ -130,6 +130,14 @@ def _handle_status_update(entry: PrintQueue, params: list[Any]) -> bool:
         logger.debug("Ignoring non-numeric virtual_sdcard.progress: %r", new_progress)
         return False
 
+    # Enforce the documented 0.0-1.0 contract. The chained comparison also
+    # rejects NaN and ±inf (which float() happily produces), so a bogus
+    # value can't be persisted or advance status_updated_at (which would
+    # otherwise throttle later valid progress updates).
+    if not (0.0 <= progress_value <= 1.0):
+        logger.debug("Ignoring out-of-range virtual_sdcard.progress: %r", new_progress)
+        return False
+
     entry.progress = progress_value
     entry.status_updated_at = now
     entry.save(update_fields=["progress", "status_updated_at"])

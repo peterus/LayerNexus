@@ -215,6 +215,40 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         self.assertFalse(changed)
         self.assertAlmostEqual(self.entry.progress, 0.30)
 
+    def test_status_update_non_finite_progress_ignored(self):
+        """NaN / infinity convert via float() but violate the 0.0-1.0
+        contract; they must be skipped, not persisted (a written NaN would
+        also throttle later valid updates via status_updated_at)."""
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            self.entry.progress = 0.40
+            self.entry.status_updated_at = timezone.now() - PROGRESS_WRITE_INTERVAL - timedelta(seconds=1)
+            self.entry.save(update_fields=["progress", "status_updated_at"])
+
+            event = {
+                "method": "notify_status_update",
+                "params": [{"virtual_sdcard": {"progress": bad}}],
+            }
+            changed = apply_status_event(self.entry, event)
+            self.entry.refresh_from_db()
+            self.assertFalse(changed, f"{bad!r} should be ignored")
+            self.assertAlmostEqual(self.entry.progress, 0.40)
+
+    def test_status_update_out_of_range_progress_ignored(self):
+        """Progress outside [0.0, 1.0] is malformed and skipped."""
+        for bad in (-0.1, 1.5, 42.0):
+            self.entry.progress = 0.40
+            self.entry.status_updated_at = timezone.now() - PROGRESS_WRITE_INTERVAL - timedelta(seconds=1)
+            self.entry.save(update_fields=["progress", "status_updated_at"])
+
+            event = {
+                "method": "notify_status_update",
+                "params": [{"virtual_sdcard": {"progress": bad}}],
+            }
+            changed = apply_status_event(self.entry, event)
+            self.entry.refresh_from_db()
+            self.assertFalse(changed, f"{bad!r} should be ignored")
+            self.assertAlmostEqual(self.entry.progress, 0.40)
+
     # ----- unknown events ---------------------------------------------------
 
     def test_unknown_method_ignored(self):
