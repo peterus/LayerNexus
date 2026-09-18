@@ -107,47 +107,49 @@ Then open [http://127.0.0.1:8000](http://127.0.0.1:8000) in your browser.
 
 ## Project Structure
 
+The `core` app was refactored from flat modules into **domain packages** — expect
+`core/models/`, `core/views/`, `core/forms/`, `core/urls/` (each split by domain and
+re-exported in its `__init__.py`), not single `models.py` / `views.py` files.
+
 ```
 LayerNexus/
 ├── manage.py
 ├── requirements.txt
-├── pyproject.toml          # Ruff configuration
-├── Dockerfile
-├── docker-compose.yml
+├── pyproject.toml          # Ruff + coverage configuration
+├── Dockerfile              # multi-stage: base → release / debug
+├── docker-compose.yml      # web + worker + orcaslicer + spoolman
 ├── entrypoint.sh           # Docker entrypoint (migrations + collectstatic)
-├── gunicorn.ctl            # Gunicorn config
+├── .env.example            # sample environment configuration
+├── CLAUDE.md               # Contributor & AI-assistant guide (structure, commands, RBAC, gotchas)
 ├── .github/
-│   ├── workflows/ci.yml    # CI pipeline
-│   └── copilot-instructions.md
+│   └── workflows/          # ci.yml, docker-publish.yml, docs.yml, pr-cleanup.yml
 ├── layernexus/             # Django project settings
 │   ├── settings.py
 │   ├── urls.py
 │   ├── wsgi.py
 │   └── asgi.py
 ├── core/                   # Main application
-│   ├── models.py           # 17 models
-│   ├── views.py            # 73 class-based views
-│   ├── urls.py
-│   ├── forms.py
-│   ├── mixins.py           # Role-based access control mixins
+│   ├── models/             # domain packages: projects, parts, printers, printing,
+│   │                       #   queue, documents, hardware, orca_profiles, spoolman
+│   ├── views/              # class-based views, one module per domain
+│   ├── forms/              # ModelForms, one module per domain
+│   ├── urls/               # URL configs, one module per domain (app_name namespaced)
+│   ├── mixins.py           # Role-based access control mixins (mandatory on write views)
 │   ├── admin.py
 │   ├── context_processors.py
-│   ├── tests.py            # 319 tests
-│   ├── services/
-│   │   ├── moonraker.py    # Klipper/Moonraker API client
-│   │   ├── orcaslicer.py   # orca-slicer-api REST client
-│   │   └── spoolman.py     # Spoolman API client
+│   ├── management/commands/
+│   │   └── moonraker_worker.py   # background worker (printer polling / status sync)
+│   ├── services/           # external API clients — moonraker, moonraker_ws,
+│   │                       #   orcaslicer, spoolman, slicing, slicing_worker,
+│   │                       #   printer_backend, printer_status_sync, profile_import,
+│   │                       #   gcode_thumbnail, threemf, queue
 │   ├── templates/
 │   │   ├── base.html       # Base template with favicon, navbar, theme switcher
-│   │   ├── core/           # 46 app templates
-│   │   └── registration/   # Auth templates (login, register, profile)
-│   └── templatetags/
-│       └── core_tags.py    # Custom template tags
-├── static/
-│   ├── css/custom.css
-│   ├── favicon.svg         # SVG favicon (stacked layers design)
-│   ├── favicon-32.png      # 32×32 PNG favicon
-│   └── favicon-180.png     # Apple touch icon (180×180)
+│   │   ├── core/           # app templates
+│   │   └── registration/   # Auth templates (login, register, password change)
+│   ├── templatetags/       # custom template tags
+│   └── tests/              # one test_*.py per area (models, views, forms, services, …)
+├── static/                 # CSS, Three.js 3D viewer, favicons
 └── media/                  # User uploads (STL, G-code, documents, images)
 ```
 
@@ -157,13 +159,16 @@ LayerNexus is configured through environment variables or directly in `layernexu
 
 | Variable | Description | Default |
 |---|---|---|
-| `DJANGO_SECRET_KEY` | Secret key for cryptographic signing | Auto-generated in development |
+| `DJANGO_SECRET_KEY` | Secret key for cryptographic signing. **Required when `DEBUG=0`** (startup fails without it); an insecure dev key is used only when `DEBUG=1` | — |
+| `DEBUG` | Enable debug mode (`1` or `0`) | `0` |
 | `ALLOWED_HOSTS` | Comma-separated list of allowed hostnames | `localhost,127.0.0.1` |
-| `DEBUG` | Enable debug mode (`1` or `0`) | `1` |
+| `CSRF_TRUSTED_ORIGINS` | Comma-separated list of trusted origins for CSRF (e.g. `https://layernexus.example.com`) | `` |
 | `DATABASE_PATH` | Path to SQLite database file | `db.sqlite3` |
 | `ORCASLICER_API_URL` | URL of the orca-slicer-api service | `http://localhost:3000` |
 | `SPOOLMAN_URL` | URL of the Spoolman instance (required for filament management) | `` |
 | `ALLOW_REGISTRATION` | Allow new users to self-register (`true` or `false`) | `true` |
+| `LOG_LEVEL` | Log level for the worker process | `INFO` |
+| `WORKER_RELOAD_INTERVAL` | Printer-poll interval (seconds) for the moonraker worker | `10` |
 
 ## External Services Setup
 
@@ -216,8 +221,9 @@ The first user to register is automatically assigned the **Admin** role. Subsequ
 | Model | Description |
 |---|---|
 | **PrinterProfile** | Printer configuration with Moonraker URL and API key |
-| **PrinterCostProfile** | Cost parameters (electricity, depreciation, maintenance) per printer |
-| **OrcaSlicerProfile** | Slicer profile bundle (machine, filament, print preset config files) |
+| **CostProfile** | Cost parameters (electricity, depreciation, maintenance) per printer |
+| **OrcaMachineProfile / OrcaFilamentProfile / OrcaPrintPreset** | Imported OrcaSlicer profile bundle (machine, filament, print preset) |
+| **PrintTimeEstimate** | Historical print-time samples used to calibrate estimates |
 
 ### Project Attachments
 
@@ -233,11 +239,14 @@ The first user to register is automatically assigned the **Admin** role. Subsequ
 # Via Docker (recommended)
 docker compose exec web python manage.py test core
 
-# Local
+# Local (no pytest — use Django's test runner)
 python manage.py test core
+
+# Single module
+python manage.py test core.tests.test_views_parts
 ```
 
-The test suite includes 319 tests covering models, views, forms, services, permissions, and integration features.
+The test suite includes 550+ tests covering models, views, forms, services, permissions, and integration features. Coverage is gated at ≥ 55% in CI.
 
 ## CI/CD Pipeline
 
@@ -245,10 +254,11 @@ The GitHub Actions CI pipeline runs on every push to `main` and on pull requests
 
 | Job | Description |
 |---|---|
-| **Lint & Format** | Ruff linter and formatter checks |
-| **Tests** | Django system checks, migration checks, full test suite with coverage |
-| **Security** | pip-audit dependency scan, Django deployment checklist |
-| **Docker Build** | Image build and smoke test (container starts + responds on `/accounts/login/`) |
+| **Lint & Format** | Ruff linter and formatter checks (ruff pinned to `0.15.20`) |
+| **Tests** | Missing-migration check, Django system checks, full test suite with coverage (≥ 55%) |
+| **Security** | pip-audit dependency scan, Django deployment checklist (`check --deploy`) |
+| **Docker Build** | Image build and smoke test (container starts + responds on `/health/`) |
+| **PR Preview** | Builds and pushes a per-PR preview image to GHCR (pull requests only) |
 
 ## 🚀 Future Ideas
 
