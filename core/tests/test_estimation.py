@@ -315,6 +315,43 @@ class SlicingWorkerLockTests(TestCase):
         )
         self.assertFalse(worker_mod._orcaslicer_worker_active)
 
+    def test_handoff_failure_releases_lock_under_worker_lock(self):
+        """If the continuation Thread.start() fails, the file lock must be
+        released and the active flag cleared while holding
+        ``_orcaslicer_worker_lock`` (atomically), so a concurrent enqueue
+        can't see a freed lock with the flag still set and strand the item."""
+        import core.services.slicing_worker as worker_mod
+        from core.services.slicing_worker import _orcaslicer_worker_loop
+
+        fake_fh = MagicMock()
+        self._set_active(True)
+        observed = {}
+
+        def record_flock(fh, op):
+            # If the worker holds _orcaslicer_worker_lock at release time,
+            # this (same-thread, non-reentrant) acquire fails.
+            acquired = worker_mod._orcaslicer_worker_lock.acquire(blocking=False)
+            observed["held_by_worker"] = not acquired
+            if acquired:
+                worker_mod._orcaslicer_worker_lock.release()
+
+        with (
+            patch.object(worker_mod, "_acquire_file_lock", return_value=fake_fh),
+            patch.object(worker_mod, "_has_pending_work", return_value=True),
+            patch("core.services.slicing_worker.fcntl") as mock_fcntl,
+            patch("threading.Thread") as mock_thread,
+        ):
+            mock_thread.return_value.start.side_effect = RuntimeError("can't start thread")
+            mock_fcntl.flock.side_effect = record_flock
+            _orcaslicer_worker_loop()
+
+        self.assertTrue(
+            observed.get("held_by_worker"),
+            "file lock released outside _orcaslicer_worker_lock (race window)",
+        )
+        self.assertFalse(worker_mod._orcaslicer_worker_active)
+        fake_fh.close.assert_called_once()
+
     def test_inherited_lock_is_not_reacquired(self):
         """A continuation loop given a lock handle must not re-acquire it."""
         import core.services.slicing_worker as worker_mod

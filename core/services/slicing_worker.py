@@ -225,12 +225,16 @@ def _orcaslicer_worker_loop(lock_fh: IO[str] | None = None) -> None:
                 )
                 thread.start()
             except Exception:
-                # Handoff failed — release the lock so it is not leaked and
-                # reset state so work can be picked up again later.
+                # Handoff failed (e.g. OS thread exhaustion). Release the
+                # lock and clear the active flag atomically under
+                # _orcaslicer_worker_lock — same ordering as the no-work
+                # path — so a concurrent enqueue can't observe a freed file
+                # lock while the active flag is still set (which would make
+                # _start_orcaslicer_worker skip spawning and strand the item).
                 logger.exception("OrcaSlicer worker: failed to start continuation thread")
-                fcntl.flock(lock_fh, fcntl.LOCK_UN)
-                lock_fh.close()
                 with _orcaslicer_worker_lock:
+                    fcntl.flock(lock_fh, fcntl.LOCK_UN)
+                    lock_fh.close()
                     _orcaslicer_worker_active = False
             else:
                 logger.info("OrcaSlicer worker: restarted for newly queued work (lock retained)")
