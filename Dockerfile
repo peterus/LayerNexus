@@ -42,7 +42,7 @@ ENV DEBUG=0 \
 LABEL org.opencontainers.image.title="LayerNexus" \
       org.opencontainers.image.description="The control center for your 3D print workflow" \
       org.opencontainers.image.source="https://github.com/peterus/LayerNexus" \
-      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.licenses="GPL-3.0" \
       org.opencontainers.image.version="${APP_VERSION}"
 
 RUN DJANGO_SECRET_KEY=build-placeholder python manage.py collectstatic --noinput
