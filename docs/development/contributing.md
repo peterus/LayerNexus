@@ -165,7 +165,7 @@ name = "Alice"
 message = f"Hello {name}!"
 
 # ❌ Wrong
-name = "Alice"
+name = 'Alice'
 message = "Hello " + name + "!"
 ```
 
@@ -174,7 +174,8 @@ message = "Hello " + name + "!"
 **Required** on all function signatures and return types:
 
 ```python
-def calculate_cost(parts: list[Part], multiplier: int = 1) -> float: ...
+def calculate_cost(parts: list[Part], multiplier: int = 1) -> float:
+    ...
 ```
 
 ### Docstrings

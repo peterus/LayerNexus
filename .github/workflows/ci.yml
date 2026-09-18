@@ -22,7 +22,10 @@ jobs:
           python-version: "3.14"
 
       - name: Install ruff
-        run: pip install ruff
+        # Pinned: unpinned installs pulled ruff 0.16.x, which reformats Python
+        # code blocks embedded in Markdown and broke `ruff format --check` on the
+        # docs. Bump deliberately.
+        run: pip install ruff==0.15.20
 
       - name: Ruff check
         run: ruff check .
