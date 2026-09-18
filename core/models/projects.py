@@ -85,6 +85,30 @@ class Project(models.Model):
     def __str__(self) -> str:
         return self.name
 
+    def save(self, *args, **kwargs) -> None:
+        """Persist the project, refusing to store a cyclic ``parent``.
+
+        Django never calls :meth:`clean` implicitly, so the cycle check is run
+        here too — a ``project.parent = descendant; project.save()`` from a shell
+        or import raises :class:`ValidationError` instead of persisting a graph
+        that would later blow up the recursive aggregate properties.
+        """
+        self._assert_parent_acyclic()
+        super().save(*args, **kwargs)
+
+    def clean(self) -> None:
+        """Validate that the parent assignment does not create a cycle.
+
+        Runs on every ``full_clean()`` path — ``ProjectEditForm``, the admin,
+        etc. The same check is also enforced in :meth:`save` so a bare
+        shell/import ``save()`` cannot persist a cycle either. The visited-set
+        guards on the recursive traversals (:meth:`get_descendant_ids` and the
+        ``_collect_*`` aggregators) remain as a runtime safety net for any cycle
+        that somehow reaches the database (e.g. a raw SQL / bulk ``update``).
+        """
+        super().clean()
+        self._assert_parent_acyclic()
+
     def _assert_parent_acyclic(self) -> None:
         """Raise :class:`ValidationError` if ``parent`` puts this project in a cycle.
 
@@ -107,30 +131,6 @@ class Project(models.Model):
                 break
             visited.add(ancestor.pk)
             ancestor = ancestor.parent
-
-    def clean(self) -> None:
-        """Validate that the parent assignment does not create a cycle.
-
-        Runs on every ``full_clean()`` path — ``ProjectEditForm``, the admin,
-        etc. The same check is also enforced in :meth:`save` so a bare
-        shell/import ``save()`` cannot persist a cycle either. The visited-set
-        guards on the recursive traversals (:meth:`get_descendant_ids` and the
-        ``_collect_*`` aggregators) remain as a runtime safety net for any cycle
-        that somehow reaches the database (e.g. a raw SQL / bulk ``update``).
-        """
-        super().clean()
-        self._assert_parent_acyclic()
-
-    def save(self, *args, **kwargs) -> None:
-        """Persist the project, refusing to store a cyclic ``parent``.
-
-        Django never calls :meth:`clean` implicitly, so the cycle check is run
-        here too — a ``project.parent = descendant; project.save()`` from a shell
-        or import raises :class:`ValidationError` instead of persisting a graph
-        that would later blow up the recursive aggregate properties.
-        """
-        self._assert_parent_acyclic()
-        super().save(*args, **kwargs)
 
     @property
     def is_subproject(self) -> bool:
