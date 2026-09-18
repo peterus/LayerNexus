@@ -21,7 +21,11 @@ DEFAULT_TIMEOUT = 300  # seconds — slicing can be slow
 
 # Zip-bomb guards for multi-plate ZIP responses. ``zipfile.read``
 # decompresses a member fully into memory, so cap both the per-entry and
-# the cumulative uncompressed size. Overridable via Django settings.
+# the cumulative uncompressed size. These defaults may be overridden by
+# defining ``ORCASLICER_MAX_ZIP_ENTRY_BYTES`` / ``ORCASLICER_MAX_ZIP_TOTAL_BYTES``
+# in Django settings (Python config only — these are not read from the
+# environment/Docker; add an ``os.environ`` mapping in settings if
+# env-based tuning is needed).
 DEFAULT_MAX_ZIP_ENTRY_BYTES = 200 * 1024 * 1024  # 200 MB per member
 DEFAULT_MAX_ZIP_TOTAL_BYTES = 500 * 1024 * 1024  # 500 MB across the archive
 
@@ -769,7 +773,10 @@ class OrcaSlicerAPIClient:
         an entry fully into memory, so an archive advertising a huge
         uncompressed size could exhaust RAM. Both limits are overridable
         via Django settings (``ORCASLICER_MAX_ZIP_ENTRY_BYTES`` and
-        ``ORCASLICER_MAX_ZIP_TOTAL_BYTES``).
+        ``ORCASLICER_MAX_ZIP_TOTAL_BYTES``). This is a Python-settings-only
+        contract: the names are not wired to environment variables, so
+        deployments that tune via env/Docker must add the mapping in
+        ``layernexus/settings.py``.
         """
         from django.conf import settings
 

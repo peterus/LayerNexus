@@ -199,6 +199,22 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         self.assertFalse(changed)
         self.assertAlmostEqual(self.entry.progress, 0.20)
 
+    def test_status_update_overflow_progress_ignored(self):
+        """A JSON integer too large for float() (raising OverflowError) must
+        be skipped, not escape and get swallowed by the WS layer."""
+        self.entry.progress = 0.30
+        self.entry.status_updated_at = timezone.now() - PROGRESS_WRITE_INTERVAL - timedelta(seconds=1)
+        self.entry.save(update_fields=["progress", "status_updated_at"])
+
+        event = {
+            "method": "notify_status_update",
+            "params": [{"virtual_sdcard": {"progress": 10**400}}],
+        }
+        changed = apply_status_event(self.entry, event)
+        self.entry.refresh_from_db()
+        self.assertFalse(changed)
+        self.assertAlmostEqual(self.entry.progress, 0.30)
+
     # ----- unknown events ---------------------------------------------------
 
     def test_unknown_method_ignored(self):

@@ -121,10 +121,12 @@ def _handle_status_update(entry: PrintQueue, params: list[Any]) -> bool:
 
     try:
         progress_value = float(new_progress)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         # A malformed progress value from the printer must not raise —
         # the broad except in the WS layer would swallow it and silently
-        # stall all further progress. Skip this update instead.
+        # stall all further progress. This includes OverflowError, which
+        # float() raises for a valid-JSON integer too large to convert
+        # (e.g. 10**400). Skip this update instead.
         logger.debug("Ignoring non-numeric virtual_sdcard.progress: %r", new_progress)
         return False
 
