@@ -116,6 +116,17 @@ class Project(models.Model):
         in its own ancestry the assignment would create a cycle. A visited-set
         guard makes the walk terminate even if a corrupt cycle already exists in
         the database.
+
+        Limitation: this is an application-level check and therefore not fully
+        concurrency-safe — two simultaneous re-parent transactions (A→B and B→A)
+        can each pass the check on stale reads and commit a cycle. Fully
+        preventing that would need DB-level enforcement (serializable isolation /
+        row locks / a recursive-CTE constraint). The consequence is bounded, not
+        catastrophic: **every** parent-chain traversal in this model
+        (:meth:`get_ancestors`, :meth:`get_descendant_ids`,
+        :meth:`effective_default_print_preset`, the ``_collect_*`` aggregators)
+        carries a visited-set guard, so a raced cycle degrades to a logically
+        odd graph rather than an infinite loop / ``RecursionError`` at render.
         """
         if self.parent_id is None:
             return
@@ -145,8 +156,10 @@ class Project(models.Model):
             direct parent (empty list for top-level projects).
         """
         ancestors: list[Project] = []
+        visited: set[int] = set()
         current = self.parent
-        while current is not None:
+        while current is not None and current.pk not in visited:
+            visited.add(current.pk)
             ancestors.insert(0, current)
             current = current.parent
         return ancestors
@@ -165,8 +178,10 @@ class Project(models.Model):
         """
         if self.default_print_preset_id is not None:
             return self.default_print_preset
+        visited: set[int] = set()
         current = self.parent
-        while current is not None:
+        while current is not None and current.pk not in visited:
+            visited.add(current.pk)
             if current.default_print_preset_id is not None:
                 return current.default_print_preset
             current = current.parent
@@ -182,8 +197,10 @@ class Project(models.Model):
         """
         if self.default_print_preset_id is not None:
             return self.default_print_preset_id
+        visited: set[int] = set()
         current = self.parent
-        while current is not None:
+        while current is not None and current.pk not in visited:
+            visited.add(current.pk)
             if current.default_print_preset_id is not None:
                 return current.default_print_preset_id
             current = current.parent
