@@ -53,7 +53,7 @@ LayerNexus is a Django web application for managing large-scale 3D printing proj
 
 | Layer | Technology |
 |---|---|
-| **Backend** | Django 6.0+ (Python 3.10+) |
+| **Backend** | Django 6.0+ (Python 3.12+ — required by Django 6.0) |
 | **Frontend** | Bootstrap 5.3 with light/dark mode |
 | **Database** | SQLite (default) |
 | **3D Viewer** | Three.js (r160, ES modules) |
@@ -160,7 +160,7 @@ LayerNexus is configured through environment variables or directly in `layernexu
 | Variable | Description | Default |
 |---|---|---|
 | `DJANGO_SECRET_KEY` | Secret key for cryptographic signing. **Required when `DEBUG=0`** (startup fails without it); an insecure dev key is used only when `DEBUG=1` | — |
-| `DEBUG` | Enable debug mode (`1` or `0`) | `0` |
+| `DEBUG` | Enable debug mode (`1` or `0`). Application default is `0`; `docker compose` sets it to `1` for development | `0` |
 | `ALLOWED_HOSTS` | Comma-separated list of allowed hostnames | `localhost,127.0.0.1` |
 | `CSRF_TRUSTED_ORIGINS` | Comma-separated list of trusted origins for CSRF (e.g. `https://layernexus.example.com`) | `` |
 | `DATABASE_PATH` | Path to SQLite database file | `db.sqlite3` |
@@ -246,7 +246,7 @@ python manage.py test core
 python manage.py test core.tests.test_views_parts
 ```
 
-The test suite includes 550+ tests covering models, views, forms, services, permissions, and integration features. Coverage is gated at ≥ 55% in CI.
+The test suite includes 500+ tests covering models, views, forms, services, permissions, and integration features. Coverage is gated at ≥ 55% in CI.
 
 ## CI/CD Pipeline
 
@@ -258,7 +258,7 @@ The GitHub Actions CI pipeline runs on every push to `main` and on pull requests
 | **Tests** | Missing-migration check, Django system checks, full test suite with coverage (≥ 55%) |
 | **Security** | pip-audit dependency scan, Django deployment checklist (`check --deploy`) |
 | **Docker Build** | Image build and smoke test (container starts + responds on `/health/`) |
-| **PR Preview** | Builds and pushes a per-PR preview image to GHCR (pull requests only) |
+| **PR Preview** | Builds and pushes a per-PR preview image to GHCR (same-repo pull requests only; skipped for forks) |
 
 ## 🚀 Future Ideas
 

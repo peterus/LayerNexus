@@ -2,7 +2,8 @@
 
 Django 6.0 web app to manage large-scale 3D printing. Core workflow:
 **STL upload → OrcaSlicer slicing → G-code to Klipper/Moonraker → print-job & queue tracking.**
-Filament inventory via Spoolman. Python 3.10+ (CI: 3.14; local `.venv`: 3.13), SQLite.
+Filament inventory via Spoolman. Python 3.12+ (Django 6.0 requires ≥3.12; CI: 3.14,
+local `.venv`: 3.13), SQLite.
 App version in `VERSION`.
 
 This is the single source of truth for working in this repo (it replaces the former
@@ -32,9 +33,10 @@ docker compose logs worker --tail=50
 docker compose restart web        # after config changes
 ```
 
-Code is bind-mounted into the container and gunicorn runs with `--reload`, so code
-changes are live. Either the venv or Docker works for management commands; Docker is
-required to exercise the OrcaSlicer/Spoolman integrations end to end.
+The Compose services mount only the `media` and `data` volumes — source is baked into
+the image, so rebuild/recreate after code changes (`docker compose up -d --build`).
+Either the venv or Docker works for management commands; Docker is required to
+exercise the OrcaSlicer/Spoolman integrations end to end.
 
 ## Structure
 
@@ -71,12 +73,15 @@ static/                    # CSS, JS, Three.js 3D viewer, favicon
 ### Services (`core/services/`)
 
 `orcaslicer` (slicing API), `moonraker` + `moonraker_ws` (Klipper control, REST +
-WebSocket), `spoolman` (filament), `slicing` / `slicing_worker`, `printer_backend`,
-`printer_status_sync`, `profile_import`, `gcode_thumbnail`, `threemf`.
+WebSocket), `spoolman` (filament), `queue` (queue-start logic), `slicing` /
+`slicing_worker`, `printer_backend`, `printer_status_sync`, `profile_import`,
+`gcode_thumbnail`, `threemf`.
 
-Each integration is its own class with a custom exception (e.g. `MoonrakerError`),
-logs via `logging.getLogger(__name__)`, handles connection errors gracefully, and is
-tested with `unittest.mock` (never hit the real API in tests).
+The external API clients (`moonraker`, `orcaslicer`, `spoolman`, …) are each a class
+with a custom exception (e.g. `MoonrakerError`) and log via
+`logging.getLogger(__name__)`; some modules (`printer_status_sync`, `slicing_worker`)
+are function-based instead. All handle connection errors gracefully and are tested
+with `unittest.mock` (never hit the real API in tests).
 
 ## Runtime
 
@@ -125,7 +130,8 @@ raw `request.user.is_staff` check.
   `_collect_documents`) as the reference shape.
 - **File uploads:** define allowed extensions + max size as constants in the form,
   validate in `clean_<field>()`, use `upload_to='<subfolder>/'`, template needs
-  `enctype="multipart/form-data"`. `ProjectDocumentForm` (75 MB, 9 types) is the model.
+  `enctype="multipart/form-data"`. `ProjectDocumentForm` (75 MB, 9 types) is the
+  reference form (it wraps the `ProjectDocument` model).
 - **Adding a model:** define in `core/models/<domain>.py` → re-export in
   `models/__init__.py` → `makemigrations` → register in `admin.py` → form → views →
   urls → templates → tests.
