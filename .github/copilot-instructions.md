@@ -105,7 +105,10 @@ error_msg = "Invalid file format"
 logger.error(f"Failed to upload {filename}: {exc}")
 
 # ❌ Avoid
+name = "Alice"
+message = "Hello " + name + ", welcome!"
 message = "Hello " + name + ", welcome!"  # Concatenation instead of f-string
+error_msg = "Invalid file format"
 ```
 
 ### Docstrings

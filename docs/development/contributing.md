@@ -165,6 +165,7 @@ name = "Alice"
 message = f"Hello {name}!"
 
 # ❌ Wrong
+name = "Alice"
 message = "Hello " + name + "!"
 ```
 

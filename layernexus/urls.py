@@ -16,6 +16,7 @@ Including another URLconf
 """
 
 import re
+from pathlib import PurePosixPath
 
 from django.conf import settings
 from django.contrib import admin
@@ -24,11 +25,67 @@ from django.http import JsonResponse
 from django.urls import include, path, re_path
 from django.views.static import serve
 
+#: CSP applied to every potentially-active uploaded-media response.
+#: ``sandbox`` disables scripts, plugins, forms and same-origin privileges
+#: for the resource, so a malicious uploaded SVG/HTML cannot run JavaScript
+#: in our origin.
+MEDIA_CSP = "sandbox; default-src 'none'"
+
+#: CSP applied to inline raster images.  ``script-src 'none'`` neutralises
+#: any active content that slipped through extension-only upload validation
+#: (e.g. an SVG uploaded as ``evil.svg.png``) as belt-and-suspenders with
+#: ``nosniff``, while leaving image loading unrestricted so covers still
+#: render and open in a new tab.
+INLINE_IMAGE_CSP = "script-src 'none'"
+
+#: Raster image extensions that cannot execute scripts.  These are served
+#: inline (project cover images are ``ImageField`` uploads rendered via
+#: ``<img>`` and opened directly), so forcing ``attachment`` on them would
+#: be a UX regression with no security benefit.  Everything else — notably
+#: ``.svg`` (scriptable), PDFs and arbitrary uploads — is downloaded and
+#: sandboxed.  Pillow's ``ImageField`` validation rejects SVG, so covers are
+#: always raster.
+INLINE_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".tif", ".tiff"})
+
+
+def _harden_media_response(response, path):
+    """Neutralise stored-XSS vectors in user-uploaded media.
+
+    Uploaded files are attacker-controlled.  Serving an active type (e.g.
+    ``.svg``) inline in the application origin is a stored-XSS vector, and
+    ``SECURE_CONTENT_TYPE_NOSNIFF`` does not help for a correctly typed
+    ``image/svg+xml`` document.  Such responses are forced to ``attachment``
+    with a sandbox CSP so the browser never renders/executes them as active
+    content.  Non-scriptable raster images are left inline so cover images
+    keep rendering; ``nosniff`` still guards against MIME confusion.
+    """
+    response["X-Content-Type-Options"] = "nosniff"
+    if PurePosixPath(path).suffix.lower() in INLINE_IMAGE_EXTENSIONS:
+        # Served inline so cover images keep rendering.  ``nosniff`` forces the
+        # browser to honour the image content type, and ``script-src 'none'``
+        # blocks execution should a non-image sneak past extension-only upload
+        # validation.
+        response["Content-Security-Policy"] = INLINE_IMAGE_CSP
+        return response
+    # Fail safe: any type not on the raster allowlist (SVG, PDF, unknown
+    # suffixes) is downloaded and sandboxed.  The worst case for a raster
+    # cover uploaded with an uncommon suffix is that it downloads instead of
+    # rendering inline — never a security regression.
+    response["Content-Disposition"] = "attachment"
+    response["Content-Security-Policy"] = MEDIA_CSP
+    return response
+
+
+def serve_media(request, path, document_root=None):
+    """Serve a media file, hardening potentially-active content against XSS."""
+    response = serve(request, path, document_root=document_root)
+    return _harden_media_response(response, path)
+
 
 @login_required
 def authenticated_media(request, path, document_root=None):
-    """Serve media files only to authenticated users."""
-    return serve(request, path, document_root=document_root)
+    """Serve media files only to authenticated users, hardened against XSS."""
+    return serve_media(request, path, document_root=document_root)
 
 
 def health_check(request):
@@ -49,7 +106,7 @@ urlpatterns = [
 # In production, media is served only to authenticated users.
 # NOTE: For high-traffic or large-file scenarios, consider fronting
 # this with Nginx + X-Accel-Redirect for better performance.
-_media_view = serve if settings.DEBUG else authenticated_media
+_media_view = serve_media if settings.DEBUG else authenticated_media
 urlpatterns += [
     re_path(
         rf"^{re.escape(settings.MEDIA_URL.lstrip('/'))}(?P<path>.*)$",

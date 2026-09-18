@@ -5,7 +5,7 @@ import logging
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db.models import Max
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.utils import timezone
@@ -148,16 +148,42 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
 
 
 class PrintQueueDeleteView(QueueDequeueMixin, DeleteView):
-    """Remove a job from the queue."""
+    """Remove a job from the queue.
+
+    ``can_dequeue_job`` is held by both Operators and Designers, but only
+    users who can *control the printer* (Operators/Admins) may remove an
+    entry that is already ``printing`` or ``awaiting_review`` — deleting
+    such an entry would desync the database from the real printer.
+    Designers (who lack ``can_control_printer``) are therefore restricted
+    to ``waiting`` entries; any other entry is simply not found (404) for
+    them.
+    """
 
     model = PrintQueue
     template_name = "core/printqueue_confirm_delete.html"
     success_url = reverse_lazy("core:printqueue_list")
 
     def get_queryset(self):
-        return PrintQueue.objects.all()
+        queryset = PrintQueue.objects.all()
+        if not self.request.user.has_perm("core.can_control_printer"):
+            queryset = queryset.filter(status=PrintQueue.STATUS_WAITING)
+        return queryset
 
     def form_valid(self, form):
+        if not self.request.user.has_perm("core.can_control_printer"):
+            # Close the TOCTOU window: the queryset check above ran at SELECT
+            # time, but a printer worker could flip the row to printing /
+            # awaiting_review before we delete it.  Delete conditionally on the
+            # status so a live entry can never be removed by a Designer.
+            deleted, _ = PrintQueue.objects.filter(
+                pk=self.object.pk,
+                status=PrintQueue.STATUS_WAITING,
+            ).delete()
+            if not deleted:
+                raise Http404("Queue entry is no longer waiting.")
+            messages.success(self.request, "Removed from queue.")
+            return HttpResponseRedirect(self.get_success_url())
+
         messages.success(self.request, "Removed from queue.")
         return super().form_valid(form)
 

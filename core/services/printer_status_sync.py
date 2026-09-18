@@ -119,7 +119,33 @@ def _handle_status_update(entry: PrintQueue, params: list[Any]) -> bool:
     if entry.status_updated_at and (now - entry.status_updated_at) < PROGRESS_WRITE_INTERVAL:
         return False
 
-    entry.progress = float(new_progress)
+    # Reject booleans explicitly: bool is an int subclass, so float(True)
+    # is 1.0 and would pass the range guard below (True == 1). A JSON
+    # boolean is malformed progress data, not a real fraction.
+    if isinstance(new_progress, bool):
+        logger.debug("Ignoring boolean virtual_sdcard.progress: %r", new_progress)
+        return False
+
+    try:
+        progress_value = float(new_progress)
+    except (TypeError, ValueError, OverflowError):
+        # A malformed progress value from the printer must not raise —
+        # the broad except in the WS layer would swallow it and silently
+        # stall all further progress. This includes OverflowError, which
+        # float() raises for a valid-JSON integer too large to convert
+        # (e.g. 10**400). Skip this update instead.
+        logger.debug("Ignoring non-numeric virtual_sdcard.progress: %r", new_progress)
+        return False
+
+    # Enforce the documented 0.0-1.0 contract. The chained comparison also
+    # rejects NaN and ±inf (which float() happily produces), so a bogus
+    # value can't be persisted or advance status_updated_at (which would
+    # otherwise throttle later valid progress updates).
+    if not (0.0 <= progress_value <= 1.0):
+        logger.debug("Ignoring out-of-range virtual_sdcard.progress: %r", new_progress)
+        return False
+
+    entry.progress = progress_value
     entry.status_updated_at = now
     entry.save(update_fields=["progress", "status_updated_at"])
     return True
