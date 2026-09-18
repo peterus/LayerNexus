@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import CheckConstraint, Q
 
@@ -172,23 +173,31 @@ class CostProfile(models.Model):
         max_digits=8,
         decimal_places=4,
         default=0.30,
+        validators=[MinValueValidator(0)],
         help_text="Electricity cost per kWh in your currency",
     )
-    printer_power_watts = models.IntegerField(default=200, help_text="Average power consumption in watts")
+    printer_power_watts = models.IntegerField(
+        default=200,
+        validators=[MinValueValidator(0)],
+        help_text="Average power consumption in watts",
+    )
     printer_purchase_cost = models.DecimalField(
         max_digits=10,
         decimal_places=2,
         default=0,
+        validators=[MinValueValidator(0)],
         help_text="Purchase price for depreciation calculation",
     )
     printer_lifespan_hours = models.IntegerField(
         default=5000,
+        validators=[MinValueValidator(1)],
         help_text="Expected lifespan in print-hours",
     )
     maintenance_cost_per_hour = models.DecimalField(
         max_digits=8,
         decimal_places=4,
         default=0.0,
+        validators=[MinValueValidator(0)],
         help_text="Maintenance cost per print-hour",
     )
 
@@ -200,6 +209,22 @@ class CostProfile(models.Model):
             CheckConstraint(
                 condition=Q(printer_lifespan_hours__gt=0),
                 name="costprofile_lifespan_hours_gt_0",
+            ),
+            CheckConstraint(
+                condition=Q(printer_power_watts__gte=0),
+                name="costprofile_power_watts_gte_0",
+            ),
+            CheckConstraint(
+                condition=Q(printer_purchase_cost__gte=0),
+                name="costprofile_purchase_cost_gte_0",
+            ),
+            CheckConstraint(
+                condition=Q(electricity_cost_per_kwh__gte=0),
+                name="costprofile_electricity_cost_gte_0",
+            ),
+            CheckConstraint(
+                condition=Q(maintenance_cost_per_hour__gte=0),
+                name="costprofile_maintenance_cost_gte_0",
             ),
         ]
 

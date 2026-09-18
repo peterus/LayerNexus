@@ -39,6 +39,154 @@ class ProjectGetDescendantIdsTests(TestCase):
         self.assertEqual(root.get_descendant_ids(), {child.pk, grandchild.pk})
 
 
+class ProjectAggregatePrefetchTests(TestCase):
+    """N+1 regression: aggregate properties must not scale queries with node count."""
+
+    def _make_project_tree(self, name: str) -> Project:
+        """Create a top-level project with one sub-project, parts and a completed job."""
+        root = Project.objects.create(name=f"{name}-root")
+        sub = Project.objects.create(name=f"{name}-sub", parent=root, quantity=2)
+        for proj in (root, sub):
+            part = Part.objects.create(project=proj, name=f"{proj.name}-p", quantity=2, filament_used_grams=5)
+            job = PrintJob.objects.create(status="completed")
+            PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
+            PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
+            PrintJobPlate.objects.create(print_job=job, plate_number=2, status=PrintJobPlate.STATUS_COMPLETED)
+        return root
+
+    def _touch_aggregates(self, projects: list[Project]) -> None:
+        for p in projects:
+            _ = p.total_parts_count
+            _ = p.progress_percent
+            _ = p.aggregated_status
+            _ = p.total_filament_grams
+
+    def test_aggregates_use_no_extra_queries_when_prefetched(self):
+        """With the view prefetch applied, evaluating aggregates issues 0 extra queries."""
+        for i in range(4):
+            self._make_project_tree(f"n{i}")
+
+        qs = Project.objects.filter(parent__isnull=True).prefetch_related(*Project.aggregate_prefetch_lookups())
+        projects = list(qs)  # prefetch happens here
+        self.assertEqual(len(projects), 4)
+        with self.assertNumQueries(0):
+            self._touch_aggregates(projects)
+
+    def test_query_count_independent_of_node_count(self):
+        """Query count for the prefetched list is the same for 2 vs 6 top-level trees."""
+
+        def count_for(prefix: str, n: int) -> int:
+            for i in range(n):
+                self._make_project_tree(f"{prefix}{i}")
+            qs = Project.objects.filter(parent__isnull=True, name__startswith=f"{prefix}").prefetch_related(
+                *Project.aggregate_prefetch_lookups()
+            )
+            from django.db import connection, reset_queries
+            from django.test.utils import override_settings
+
+            with override_settings(DEBUG=True):
+                reset_queries()
+                projects = list(qs)
+                self.assertEqual(len(projects), n)
+                self._touch_aggregates(projects)
+                return len(connection.queries)
+
+        # Distinct name prefixes keep the two measured sets isolated without
+        # having to delete PROTECT-ed parent rows between runs.
+        self.assertEqual(count_for("small", 2), count_for("large", 6))
+
+
+class ProjectCycleGuardTests(TestCase):
+    """Tests that Project.clean() rejects cyclic parent relationships."""
+
+    def test_parent_self_rejected(self):
+        """A project cannot be its own parent."""
+        from django.core.exceptions import ValidationError
+
+        project = Project.objects.create(name="Selfie")
+        project.parent = project
+        with self.assertRaises(ValidationError):
+            project.full_clean()
+
+    def test_parent_descendant_rejected(self):
+        """A project cannot be re-parented under one of its descendants."""
+        from django.core.exceptions import ValidationError
+
+        root = Project.objects.create(name="Root")
+        child = Project.objects.create(name="Child", parent=root)
+        grandchild = Project.objects.create(name="Grandchild", parent=child)
+        # Try to make root a sub-project of its own grandchild → cycle.
+        root.parent = grandchild
+        with self.assertRaises(ValidationError):
+            root.full_clean()
+
+    def test_valid_parent_accepted(self):
+        """A normal, acyclic parent assignment passes validation."""
+        root = Project.objects.create(name="Root")
+        other = Project.objects.create(name="Other")
+        other.parent = root
+        # Should not raise (exclude unrelated field validation noise).
+        other.full_clean(exclude=["image"])
+
+    def test_new_project_without_pk_accepted(self):
+        """A brand-new unsaved project with a parent validates fine."""
+        root = Project.objects.create(name="Root")
+        fresh = Project(name="Fresh", parent=root)
+        fresh.full_clean(exclude=["image"])
+
+    def test_descendant_property_guarded_against_corrupt_cycle(self):
+        """Even if a cycle is forced into the DB, recursion must not hang.
+
+        ``get_descendant_ids`` uses a visited-set guard so a corrupted cycle
+        (introduced outside validation) terminates instead of recursing forever.
+        """
+        a = Project.objects.create(name="A")
+        b = Project.objects.create(name="B", parent=a)
+        # Force a cycle bypassing validation: a.parent = b
+        Project.objects.filter(pk=a.pk).update(parent=b)
+        a.refresh_from_db()
+        # Must terminate and include both nodes rather than RecursionError.
+        ids = a.get_descendant_ids()
+        self.assertEqual(ids, {a.pk, b.pk})
+
+
+class ProjectEditFormCycleTests(TestCase):
+    """The edit form must reject cyclic re-parenting (defence beyond the queryset)."""
+
+    def test_form_rejects_descendant_parent(self):
+        from core.forms import ProjectEditForm
+
+        root = Project.objects.create(name="Root")
+        child = Project.objects.create(name="Child", parent=root)
+        form = ProjectEditForm(
+            data={
+                "name": "Root",
+                "description": "",
+                "parent": child.pk,
+                "quantity": 1,
+            },
+            instance=root,
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("parent", form.errors)
+
+    def test_form_rejects_self_parent(self):
+        from core.forms import ProjectEditForm
+
+        root = Project.objects.create(name="Root")
+        form = ProjectEditForm(
+            data={
+                "name": "Root",
+                "description": "",
+                "parent": root.pk,
+                "quantity": 1,
+            },
+            instance=root,
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("parent", form.errors)
+
+
 class ProjectAggregatedStatusTests(TestDataMixin, TestCase):
     """Tests for the Project.aggregated_status property."""
 

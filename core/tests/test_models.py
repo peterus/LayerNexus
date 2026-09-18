@@ -119,6 +119,27 @@ class PartModelTests(TestDataMixin, TestCase):
         PrintJobPlate.objects.create(print_job=job2, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         self.assertEqual(self.part.printed_quantity, 2)
 
+    def test_printed_quantity_multiple_completed_plates_counts_once(self):
+        """A job with several completed plates must count its quantity only once.
+
+        Regression test: the aggregate previously joined through plates, so a
+        job with N completed plates counted ``quantity`` N times.
+        """
+        job = PrintJob.objects.create(status="completed", created_by=self.user)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
+        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
+        PrintJobPlate.objects.create(print_job=job, plate_number=2, status=PrintJobPlate.STATUS_COMPLETED)
+        PrintJobPlate.objects.create(print_job=job, plate_number=3, status=PrintJobPlate.STATUS_COMPLETED)
+        self.assertEqual(self.part.printed_quantity, 2)
+
+    def test_printed_quantity_counts_job_with_any_completed_plate(self):
+        """Semantics: a job counts as printed once at least one plate is completed."""
+        job = PrintJob.objects.create(status="completed", created_by=self.user)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
+        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
+        PrintJobPlate.objects.create(print_job=job, plate_number=2, status=PrintJobPlate.STATUS_WAITING)
+        self.assertEqual(self.part.printed_quantity, 2)
+
     def test_remaining_quantity(self):
         job = PrintJob.objects.create(status="completed", created_by=self.user)
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
@@ -282,6 +303,42 @@ class CostProfileModelTests(TestDataMixin, TestCase):
         with self.assertRaises(IntegrityError):
             self.cost.save()
 
+    def test_negative_power_watts_rejected_by_constraint(self):
+        from django.db import IntegrityError, transaction
+
+        self.cost.printer_power_watts = -5
+        with transaction.atomic(), self.assertRaises(IntegrityError):
+            self.cost.save()
+
+    def test_negative_purchase_cost_rejected_by_constraint(self):
+        from django.db import IntegrityError, transaction
+
+        self.cost.printer_purchase_cost = -1
+        with transaction.atomic(), self.assertRaises(IntegrityError):
+            self.cost.save()
+
+    def test_negative_electricity_cost_rejected_by_constraint(self):
+        from django.db import IntegrityError, transaction
+
+        self.cost.electricity_cost_per_kwh = -0.01
+        with transaction.atomic(), self.assertRaises(IntegrityError):
+            self.cost.save()
+
+    def test_negative_maintenance_cost_rejected_by_constraint(self):
+        from django.db import IntegrityError, transaction
+
+        self.cost.maintenance_cost_per_hour = -0.5
+        with transaction.atomic(), self.assertRaises(IntegrityError):
+            self.cost.save()
+
+    def test_negative_value_rejected_by_validator(self):
+        """MinValueValidator(0) surfaces negatives as a form/full_clean error."""
+        from django.core.exceptions import ValidationError
+
+        self.cost.printer_power_watts = -5
+        with self.assertRaises(ValidationError):
+            self.cost.full_clean()
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class PrintQueueModelTests(TestDataMixin, TestCase):
@@ -297,6 +354,12 @@ class PrintQueueModelTests(TestDataMixin, TestCase):
         )
         PrintJobPart.objects.create(print_job=self.job, part=self.part, quantity=1)
         self.plate = PrintJobPlate.objects.create(print_job=self.job, plate_number=1)
+
+    def test_plate_field_allows_blank(self):
+        """``plate`` is nullable, so it must also be blank for form/admin consistency."""
+        field = PrintQueue._meta.get_field("plate")
+        self.assertTrue(field.null)
+        self.assertTrue(field.blank)
 
     def test_str(self):
         entry = PrintQueue.objects.create(plate=self.plate, printer=self.printer, priority=3, position=0)

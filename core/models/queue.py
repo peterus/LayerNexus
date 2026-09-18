@@ -44,6 +44,7 @@ class PrintQueue(models.Model):
         on_delete=models.CASCADE,
         related_name="queue_entries",
         null=True,
+        blank=True,
         help_text="The specific plate (G-code) to print",
     )
     printer = models.ForeignKey("core.PrinterProfile", on_delete=models.CASCADE, related_name="queue")

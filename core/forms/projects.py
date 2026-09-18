@@ -49,9 +49,22 @@ class ProjectEditForm(forms.ModelForm):
         }
 
     def clean(self) -> dict:
-        """Ensure quantity is 1 when no parent is set."""
+        """Normalise quantity and reject cyclic re-parenting.
+
+        A project may not be re-parented under itself or any of its
+        descendants — doing so would create a cycle that makes the recursive
+        aggregate properties recurse endlessly. This mirrors the model-level
+        :meth:`Project.clean` guard so the error surfaces as a field error on
+        the form even though ``ModelForm`` does not run the cycle check for the
+        ``parent`` field automatically.
+        """
         cleaned_data = super().clean()
         parent = cleaned_data.get("parent")
         if not parent:
             cleaned_data["quantity"] = 1
+        elif self.instance.pk and (parent.pk == self.instance.pk or parent.pk in self.instance.get_descendant_ids()):
+            self.add_error(
+                "parent",
+                "A project cannot be a sub-project of itself or one of its descendants.",
+            )
         return cleaned_data

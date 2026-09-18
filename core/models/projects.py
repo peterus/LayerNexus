@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import CheckConstraint, Q
@@ -84,6 +85,30 @@ class Project(models.Model):
     def __str__(self) -> str:
         return self.name
 
+    def clean(self) -> None:
+        """Validate that the parent assignment does not create a cycle.
+
+        Walks the ``parent`` chain upward; if this project is encountered
+        anywhere in its own ancestry a :class:`ValidationError` is raised. This
+        is the single source of truth against circular sub-project graphs and
+        protects every write path (admin, shell, imports, forms) — not just the
+        edit view's filtered queryset. A visited-set guard makes the walk
+        terminate even if a corrupt cycle already exists in the database.
+        """
+        super().clean()
+        if self.parent_id is None:
+            return
+
+        visited: set[int] = set()
+        ancestor = self.parent
+        while ancestor is not None:
+            if self.pk is not None and ancestor.pk == self.pk:
+                raise ValidationError({"parent": "A project cannot be a parent of itself or one of its descendants."})
+            if ancestor.pk in visited:
+                break
+            visited.add(ancestor.pk)
+            ancestor = ancestor.parent
+
     @property
     def is_subproject(self) -> bool:
         """Return True if this project is a sub-project of another project."""
@@ -141,18 +166,62 @@ class Project(models.Model):
             current = current.parent
         return None
 
-    def get_descendant_ids(self) -> set[int]:
+    #: Relation that carries everything ``aggregated_status`` / ``progress_percent``
+    #: need for one project node (parts, their completed-plate job info).
+    _AGGREGATE_PART_LEAF = "parts__job_entries__print_job__plates"
+
+    @classmethod
+    def aggregate_prefetch_lookups(cls, depth: int = 3) -> list[str]:
+        """Prefetch lookups that make the recursive aggregate properties query-flat.
+
+        Returns the ``prefetch_related`` arguments a list/detail view should use
+        so that ``total_parts_count``, ``progress_percent``, ``aggregated_status``
+        and ``total_filament_grams`` traverse the sub-project tree entirely from
+        cache instead of issuing a query per node/part (the N+1 that made project
+        lists with status badges slow).
+
+        The self-referential ``subprojects`` relation cannot be prefetched to
+        unbounded depth, so the tree is covered up to ``depth`` levels — deep
+        enough for realistic project nesting; levels below that degrade
+        gracefully to lazy queries (never worse than before).
+
+        Args:
+            depth: Number of sub-project levels to cover (root counts as 0).
+
+        Returns:
+            List of ``prefetch_related`` lookup strings.
+        """
+        lookups: list[str] = []
+        prefix = ""
+        for _ in range(depth + 1):
+            lookups.append(f"{prefix}{cls._AGGREGATE_PART_LEAF}")
+            lookups.append(f"{prefix}subprojects".rstrip("_"))
+            prefix += "subprojects__"
+        return lookups
+
+    def get_descendant_ids(self, _visited: set[int] | None = None) -> set[int]:
         """Return set of IDs for all descendant projects (recursive).
 
         Used to prevent circular parent references when editing a project.
 
+        Args:
+            _visited: Internal accumulator of already-seen project PKs. It acts
+                as a safety net so a corrupt cycle already persisted in the
+                database (e.g. inserted outside model validation) terminates the
+                recursion instead of raising ``RecursionError``.
+
         Returns:
             Set of project PKs that are descendants of this project.
         """
+        if _visited is None:
+            _visited = set()
         ids: set[int] = set()
         for sub in self.subprojects.all():
+            if sub.pk in _visited:
+                continue
+            _visited.add(sub.pk)
             ids.add(sub.pk)
-            ids |= sub.get_descendant_ids()
+            ids |= sub.get_descendant_ids(_visited)
         return ids
 
     def _collect_parts_with_multiplier(self, multiplier: int = 1) -> list[tuple[Part, int]]:
