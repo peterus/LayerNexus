@@ -19,6 +19,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 300  # seconds — slicing can be slow
 
+# Zip-bomb guards for multi-plate ZIP responses. ``zipfile.read``
+# decompresses a member fully into memory, so cap both the per-entry and
+# the cumulative uncompressed size. These defaults may be overridden by
+# defining ``ORCASLICER_MAX_ZIP_ENTRY_BYTES`` / ``ORCASLICER_MAX_ZIP_TOTAL_BYTES``
+# in Django settings (Python config only — these are not read from the
+# environment/Docker; add an ``os.environ`` mapping in settings if
+# env-based tuning is needed).
+DEFAULT_MAX_ZIP_ENTRY_BYTES = 200 * 1024 * 1024  # 200 MB per member
+DEFAULT_MAX_ZIP_TOTAL_BYTES = 500 * 1024 * 1024  # 500 MB across the archive
+
 
 @dataclass
 class SliceResult:
@@ -620,6 +630,25 @@ class OrcaSlicerAPIClient:
 
         if "application/zip" in content_type or self._is_zip(resp.content):
             # Multi-plate: extract G-code files and thumbnails from ZIP
+            per_entry_limit, total_limit = self._zip_extract_limits()
+            budget = {"used": 0}
+
+            def _guarded_read(zf: zipfile.ZipFile, name: str) -> bytes:
+                """Read a ZIP member only if it stays within the configured
+                uncompressed-size limits (zip-bomb protection)."""
+                info = zf.getinfo(name)
+                if info.file_size > per_entry_limit:
+                    raise OrcaSlicerError(
+                        f"ZIP entry {name!r} uncompressed size {info.file_size} "
+                        f"exceeds per-entry limit {per_entry_limit} (possible zip bomb)"
+                    )
+                budget["used"] += info.file_size
+                if budget["used"] > total_limit:
+                    raise OrcaSlicerError(
+                        f"ZIP total uncompressed size exceeds budget {total_limit} (possible zip bomb)"
+                    )
+                return zf.read(name)
+
             try:
                 with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
                     all_names = zf.namelist()
@@ -631,7 +660,7 @@ class OrcaSlicerAPIClient:
                     png_files = sorted([n for n in all_names if n.lower().endswith(".png")])
 
                     for idx, gcode_name in enumerate(gcode_files):
-                        gcode_bytes = zf.read(gcode_name)
+                        gcode_bytes = _guarded_read(zf, gcode_name)
                         plate = PlateResult(
                             plate_number=idx + 1,
                             gcode_content=gcode_bytes,
@@ -642,7 +671,7 @@ class OrcaSlicerAPIClient:
                         for png_name in png_files:
                             png_stem = Path(png_name).stem.lower()
                             if png_stem == plate_stem or png_stem.startswith(plate_stem):
-                                plate.thumbnail_png = zf.read(png_name)
+                                plate.thumbnail_png = _guarded_read(zf, png_name)
                                 logger.debug(
                                     "Extracted ZIP thumbnail %s for plate %d",
                                     png_name,
@@ -734,3 +763,23 @@ class OrcaSlicerAPIClient:
             True if data appears to be a ZIP file.
         """
         return data[:4] == b"PK\x03\x04"
+
+    @staticmethod
+    def _zip_extract_limits() -> tuple[int, int]:
+        """Return ``(per_entry_limit, total_limit)`` in bytes for ZIP
+        extraction.
+
+        Guards against zip-bomb responses: ``zipfile.read`` decompresses
+        an entry fully into memory, so an archive advertising a huge
+        uncompressed size could exhaust RAM. Both limits are overridable
+        via Django settings (``ORCASLICER_MAX_ZIP_ENTRY_BYTES`` and
+        ``ORCASLICER_MAX_ZIP_TOTAL_BYTES``). This is a Python-settings-only
+        contract: the names are not wired to environment variables, so
+        deployments that tune via env/Docker must add the mapping in
+        ``layernexus/settings.py``.
+        """
+        from django.conf import settings
+
+        per_entry = getattr(settings, "ORCASLICER_MAX_ZIP_ENTRY_BYTES", DEFAULT_MAX_ZIP_ENTRY_BYTES)
+        total = getattr(settings, "ORCASLICER_MAX_ZIP_TOTAL_BYTES", DEFAULT_MAX_ZIP_TOTAL_BYTES)
+        return per_entry, total

@@ -167,6 +167,106 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         self.assertTrue(changed)
         self.assertAlmostEqual(self.entry.progress, 0.55)
 
+    def test_status_update_non_numeric_progress_ignored(self):
+        """A non-numeric ``virtual_sdcard.progress`` must not raise; it is
+        skipped so the flawed value doesn't stall progress via the broad
+        except in the WS layer."""
+        self.entry.progress = 0.10
+        self.entry.status_updated_at = timezone.now() - PROGRESS_WRITE_INTERVAL - timedelta(seconds=1)
+        self.entry.save(update_fields=["progress", "status_updated_at"])
+
+        event = {
+            "method": "notify_status_update",
+            "params": [{"virtual_sdcard": {"progress": "not-a-number"}}],
+        }
+        changed = apply_status_event(self.entry, event)
+        self.entry.refresh_from_db()
+        self.assertFalse(changed)
+        self.assertAlmostEqual(self.entry.progress, 0.10)
+
+    def test_status_update_none_progress_string_ignored(self):
+        """A ``None``-ish garbage value (e.g. list) is skipped gracefully."""
+        self.entry.progress = 0.20
+        self.entry.status_updated_at = timezone.now() - PROGRESS_WRITE_INTERVAL - timedelta(seconds=1)
+        self.entry.save(update_fields=["progress", "status_updated_at"])
+
+        event = {
+            "method": "notify_status_update",
+            "params": [{"virtual_sdcard": {"progress": [1, 2, 3]}}],
+        }
+        changed = apply_status_event(self.entry, event)
+        self.entry.refresh_from_db()
+        self.assertFalse(changed)
+        self.assertAlmostEqual(self.entry.progress, 0.20)
+
+    def test_status_update_overflow_progress_ignored(self):
+        """A JSON integer too large for float() (raising OverflowError) must
+        be skipped, not escape and get swallowed by the WS layer."""
+        self.entry.progress = 0.30
+        self.entry.status_updated_at = timezone.now() - PROGRESS_WRITE_INTERVAL - timedelta(seconds=1)
+        self.entry.save(update_fields=["progress", "status_updated_at"])
+
+        event = {
+            "method": "notify_status_update",
+            "params": [{"virtual_sdcard": {"progress": 10**400}}],
+        }
+        changed = apply_status_event(self.entry, event)
+        self.entry.refresh_from_db()
+        self.assertFalse(changed)
+        self.assertAlmostEqual(self.entry.progress, 0.30)
+
+    def test_status_update_non_finite_progress_ignored(self):
+        """NaN / infinity convert via float() but violate the 0.0-1.0
+        contract; they must be skipped, not persisted (a written NaN would
+        also throttle later valid updates via status_updated_at)."""
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            self.entry.progress = 0.40
+            self.entry.status_updated_at = timezone.now() - PROGRESS_WRITE_INTERVAL - timedelta(seconds=1)
+            self.entry.save(update_fields=["progress", "status_updated_at"])
+
+            event = {
+                "method": "notify_status_update",
+                "params": [{"virtual_sdcard": {"progress": bad}}],
+            }
+            changed = apply_status_event(self.entry, event)
+            self.entry.refresh_from_db()
+            self.assertFalse(changed, f"{bad!r} should be ignored")
+            self.assertAlmostEqual(self.entry.progress, 0.40)
+
+    def test_status_update_out_of_range_progress_ignored(self):
+        """Progress outside [0.0, 1.0] is malformed and skipped."""
+        for bad in (-0.1, 1.5, 42.0):
+            self.entry.progress = 0.40
+            self.entry.status_updated_at = timezone.now() - PROGRESS_WRITE_INTERVAL - timedelta(seconds=1)
+            self.entry.save(update_fields=["progress", "status_updated_at"])
+
+            event = {
+                "method": "notify_status_update",
+                "params": [{"virtual_sdcard": {"progress": bad}}],
+            }
+            changed = apply_status_event(self.entry, event)
+            self.entry.refresh_from_db()
+            self.assertFalse(changed, f"{bad!r} should be ignored")
+            self.assertAlmostEqual(self.entry.progress, 0.40)
+
+    def test_status_update_boolean_progress_ignored(self):
+        """A JSON boolean converts via float() (True->1.0, False->0.0) and
+        would sneak past the range guard (True == 1). Reject it as
+        malformed instead of persisting a bogus progress."""
+        for bad in (True, False):
+            self.entry.progress = 0.40
+            self.entry.status_updated_at = timezone.now() - PROGRESS_WRITE_INTERVAL - timedelta(seconds=1)
+            self.entry.save(update_fields=["progress", "status_updated_at"])
+
+            event = {
+                "method": "notify_status_update",
+                "params": [{"virtual_sdcard": {"progress": bad}}],
+            }
+            changed = apply_status_event(self.entry, event)
+            self.entry.refresh_from_db()
+            self.assertFalse(changed, f"{bad!r} should be ignored")
+            self.assertAlmostEqual(self.entry.progress, 0.40)
+
     # ----- unknown events ---------------------------------------------------
 
     def test_unknown_method_ignored(self):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import logging
 import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import IO
@@ -40,6 +41,15 @@ _orcaslicer_worker_active = False
 # File lock to ensure only one worker across all gunicorn processes
 _LOCK_FILE = Path(settings.BASE_DIR) / "data" / ".orcaslicer_worker.lock"
 
+# Bounded retry when the initial file-lock acquisition fails while work is
+# pending. This closes a narrow cross-process race: the current holder may
+# be in the window between its no-work re-check and releasing the lock, so
+# it will neither pick up the newly enqueued item nor has it released yet.
+# Retrying briefly lets us take over once it releases, instead of exiting
+# and stranding the item until the next enqueue.
+LOCK_ACQUIRE_RETRIES = 3
+LOCK_ACQUIRE_RETRY_DELAY = 0.5  # seconds
+
 
 def _acquire_file_lock() -> IO[str] | None:
     """Try to acquire an exclusive file lock (non-blocking).
@@ -62,6 +72,18 @@ def _acquire_file_lock() -> IO[str] | None:
             return None
         logger.error("Unexpected error acquiring OrcaSlicer worker lock: %s", exc)
         return None
+
+
+def _has_pending_work() -> bool:
+    """Return True if any estimation part or slicing job is still pending."""
+    return (
+        Part.objects.filter(
+            estimation_status=Part.ESTIMATION_PENDING,
+        ).exists()
+        or PrintJob.objects.filter(
+            status=PrintJob.STATUS_PENDING,
+        ).exists()
+    )
 
 
 def _start_orcaslicer_worker() -> None:
@@ -88,7 +110,7 @@ def _start_orcaslicer_worker() -> None:
     logger.info("Started OrcaSlicer worker thread")
 
 
-def _orcaslicer_worker_loop() -> None:
+def _orcaslicer_worker_loop(lock_fh: IO[str] | None = None) -> None:
     """Process pending estimation and slicing jobs sequentially.
 
     Each iteration picks either the next Part with
@@ -99,21 +121,59 @@ def _orcaslicer_worker_loop() -> None:
     actively waiting for sliced G-code.
 
     A file lock ensures only one worker runs across all gunicorn
-    processes.  If the lock cannot be acquired, the thread exits
-    immediately — the process that holds the lock is already
-    processing the queue.
+    processes.  If the lock cannot be acquired but work is pending, the
+    thread retries acquisition up to ``LOCK_ACQUIRE_RETRIES`` times with a
+    ``LOCK_ACQUIRE_RETRY_DELAY`` backoff (to cover the window where the
+    current holder is about to stop), then gives up — the process that
+    holds the lock is already processing the queue.  With no pending work
+    it gives up immediately.
+
+    Args:
+        lock_fh: An already-held file-lock handle, passed in by a
+            previous loop iteration that spawned this thread as a
+            continuation. When provided, the lock is *reused* (never
+            re-acquired) so it is held continuously across the handoff,
+            closing the window in which another process could grab it and
+            start a second worker.
     """
     global _orcaslicer_worker_active
     from django.db import connection
     from django.utils import timezone
 
-    # Acquire cross-process file lock
-    lock_fh = _acquire_file_lock()
+    # Acquire cross-process file lock unless a previous iteration handed us
+    # one (continuation keeps the lock held the whole time).
     if lock_fh is None:
-        logger.debug("OrcaSlicer worker: another process holds the lock, exiting")
-        with _orcaslicer_worker_lock:
-            _orcaslicer_worker_active = False
-        return
+        lock_fh = _acquire_file_lock()
+        # If acquisition fails while work is pending, retry briefly: the
+        # current holder may be in the narrow window between its no-work
+        # re-check and releasing the lock, so it won't pick up the newly
+        # pending item. Retrying lets us take over once it releases instead
+        # of exiting and stranding the item until the next enqueue.
+        attempts = 0
+        while lock_fh is None and attempts < LOCK_ACQUIRE_RETRIES:
+            # Guard the ORM check: a transient DB error must not propagate
+            # out of the worker thread, leave _orcaslicer_worker_active
+            # stuck True, or skip the connection cleanup below.
+            try:
+                pending = _has_pending_work()
+            except Exception:
+                logger.exception("OrcaSlicer worker: pending-work check failed during lock retry")
+                break
+            if not pending:
+                break
+            attempts += 1
+            time.sleep(LOCK_ACQUIRE_RETRY_DELAY)
+            lock_fh = _acquire_file_lock()
+        if lock_fh is None:
+            # This early return runs before the try/finally, so clear the
+            # active flag and close this thread's DB connection here — the
+            # retry loop's pending-work query opened one that would
+            # otherwise leak.
+            logger.debug("OrcaSlicer worker: another process holds the lock, exiting")
+            with _orcaslicer_worker_lock:
+                _orcaslicer_worker_active = False
+            connection.close()
+            return
 
     try:
         while True:
@@ -166,38 +226,66 @@ def _orcaslicer_worker_loop() -> None:
             break
     finally:
         # Re-check for work while still holding the file lock to prevent
-        # another process from acquiring it and causing churn.
+        # another process from acquiring it and causing churn. Serialize the
+        # decision against _start_orcaslicer_worker() via the in-process lock
+        # so the active-flag and file-lock state stay consistent.
         with _orcaslicer_worker_lock:
-            has_pending = (
-                Part.objects.filter(
-                    estimation_status=Part.ESTIMATION_PENDING,
-                ).exists()
-                or PrintJob.objects.filter(
-                    status=PrintJob.STATUS_PENDING,
-                ).exists()
-            )
-            if has_pending:
-                # Keep the worker active; loop again on a new thread
-                pass
-            else:
+            try:
+                has_pending = _has_pending_work()
+            except Exception:
+                # A DB error during the final re-check must not escape: that
+                # would leave the file lock held, _orcaslicer_worker_active
+                # set, and the connection open, permanently wedging the
+                # worker (no future enqueue could ever start one). Treat as
+                # no pending work and fall through to full cleanup; a later
+                # enqueue starts a fresh worker.
+                logger.exception("OrcaSlicer worker: pending-work re-check failed during cleanup")
+                has_pending = False
+            if not has_pending:
+                # Release the cross-process file lock BEFORE clearing the
+                # active flag. If we cleared the flag while still holding the
+                # lock, a concurrent enqueue could observe active=False, spawn
+                # a new worker that fails to acquire the lock we still hold,
+                # reset the flag and exit — stranding the newly pending item
+                # once we finally release. Releasing first guarantees any
+                # worker spawned after active=False can acquire the lock.
+                fcntl.flock(lock_fh, fcntl.LOCK_UN)
+                lock_fh.close()
                 _orcaslicer_worker_active = False
 
-        # Release the file lock after the re-check
-        fcntl.flock(lock_fh, fcntl.LOCK_UN)
-        lock_fh.close()
-
+        # Close this thread's DB connection regardless of continuation.
         connection.close()
 
         if has_pending:
-            # Start a fresh thread (flag is still True, so
-            # _start_orcaslicer_worker would bail out — call the
-            # loop directly on a new daemon thread).
-            thread = threading.Thread(
-                target=_orcaslicer_worker_loop,
-                daemon=True,
-            )
-            thread.start()
-            logger.info("OrcaSlicer worker: restarted for newly queued work")
+            # Hand the *still-held* file lock to a fresh thread so the
+            # "only one worker across all processes" guarantee holds
+            # continuously — the lock is never released in the gap between
+            # threads (previously it was released here, opening a window
+            # for a second gunicorn worker to grab it and claim jobs in
+            # parallel). The flag is still True, so _start_orcaslicer_worker
+            # would bail out — call the loop directly on a new daemon
+            # thread and pass the open lock handle through.
+            try:
+                thread = threading.Thread(
+                    target=_orcaslicer_worker_loop,
+                    kwargs={"lock_fh": lock_fh},
+                    daemon=True,
+                )
+                thread.start()
+            except Exception:
+                # Handoff failed (e.g. OS thread exhaustion). Release the
+                # lock and clear the active flag atomically under
+                # _orcaslicer_worker_lock — same ordering as the no-work
+                # path — so a concurrent enqueue can't observe a freed file
+                # lock while the active flag is still set (which would make
+                # _start_orcaslicer_worker skip spawning and strand the item).
+                logger.exception("OrcaSlicer worker: failed to start continuation thread")
+                with _orcaslicer_worker_lock:
+                    fcntl.flock(lock_fh, fcntl.LOCK_UN)
+                    lock_fh.close()
+                    _orcaslicer_worker_active = False
+            else:
+                logger.info("OrcaSlicer worker: restarted for newly queued work (lock retained)")
 
 
 def _estimate_part_in_background(part_pk: int) -> None:
