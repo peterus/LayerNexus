@@ -253,10 +253,11 @@ async def _main(reload_interval: float) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop_event.set)
 
-    # Shared between _main and the reconciler so we can cancel all
-    # per-printer tasks on shutdown. Without this, exiting the
-    # TaskGroup context would hang waiting for long-running printer
-    # tasks that never observe stop_event.
+    # Reconciler state: the map of currently-running per-printer tasks,
+    # keyed by printer pk. Shared with the reconcile loop, which spawns,
+    # cancels and respawns entries. On shutdown the supervisor cancels all
+    # tasks via cancel_all(); this map lets the reconciler track them
+    # meanwhile.
     active: dict[int, tuple[asyncio.Task, PrinterSnapshot]] = {}
 
     # Supervisor instead of asyncio.TaskGroup: a crash in one printer's
