@@ -315,6 +315,65 @@ class SlicingWorkerLockTests(TestCase):
         )
         self.assertFalse(worker_mod._orcaslicer_worker_active)
 
+    def test_lock_acquire_retries_when_pending_work(self):
+        """If the initial file-lock acquisition fails but pending work
+        exists, the worker retries (the holder may be about to stop in the
+        narrow window after its no-work recheck) instead of giving up and
+        stranding the item until the next enqueue."""
+        import core.services.slicing_worker as worker_mod
+        from core.services.slicing_worker import _orcaslicer_worker_loop
+
+        fake_fh = MagicMock()
+        self._set_active(True)
+
+        with (
+            patch.object(worker_mod, "_acquire_file_lock", side_effect=[None, fake_fh]) as mock_acq,
+            patch.object(worker_mod, "_has_pending_work", return_value=True),
+            patch("core.services.slicing_worker.time.sleep") as mock_sleep,
+            patch("core.services.slicing_worker.fcntl"),
+            patch("threading.Thread"),
+        ):
+            _orcaslicer_worker_loop()
+
+        self.assertEqual(mock_acq.call_count, 2)  # retried after the first failure
+        mock_sleep.assert_called()  # backed off between attempts
+
+    def test_lock_acquire_gives_up_after_bounded_retries(self):
+        """The retry is bounded — a persistently held lock does not loop
+        forever; the worker eventually deactivates."""
+        import core.services.slicing_worker as worker_mod
+        from core.services.slicing_worker import _orcaslicer_worker_loop
+
+        self._set_active(True)
+
+        with (
+            patch.object(worker_mod, "_acquire_file_lock", return_value=None) as mock_acq,
+            patch.object(worker_mod, "_has_pending_work", return_value=True),
+            patch("core.services.slicing_worker.time.sleep"),
+        ):
+            _orcaslicer_worker_loop()
+
+        self.assertFalse(worker_mod._orcaslicer_worker_active)
+        self.assertGreaterEqual(mock_acq.call_count, 2)  # retried before giving up
+
+    def test_lock_acquire_failure_without_pending_exits_immediately(self):
+        """No pending work + lock held elsewhere → no retry, exit at once."""
+        import core.services.slicing_worker as worker_mod
+        from core.services.slicing_worker import _orcaslicer_worker_loop
+
+        self._set_active(True)
+
+        with (
+            patch.object(worker_mod, "_acquire_file_lock", return_value=None) as mock_acq,
+            patch.object(worker_mod, "_has_pending_work", return_value=False),
+            patch("core.services.slicing_worker.time.sleep") as mock_sleep,
+        ):
+            _orcaslicer_worker_loop()
+
+        self.assertFalse(worker_mod._orcaslicer_worker_active)
+        self.assertEqual(mock_acq.call_count, 1)  # no retry when nothing pending
+        mock_sleep.assert_not_called()
+
     def test_handoff_failure_releases_lock_under_worker_lock(self):
         """If the continuation Thread.start() fails, the file lock must be
         released and the active flag cleared while holding

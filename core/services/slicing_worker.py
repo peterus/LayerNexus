@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import logging
 import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 from typing import IO
@@ -39,6 +40,15 @@ _orcaslicer_worker_active = False
 
 # File lock to ensure only one worker across all gunicorn processes
 _LOCK_FILE = Path(settings.BASE_DIR) / "data" / ".orcaslicer_worker.lock"
+
+# Bounded retry when the initial file-lock acquisition fails while work is
+# pending. This closes a narrow cross-process race: the current holder may
+# be in the window between its no-work re-check and releasing the lock, so
+# it will neither pick up the newly enqueued item nor has it released yet.
+# Retrying briefly lets us take over once it releases, instead of exiting
+# and stranding the item until the next enqueue.
+LOCK_ACQUIRE_RETRIES = 3
+LOCK_ACQUIRE_RETRY_DELAY = 0.5  # seconds
 
 
 def _acquire_file_lock() -> IO[str] | None:
@@ -131,6 +141,16 @@ def _orcaslicer_worker_loop(lock_fh: IO[str] | None = None) -> None:
     # one (continuation keeps the lock held the whole time).
     if lock_fh is None:
         lock_fh = _acquire_file_lock()
+        # If acquisition fails while work is pending, retry briefly: the
+        # current holder may be in the narrow window between its no-work
+        # re-check and releasing the lock, so it won't pick up the newly
+        # pending item. Retrying lets us take over once it releases instead
+        # of exiting and stranding the item until the next enqueue.
+        attempts = 0
+        while lock_fh is None and attempts < LOCK_ACQUIRE_RETRIES and _has_pending_work():
+            attempts += 1
+            time.sleep(LOCK_ACQUIRE_RETRY_DELAY)
+            lock_fh = _acquire_file_lock()
         if lock_fh is None:
             logger.debug("OrcaSlicer worker: another process holds the lock, exiting")
             with _orcaslicer_worker_lock:
