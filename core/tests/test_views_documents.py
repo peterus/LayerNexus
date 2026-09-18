@@ -187,10 +187,13 @@ class RasterImageMediaTests(TestDataMixin, TestCase):
         resp = self._serve()
         self.assertNotIn("attachment", resp.get("Content-Disposition", ""))
 
-    def test_png_has_no_sandbox_csp(self):
-        # A sandbox/deny CSP would block the "open image in new tab" link.
-        self.assertNotIn("sandbox", resp_csp := self._serve().get("Content-Security-Policy", ""))
-        self.assertEqual(resp_csp, "")
+    def test_png_csp_blocks_scripts_but_not_rendering(self):
+        # No sandbox/attachment (would break inline <img> and the open-in-new-tab
+        # link), but script-src 'none' neutralises any disguised active content
+        # (belt-and-suspenders with nosniff), without restricting image loads.
+        csp = self._serve().get("Content-Security-Policy", "")
+        self.assertNotIn("sandbox", csp)
+        self.assertIn("script-src 'none'", csp)
 
     def test_png_still_has_nosniff(self):
         self.assertEqual(self._serve().get("X-Content-Type-Options", ""), "nosniff")

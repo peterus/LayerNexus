@@ -31,6 +31,13 @@ from django.views.static import serve
 #: in our origin.
 MEDIA_CSP = "sandbox; default-src 'none'"
 
+#: CSP applied to inline raster images.  ``script-src 'none'`` neutralises
+#: any active content that slipped through extension-only upload validation
+#: (e.g. an SVG uploaded as ``evil.svg.png``) as belt-and-suspenders with
+#: ``nosniff``, while leaving image loading unrestricted so covers still
+#: render and open in a new tab.
+INLINE_IMAGE_CSP = "script-src 'none'"
+
 #: Raster image extensions that cannot execute scripts.  These are served
 #: inline (project cover images are ``ImageField`` uploads rendered via
 #: ``<img>`` and opened directly), so forcing ``attachment`` on them would
@@ -54,6 +61,11 @@ def _harden_media_response(response, path):
     """
     response["X-Content-Type-Options"] = "nosniff"
     if PurePosixPath(path).suffix.lower() in INLINE_IMAGE_EXTENSIONS:
+        # Served inline so cover images keep rendering.  ``nosniff`` forces the
+        # browser to honour the image content type, and ``script-src 'none'``
+        # blocks execution should a non-image sneak past extension-only upload
+        # validation.
+        response["Content-Security-Policy"] = INLINE_IMAGE_CSP
         return response
     # Fail safe: any type not on the raster allowlist (SVG, PDF, unknown
     # suffixes) is downloaded and sandboxed.  The worst case for a raster

@@ -91,7 +91,7 @@ class PrintQueueDeleteStatusGuardTests(_RBACTestBase):
         self.assertTrue(PrintQueue.objects.filter(pk=self.review_entry.pk).exists())
 
     def test_operator_can_delete_printing_entry(self):
-        """Operator holds can_manage_print_queue -- may dequeue any state."""
+        """Operator holds can_control_printer -- may dequeue any state."""
         self.client.login(username="operator_user", password="testpass123")
         resp = self._delete(self.printing_entry)
         self.assertEqual(resp.status_code, 302)
