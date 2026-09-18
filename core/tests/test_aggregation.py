@@ -72,6 +72,29 @@ class ProjectAggregatePrefetchTests(TestCase):
         with self.assertNumQueries(0):
             self._touch_aggregates(projects)
 
+    def test_prefetch_flat_at_full_depth(self):
+        """A tree as deep as the prefetch depth is fully cache-served (0 extra queries).
+
+        Proves the trailing ``subprojects`` lookup is required: it keeps
+        ``.subprojects.all()`` at the deepest covered node served from cache
+        (empty) instead of firing a query there.
+        """
+        depth = 3
+        node = Project.objects.create(name="d0")
+        for level in range(1, depth + 1):
+            node = Project.objects.create(name=f"d{level}", parent=node, quantity=1)
+            part = Part.objects.create(project=node, name=f"d{level}-p", quantity=1, filament_used_grams=1)
+            job = PrintJob.objects.create(status="completed")
+            PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
+            PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
+
+        qs = Project.objects.filter(parent__isnull=True).prefetch_related(
+            *Project.aggregate_prefetch_lookups(depth=depth)
+        )
+        projects = list(qs)
+        with self.assertNumQueries(0):
+            self._touch_aggregates(projects)
+
     def test_query_count_independent_of_node_count(self):
         """Query count for the prefetched list is the same for 2 vs 6 top-level trees."""
 

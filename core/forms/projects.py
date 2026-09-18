@@ -49,22 +49,16 @@ class ProjectEditForm(forms.ModelForm):
         }
 
     def clean(self) -> dict:
-        """Normalise quantity and reject cyclic re-parenting.
+        """Normalise quantity for top-level projects.
 
-        A project may not be re-parented under itself or any of its
-        descendants — doing so would create a cycle that makes the recursive
-        aggregate properties recurse endlessly. This mirrors the model-level
-        :meth:`Project.clean` guard so the error surfaces as a field error on
-        the form even though ``ModelForm`` does not run the cycle check for the
-        ``parent`` field automatically.
+        Cyclic re-parenting (``parent`` == self or a descendant) is rejected by
+        :meth:`Project.clean`, which ``ModelForm._post_clean`` runs via
+        ``instance.full_clean()`` — the resulting ``ValidationError`` is already
+        attached to the ``parent`` field, so no separate descendant walk is
+        needed here (that only added a query per validation).
         """
         cleaned_data = super().clean()
         parent = cleaned_data.get("parent")
         if not parent:
             cleaned_data["quantity"] = 1
-        elif self.instance.pk and (parent.pk == self.instance.pk or parent.pk in self.instance.get_descendant_ids()):
-            self.add_error(
-                "parent",
-                "A project cannot be a sub-project of itself or one of its descendants.",
-            )
         return cleaned_data
