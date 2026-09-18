@@ -148,14 +148,26 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
 
 
 class PrintQueueDeleteView(QueueDequeueMixin, DeleteView):
-    """Remove a job from the queue."""
+    """Remove a job from the queue.
+
+    ``can_dequeue_job`` is held by both Operators and Designers, but only
+    users who can *control the printer* (Operators/Admins) may remove an
+    entry that is already ``printing`` or ``awaiting_review`` — deleting
+    such an entry would desync the database from the real printer.
+    Designers (who lack ``can_control_printer``) are therefore restricted
+    to ``waiting`` entries; any other entry is simply not found (404) for
+    them.
+    """
 
     model = PrintQueue
     template_name = "core/printqueue_confirm_delete.html"
     success_url = reverse_lazy("core:printqueue_list")
 
     def get_queryset(self):
-        return PrintQueue.objects.all()
+        queryset = PrintQueue.objects.all()
+        if not self.request.user.has_perm("core.can_control_printer"):
+            queryset = queryset.filter(status=PrintQueue.STATUS_WAITING)
+        return queryset
 
     def form_valid(self, form):
         messages.success(self.request, "Removed from queue.")

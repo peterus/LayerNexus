@@ -24,11 +24,37 @@ from django.http import JsonResponse
 from django.urls import include, path, re_path
 from django.views.static import serve
 
+#: CSP applied to every uploaded-media response.  ``sandbox`` disables
+#: scripts, plugins, forms and same-origin privileges for the resource,
+#: so a malicious uploaded SVG/HTML cannot run JavaScript in our origin.
+MEDIA_CSP = "sandbox; default-src 'none'"
+
+
+def _harden_media_response(response):
+    """Force downloads and neutralise scripts for user-uploaded media.
+
+    Uploaded files (e.g. ``.svg``) are attacker-controlled.  Serving them
+    inline in the application origin is a stored-XSS vector, and
+    ``SECURE_CONTENT_TYPE_NOSNIFF`` does not help for a correctly typed
+    ``image/svg+xml`` document.  Forcing ``attachment`` plus a sandbox CSP
+    stops the browser from rendering/executing them as active content.
+    """
+    response["Content-Disposition"] = "attachment"
+    response["Content-Security-Policy"] = MEDIA_CSP
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+def serve_media(request, path, document_root=None):
+    """Serve a media file with download-forcing, script-neutralising headers."""
+    response = serve(request, path, document_root=document_root)
+    return _harden_media_response(response)
+
 
 @login_required
 def authenticated_media(request, path, document_root=None):
-    """Serve media files only to authenticated users."""
-    return serve(request, path, document_root=document_root)
+    """Serve media files only to authenticated users, hardened against XSS."""
+    return serve_media(request, path, document_root=document_root)
 
 
 def health_check(request):
@@ -49,7 +75,7 @@ urlpatterns = [
 # In production, media is served only to authenticated users.
 # NOTE: For high-traffic or large-file scenarios, consider fronting
 # this with Nginx + X-Accel-Redirect for better performance.
-_media_view = serve if settings.DEBUG else authenticated_media
+_media_view = serve_media if settings.DEBUG else authenticated_media
 urlpatterns += [
     re_path(
         rf"^{re.escape(settings.MEDIA_URL.lstrip('/'))}(?P<path>.*)$",
