@@ -5,7 +5,10 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from core.models import Part, Project, ProjectComponent, ProjectPart
-from core.models.composition import component_would_create_cycle
+from core.models.composition import (
+    component_would_create_cycle,
+    rebuild_composition_edges,
+)
 
 
 class ProjectPartModelTests(TestCase):
@@ -109,3 +112,35 @@ class ProjectComponentCycleTests(TestCase):
         ProjectComponent.objects.bulk_create([ProjectComponent(parent_project=b, child_project=a)])
         # Must return a bool without RecursionError.
         self.assertIsInstance(component_would_create_cycle(a.pk, b.pk), bool)
+
+
+class RebuildCompositionEdgesTests(TestCase):
+    """The backfill helper mirrors the legacy FK graph into edges, idempotently."""
+
+    def _rebuild(self):
+        rebuild_composition_edges(Project, Part, ProjectComponent, ProjectPart)
+
+    def test_backfills_part_edges_with_quantity(self):
+        module = Project.objects.create(name="Cabin")
+        Part.objects.create(project=module, name="Bracket", quantity=5)
+        ProjectPart.objects.all().delete()  # clear dual-write output to test the helper alone
+        self._rebuild()
+        link = ProjectPart.objects.get(project=module)
+        self.assertEqual(link.part.name, "Bracket")
+        self.assertEqual(link.quantity, 5)
+
+    def test_backfills_component_edges_with_quantity(self):
+        truck = Project.objects.create(name="Truck A")
+        Project.objects.create(name="Cabin", parent=truck, quantity=2)
+        ProjectComponent.objects.all().delete()
+        self._rebuild()
+        edge = ProjectComponent.objects.get(parent_project=truck)
+        self.assertEqual(edge.child_project.name, "Cabin")
+        self.assertEqual(edge.quantity, 2)
+
+    def test_rebuild_is_idempotent(self):
+        module = Project.objects.create(name="Cabin")
+        Part.objects.create(project=module, name="Bracket", quantity=1)
+        self._rebuild()
+        self._rebuild()  # second run must not duplicate or raise
+        self.assertEqual(ProjectPart.objects.filter(project=module).count(), 1)

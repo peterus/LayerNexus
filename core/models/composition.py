@@ -48,6 +48,36 @@ def component_would_create_cycle(parent_id: int, child_id: int) -> bool:
     return False
 
 
+def rebuild_composition_edges(project_model, part_model, component_model, part_link_model) -> None:
+    """Mirror the legacy FK graph into composition edges, idempotently.
+
+    Creates one ``ProjectPart`` per ``Part.project`` relation and one
+    ``ProjectComponent`` per ``Project.parent`` relation, copying the legacy per-node
+    ``quantity`` onto the edge. Uses ``update_or_create`` so repeated runs (backfill +
+    later reconciliation) neither duplicate nor error. Written to accept model classes so
+    the data migration can pass historical ``apps.get_model(...)`` classes while unit
+    tests pass the real models.
+
+    Args:
+        project_model: The ``Project`` model class.
+        part_model: The ``Part`` model class.
+        component_model: The ``ProjectComponent`` model class.
+        part_link_model: The ``ProjectPart`` model class.
+    """
+    for part in part_model.objects.filter(project__isnull=False).iterator():
+        part_link_model.objects.update_or_create(
+            project_id=part.project_id,
+            part_id=part.pk,
+            defaults={"quantity": part.quantity},
+        )
+    for child in project_model.objects.filter(parent__isnull=False).iterator():
+        component_model.objects.update_or_create(
+            parent_project_id=child.parent_id,
+            child_project_id=child.pk,
+            defaults={"quantity": child.quantity},
+        )
+
+
 class ProjectPart(models.Model):
     """A reusable part included in a project/module with a quantity."""
 
