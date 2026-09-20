@@ -44,14 +44,23 @@ class ProjectListView(LoginRequiredMixin, ListView):
     context_object_name = "projects"
 
     def get_queryset(self) -> QuerySet:
-        """Return only root-level projects (no parent).
+        """Return only top-level assemblies (no incoming composition edge).
 
-        Prefetches the sub-project/part/job tree so the per-card status badges
+        A top-level assembly is one with no ``ProjectComponent`` edge pointing at it
+        (``parent_links__isnull=True``), replacing the legacy ``parent__isnull=True``
+        FK filter. ``.distinct()`` guards against duplicate rows once a project can be
+        referenced by several assemblies.
+
+        Prefetches the composition/part/job tree so the per-card status badges
         and progress bars are computed from cache instead of issuing a query
         per project (and per part) — see
         :meth:`Project.aggregate_prefetch_lookups`.
         """
-        return Project.objects.filter(parent__isnull=True).prefetch_related(*Project.aggregate_prefetch_lookups())
+        return (
+            Project.objects.filter(parent_links__isnull=True)
+            .distinct()
+            .prefetch_related(*Project.aggregate_prefetch_lookups())
+        )
 
 
 class ProjectDetailView(LoginRequiredMixin, DetailView):
@@ -67,14 +76,22 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
         return Project.objects.prefetch_related(*Project.aggregate_prefetch_lookups())
 
     def get_context_data(self, **kwargs) -> dict:
-        """Add filament requirements, sub-projects, breadcrumb ancestors, and filament name lookup to context."""
+        """Add filament requirements, child modules, "used in" assemblies, and lookups.
+
+        Display/navigation reads the composition edges: ``child_modules``
+        (``(child_project, quantity)`` pairs) and ``direct_parts``
+        (``(part, quantity)`` pairs) replace the legacy ``subprojects``/``parts`` FK
+        relations, and ``used_in`` (the containing assemblies) replaces the single-path
+        ``ancestors`` breadcrumb.
+        """
         context = super().get_context_data(**kwargs)
         context["filament_requirements"] = self.object.filament_requirements()
-        context["subprojects"] = self.object.subprojects.all()
-        context["ancestors"] = self.object.get_ancestors()
+        context["child_modules"] = self.object.child_modules()
+        context["direct_parts"] = self.object.direct_parts()
+        context["used_in"] = self.object.parent_assemblies()
 
         # Build filament name and color lookups for part display
-        parts = self.object.parts.all()
+        parts = [part for part, _quantity in context["direct_parts"]]
         filament_ids = {p.spoolman_filament_id for p in parts if p.spoolman_filament_id}
         filament_names: dict[int, str] = {}
         filament_colors: dict[int, str] = {}
@@ -149,11 +166,11 @@ class SubProjectCreateView(ProjectManageMixin, CreateView):
         return get_object_or_404(Project, pk=self.kwargs["parent_pk"])
 
     def get_context_data(self, **kwargs) -> dict:
-        """Add parent project and breadcrumb ancestors to template context."""
+        """Add parent project and edge-based "used in" assemblies to template context."""
         context = super().get_context_data(**kwargs)
         parent = self.get_parent()
         context["parent"] = parent
-        context["ancestors"] = parent.get_ancestors() + [parent]
+        context["used_in"] = parent.parent_assemblies() + [parent]
         return context
 
     def get_form(self, form_class=None) -> SubProjectForm:
@@ -185,9 +202,9 @@ class ProjectUpdateView(ProjectManageMixin, UpdateView):
     template_name = "core/project_form.html"
 
     def get_context_data(self, **kwargs) -> dict:
-        """Add breadcrumb ancestors to template context."""
+        """Add edge-based "used in" assemblies to template context."""
         context = super().get_context_data(**kwargs)
-        context["ancestors"] = self.object.get_ancestors()
+        context["used_in"] = self.object.parent_assemblies()
         return context
 
     def get_form(self, form_class=None) -> ProjectEditForm:
@@ -224,15 +241,20 @@ class ProjectDeleteView(ProjectManageMixin, DeleteView):
     template_name = "core/project_confirm_delete.html"
 
     def get_context_data(self, **kwargs) -> dict:
-        """Add breadcrumb ancestors to template context."""
+        """Add edge-based "used in" assemblies to template context."""
         context = super().get_context_data(**kwargs)
-        context["ancestors"] = self.object.get_ancestors()
+        context["used_in"] = self.object.parent_assemblies()
         return context
 
     def get_success_url(self) -> str:
-        """Redirect to parent project if sub-project, otherwise to project list."""
-        if self.object.is_subproject:
-            return reverse("core:project_detail", kwargs={"pk": self.object.parent_id})
+        """Redirect to a containing assembly if referenced, otherwise the project list.
+
+        With composition edges a project can be referenced by several assemblies;
+        redirect to the first one if any, else fall back to the top-level list.
+        """
+        parents = self.object.parent_assemblies()
+        if parents:
+            return reverse("core:project_detail", kwargs={"pk": parents[0].pk})
         return reverse_lazy("core:project_list")
 
     def form_valid(self, form: django_forms.Form) -> HttpResponse:
@@ -253,9 +275,9 @@ class ProjectCostView(LoginRequiredMixin, DetailView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["ancestors"] = self.object.get_ancestors()
+        context["used_in"] = self.object.parent_assemblies()
         project = self.object
-        parts = project.parts.all()
+        parts = [part for part, _quantity in project.direct_parts()]
         cost_breakdown = []
         total_cost = 0
 
