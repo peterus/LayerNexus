@@ -7,7 +7,7 @@ from django import forms as django_forms
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db.models import Count, QuerySet
+from django.db.models import Count, Q, QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
@@ -47,8 +47,22 @@ class PartLibraryListView(LoginRequiredMixin, ListView):
     paginate_by = 50
 
     def get_queryset(self) -> QuerySet:
-        """Return all parts ordered by name, annotated with their assembly-link count."""
-        return Part.objects.annotate(used_in_count=Count("project_links", distinct=True)).order_by("name")
+        """Return parts ordered by name, annotated with their assembly-link count.
+
+        When a search term is present (GET param ``q``), the queryset is filtered
+        case-insensitively across the part name and material.
+        """
+        queryset = Part.objects.annotate(used_in_count=Count("project_links", distinct=True)).order_by("name")
+        query = self.request.GET.get("q", "").strip()
+        if query:
+            queryset = queryset.filter(Q(name__icontains=query) | Q(material__icontains=query))
+        return queryset
+
+    def get_context_data(self, **kwargs) -> dict:
+        """Add the current search term to the context so the field/pagination retain it."""
+        context = super().get_context_data(**kwargs)
+        context["q"] = self.request.GET.get("q", "").strip()
+        return context
 
 
 class _SpoolmanFilamentMixin:

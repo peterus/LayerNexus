@@ -156,6 +156,30 @@ class ProjectViewTests(TestDataMixin, TestCase):
         resp = self.client.get(reverse("core:project_detail", kwargs={"pk": proj.pk}))
         self.assertContains(resp, "X")  # the referenced part is listed
 
+    def test_duplicate_as_variant_view_get_shows_form(self):
+        truck = Project.objects.create(name="Truck A", created_by=self.user)
+        resp = self.client.get(reverse("core:project_duplicate", kwargs={"pk": truck.pk}))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Truck A (Variant)")  # suggested name pre-filled
+
+    def test_duplicate_as_variant_view_creates_variant(self):
+        from core.models import ProjectComponent
+
+        truck = Project.objects.create(name="Truck A", created_by=self.user)
+        cabin = Project.objects.create(name="Cabin", created_by=self.user)
+        ProjectComponent.objects.create(parent_project=truck, child_project=cabin, quantity=1)
+        resp = self.client.post(reverse("core:project_duplicate", kwargs={"pk": truck.pk}), {"name": "Truck B"})
+        self.assertEqual(resp.status_code, 302)
+        variant = Project.objects.get(name="Truck B")
+        self.assertEqual(variant.child_links.get().child_project_id, cabin.pk)
+        self.assertEqual(variant.created_by_id, self.user.pk)
+        self.assertIn(str(variant.pk), resp["Location"])  # redirects to the new project
+
+    def test_detail_shows_duplicate_button_for_manager(self):
+        proj = Project.objects.create(name="Truck A", created_by=self.user)
+        resp = self.client.get(reverse("core:project_detail", kwargs={"pk": proj.pk}))
+        self.assertContains(resp, "Duplicate as variant")
+
 
 class ProjectReEstimateViewTests(TestDataMixin, TestCase):
     """Tests for the ProjectReEstimateView."""

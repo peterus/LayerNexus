@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Duplicate as Variant: {{ source.name }} — {{ APP_NAME }}{% endblock %}
+{% block content %}
+<nav aria-label="breadcrumb"><ol class="breadcrumb">
+  <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
+  <li class="breadcrumb-item"><a href="{% url 'core:project_detail' source.pk %}">{{ source.name }}</a></li>
+  <li class="breadcrumb-item active">Duplicate as Variant</li>
+</ol></nav>
+
+<h1 class="h3 mb-4"><i class="bi bi-copy me-2"></i>Duplicate as Variant</h1>
+
+<div class="alert alert-info">
+  <i class="bi bi-info-circle me-1"></i>The new variant references the same child modules, parts, and hardware
+  as <strong>{{ source.name }}</strong> (they are shared, not copied). Swap the parts that differ afterwards.
+  Documents are not copied.
+</div>
+
+<div class="card">
+  <div class="card-body">
+    <form method="post">
+      {% csrf_token %}
+      <div class="mb-3">
+        <label for="id_name" class="form-label">Variant name</label>
+        <input type="text" name="name" id="id_name" class="form-control" value="{{ suggested_name }}" required>
+      </div>
+      <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-primary"><i class="bi bi-copy me-1"></i>Create variant</button>
+        <a href="{% url 'core:project_detail' source.pk %}" class="btn btn-outline-secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
