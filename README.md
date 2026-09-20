@@ -193,6 +193,78 @@ LayerNexus uses [orca-slicer-api](https://github.com/AFKFelix/orca-slicer-api) �
 3. Spoolman is the primary source for filament data — materials are managed exclusively through Spoolman.
 
 
+## REST API (iterative build API)
+
+A token-authenticated REST API under `/api/v1/` lets a client (typically an AI agent)
+build LayerNexus projects **iteratively** — one small, validated step at a time, reading
+the current state between steps. Scope: **projects, sub-project composition, parts (incl.
+STL upload), documents and hardware**. Printing (print jobs, queue, printers, Moonraker)
+is intentionally **out of scope**.
+
+> **Honest caveat:** the API assembles *structure/BOM* and *attaches* STL files you
+> provide — it does **not** generate 3D geometry. An uploaded STL triggers the same
+> background filament/time estimation the web UI runs.
+
+### Authentication
+
+Per-user tokens carry the same RBAC as the UI: **reads require authentication; writes
+require the `can_manage_projects` permission** (held by the `Admin` and `Designer`
+roles). Issue a token with the management command:
+
+```bash
+python manage.py create_api_token <username>
+# → Created token for <username>: 9944b09199c62bcf9418ad846dd0e4bbdfc6ee4b
+```
+
+Send it as a header on every request: `Authorization: Token <key>`.
+
+### Endpoints
+
+| Method(s) | Path | Purpose |
+|---|---|---|
+| `GET` `POST` | `/api/v1/projects/` | List / create projects |
+| `GET` `PATCH` `DELETE` | `/api/v1/projects/{id}/` | Retrieve / update / delete a project |
+| `GET` | `/api/v1/projects/{id}/tree/` | Nested assembly tree (child modules, parts, hardware) |
+| `GET` `POST` | `/api/v1/projects/{id}/components/` | List / add a sub-project edge `{child_project, quantity}` (cycle-guarded, idempotent) |
+| `PATCH` `DELETE` | `/api/v1/projects/{id}/components/{edge_id}/` | Update quantity / remove a sub-project edge |
+| `GET` `POST` | `/api/v1/parts/` | List / create parts (all writable fields; `project` names the owning module) |
+| `GET` `PATCH` `DELETE` | `/api/v1/parts/{id}/` | Retrieve / update / delete a part |
+| `POST` | `/api/v1/parts/{id}/stl/` | Multipart STL upload (`stl_file`) → saves file, triggers estimation |
+| `GET` `POST` | `/api/v1/projects/{id}/parts/` | List / attach an existing part `{part, quantity}` (idempotent edge) |
+| `PATCH` `DELETE` | `/api/v1/projects/{id}/parts/{edge_id}/` | Update quantity / detach a part |
+| `GET` `POST` | `/api/v1/projects/{id}/documents/` | List / upload documents (multipart; same types/size as the UI) |
+| `DELETE` | `/api/v1/projects/{id}/documents/{id}/` | Delete a document |
+| `GET` `POST` | `/api/v1/hardware-parts/` | Hardware catalogue list / create |
+| `GET` `PATCH` `DELETE` | `/api/v1/hardware-parts/{id}/` | Retrieve / update / delete a catalogue entry |
+| `GET` `POST` | `/api/v1/projects/{id}/hardware/` | List / assign hardware `{hardware_part, quantity}` (idempotent) |
+| `PATCH` `DELETE` | `/api/v1/projects/{id}/hardware/{id}/` | Update quantity / remove an assignment |
+
+Composition edges use `get_or_create`, so retrying a step returns the existing edge
+(`200`) instead of erroring. Attaching a sub-project that would form a cycle returns a
+structured `400`.
+
+### Example: build a project iteratively
+
+```bash
+TOKEN=9944b09199...           # from create_api_token
+API=http://localhost:8000/api/v1
+H="Authorization: Token $TOKEN"
+
+# 1. Create the top-level assembly
+ASM=$(curl -s -H "$H" -d 'name=Truck' $API/projects/ | jq .id)
+
+# 2. Create a sub-module and attach it as a component
+MOD=$(curl -s -H "$H" -d 'name=Chassis' $API/projects/ | jq .id)
+curl -s -H "$H" -d "child_project=$MOD&quantity=1" $API/projects/$ASM/components/
+
+# 3. Create a part in the module, then upload its STL (triggers estimation)
+PART=$(curl -s -H "$H" -d "project=$MOD&name=Axle&quantity=4" $API/parts/ | jq .id)
+curl -s -H "$H" -F "stl_file=@axle.stl" $API/parts/$PART/stl/
+
+# 4. Inspect the assembled tree
+curl -s -H "$H" $API/projects/$ASM/tree/
+```
+
 ## User Roles & Permissions
 
 LayerNexus uses a group-based role system with three built-in roles:

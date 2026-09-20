@@ -5,3 +5,4 @@ markdown>=3.5
 bleach>=6.0
 whitenoise>=6.0
 websockets>=14,<16
+djangorestframework>=3.16,<4.0
