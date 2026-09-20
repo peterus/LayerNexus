@@ -144,13 +144,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
             if not part.stl_file:
                 issues.append({"part_id": part.pk, "part_name": part.name, "issue": "Missing STL file."})
             if part.spoolman_filament_id is None:
-                issues.append(
-                    {"part_id": part.pk, "part_name": part.name, "issue": "Missing Spoolman filament id."}
-                )
+                issues.append({"part_id": part.pk, "part_name": part.name, "issue": "Missing Spoolman filament id."})
             if part.estimation_status == Part.ESTIMATION_ERROR:
-                issues.append(
-                    {"part_id": part.pk, "part_name": part.name, "issue": "Estimation status is error."}
-                )
+                issues.append({"part_id": part.pk, "part_name": part.name, "issue": "Estimation status is error."})
         return Response({"ok": not issues, "issues": issues})
 
 
