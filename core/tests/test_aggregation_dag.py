@@ -82,3 +82,14 @@ class DagHardwareDocumentTests(TestCase):
 
         docs = root._collect_documents()
         self.assertIn("Sub Doc", {d.name for d, _ in docs})
+
+
+class DagDescendantTests(TestCase):
+    def test_descendants_via_edges_including_shared(self):
+        root = Project.objects.create(name="root")
+        m1 = Project.objects.create(name="m1")
+        shared = Project.objects.create(name="shared")
+        ProjectComponent.objects.create(parent_project=root, child_project=m1, quantity=1)
+        ProjectComponent.objects.create(parent_project=root, child_project=shared, quantity=1)
+        ProjectComponent.objects.create(parent_project=m1, child_project=shared, quantity=1)
+        self.assertEqual(root.get_descendant_ids(), {m1.pk, shared.pk})

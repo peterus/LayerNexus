@@ -263,29 +263,31 @@ class Project(models.Model):
             prefix += "subprojects__"
         return lookups
 
-    def get_descendant_ids(self, _visited: set[int] | None = None) -> set[int]:
-        """Return set of IDs for all descendant projects (recursive).
+    def get_descendant_ids(self, _path: set[int] | None = None) -> set[int]:
+        """Return the set of PKs of all descendant projects over the composition DAG.
 
-        Used to prevent circular parent references when editing a project.
+        Traverses ``child_links`` (composition edges) instead of the legacy
+        ``subprojects`` FK; a path-local guard makes a corrupt persisted cycle
+        terminate. Shared modules reached via multiple paths appear once in the set.
 
         Args:
-            _visited: Internal accumulator of already-seen project PKs. It acts
-                as a safety net so a corrupt cycle already persisted in the
-                database (e.g. inserted outside model validation) terminates the
-                recursion instead of raising ``RecursionError``.
+            _path: PKs on the current recursion stack (path-local cycle guard) so a
+                corrupt cycle already persisted in the database (e.g. inserted outside
+                model validation) terminates instead of raising ``RecursionError``.
 
         Returns:
             Set of project PKs that are descendants of this project.
         """
-        if _visited is None:
-            _visited = set()
+        if _path is None:
+            _path = set()
+        if self.pk in _path:
+            return set()
+        next_path = _path | {self.pk}
         ids: set[int] = set()
-        for sub in self.subprojects.all():
-            if sub.pk in _visited:
-                continue
-            _visited.add(sub.pk)
-            ids.add(sub.pk)
-            ids |= sub.get_descendant_ids(_visited)
+        for edge in self.child_links.all():
+            child = edge.child_project
+            ids.add(child.pk)
+            ids |= child.get_descendant_ids(next_path)
         return ids
 
     def _expand_parts_relative(
