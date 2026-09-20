@@ -12,12 +12,22 @@ from django.urls import reverse, reverse_lazy
 from django.views import View
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
-from core.forms import ProjectEditForm, ProjectForm, SubProjectForm
+from core.forms import (
+    AddComponentForm,
+    AddPartToProjectForm,
+    ProjectComponentQuantityForm,
+    ProjectEditForm,
+    ProjectForm,
+    ProjectPartQuantityForm,
+    SubProjectForm,
+)
 from core.mixins import ProjectManageMixin
 from core.models import (
     OrcaPrintPreset,
     Part,
     Project,
+    ProjectComponent,
+    ProjectPart,
     SpoolmanFilamentMapping,
 )
 from core.views.helpers import _trigger_part_estimation, _user_projects_qs
@@ -33,6 +43,12 @@ __all__ = [
     "ProjectDeleteView",
     "ProjectCostView",
     "ProjectReEstimateView",
+    "ProjectAddComponentView",
+    "ProjectAddPartView",
+    "ProjectComponentDeleteView",
+    "ProjectPartDeleteView",
+    "ProjectComponentUpdateView",
+    "ProjectPartUpdateView",
 ]
 
 
@@ -120,6 +136,17 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
         context["hardware_assignments"] = project.hardware_assignments.select_related("hardware_part").all()
         context["hardware_requirements"] = project.hardware_requirements()
         context["total_hardware_cost"] = project.total_hardware_cost
+
+        # Composition edges drive the sub-module and parts tables (all users see them;
+        # only managers get the inline edit controls).
+        context["component_edges"] = self.object.child_links.select_related("child_project").all()
+        context["part_edges"] = self.object.part_links.select_related("part").all()
+
+        # Assembly editor (add/remove existing modules & parts) — only for managers.
+        if self.request.user.has_perm("core.can_manage_projects"):
+            context["add_component_form"] = AddComponentForm(parent_project=self.object)
+            context["add_part_form"] = AddPartToProjectForm(project=self.object)
+            context["can_edit_assembly"] = True
 
         return context
 
@@ -353,3 +380,121 @@ class ProjectReEstimateView(ProjectManageMixin, View):
         else:
             messages.warning(request, "No parts eligible for estimation.")
         return redirect("core:project_detail", pk=project.pk)
+
+
+class ProjectAddComponentView(ProjectManageMixin, View):
+    """Add an existing module as a child of this project (composition edge)."""
+
+    http_method_names = ["post"]
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Create a ``ProjectComponent`` edge from ``AddComponentForm`` POST data.
+
+        Args:
+            request: The incoming HTTP request.
+            pk: Primary key of the parent project the module is added to.
+
+        Returns:
+            Redirect to the parent project detail page.
+        """
+        parent = get_object_or_404(Project, pk=pk)
+        form = AddComponentForm(parent_project=parent, data=request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Module added to assembly.")
+        else:
+            messages.error(request, "; ".join(form.errors.get("__all__", [])) or "Could not add module.")
+        return redirect("core:project_detail", pk=parent.pk)
+
+
+class ProjectAddPartView(ProjectManageMixin, View):
+    """Add an existing part into this project (composition edge)."""
+
+    http_method_names = ["post"]
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Create a ``ProjectPart`` edge from ``AddPartToProjectForm`` POST data.
+
+        Args:
+            request: The incoming HTTP request.
+            pk: Primary key of the project the part is added to.
+
+        Returns:
+            Redirect to the project detail page.
+        """
+        project = get_object_or_404(Project, pk=pk)
+        form = AddPartToProjectForm(project=project, data=request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Part added to assembly.")
+        else:
+            messages.error(request, "; ".join(form.errors.get("__all__", [])) or "Could not add part.")
+        return redirect("core:project_detail", pk=project.pk)
+
+
+class ProjectComponentDeleteView(ProjectManageMixin, DeleteView):
+    """Remove a child module from an assembly by deleting the ``ProjectComponent`` edge.
+
+    Deleting the edge only detaches the module; the child project node and any other
+    assemblies referencing it survive.
+    """
+
+    model = ProjectComponent
+    http_method_names = ["post"]
+
+    def get_success_url(self) -> str:
+        """Redirect back to the parent assembly detail page."""
+        messages.success(self.request, "Module removed from assembly.")
+        return reverse("core:project_detail", kwargs={"pk": self.object.parent_project_id})
+
+
+class ProjectPartDeleteView(ProjectManageMixin, DeleteView):
+    """Remove a part from a project by deleting the ``ProjectPart`` edge.
+
+    Deleting the edge only detaches the part; the part node and any other assemblies
+    referencing it survive.
+    """
+
+    model = ProjectPart
+    http_method_names = ["post"]
+
+    def get_success_url(self) -> str:
+        """Redirect back to the project detail page."""
+        messages.success(self.request, "Part removed from assembly.")
+        return reverse("core:project_detail", kwargs={"pk": self.object.project_id})
+
+
+class ProjectComponentUpdateView(ProjectManageMixin, UpdateView):
+    """Edit the quantity of a child-module composition edge."""
+
+    model = ProjectComponent
+    form_class = ProjectComponentQuantityForm
+    http_method_names = ["post"]
+
+    def get_success_url(self) -> str:
+        """Redirect back to the parent assembly detail page."""
+        messages.success(self.request, "Module quantity updated.")
+        return reverse("core:project_detail", kwargs={"pk": self.object.parent_project_id})
+
+    def form_invalid(self, form: ProjectComponentQuantityForm) -> HttpResponse:
+        """Redirect back with an error instead of rendering a (non-existent) form template."""
+        messages.error(self.request, "Invalid quantity.")
+        return redirect("core:project_detail", pk=self.object.parent_project_id)
+
+
+class ProjectPartUpdateView(ProjectManageMixin, UpdateView):
+    """Edit the quantity of a part composition edge."""
+
+    model = ProjectPart
+    form_class = ProjectPartQuantityForm
+    http_method_names = ["post"]
+
+    def get_success_url(self) -> str:
+        """Redirect back to the project detail page."""
+        messages.success(self.request, "Part quantity updated.")
+        return reverse("core:project_detail", kwargs={"pk": self.object.project_id})
+
+    def form_invalid(self, form: ProjectPartQuantityForm) -> HttpResponse:
+        """Redirect back with an error instead of rendering a (non-existent) form template."""
+        messages.error(self.request, "Invalid quantity.")
+        return redirect("core:project_detail", pk=self.object.project_id)

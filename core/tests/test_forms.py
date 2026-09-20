@@ -503,3 +503,81 @@ class ProjectHardwareUpdateFormValidationTests(TestCase):
         )
         self.assertFalse(form.is_valid())
         self.assertIn("__all__", form.errors)
+
+
+class AddComponentFormTests(TestCase):
+    """Tests for the cycle-safe AddComponentForm (Phase 3b)."""
+
+    def test_excludes_self_and_descendants(self):
+        from core.forms import AddComponentForm
+        from core.models import ProjectComponent
+
+        root = Project.objects.create(name="Root")
+        child = Project.objects.create(name="Child")
+        grandchild = Project.objects.create(name="Grandchild")
+        ProjectComponent.objects.create(parent_project=root, child_project=child)
+        ProjectComponent.objects.create(parent_project=child, child_project=grandchild)
+        form = AddComponentForm(parent_project=root)
+        qs = list(form.fields["child_project"].queryset)
+        self.assertNotIn(root, qs)  # not itself
+        self.assertNotIn(child, qs)  # already a child
+        self.assertNotIn(grandchild, qs)  # descendant
+
+    def test_rejects_cycle(self):
+        from core.forms import AddComponentForm
+        from core.models import ProjectComponent
+
+        a = Project.objects.create(name="A")
+        b = Project.objects.create(name="B")
+        ProjectComponent.objects.create(parent_project=a, child_project=b)
+        # adding a under b would cycle; clean must reject even if forced
+        form = AddComponentForm(parent_project=b, data={"child_project": a.pk, "quantity": 1})
+        self.assertFalse(form.is_valid())
+
+    def test_valid_add_creates_edge(self):
+        from core.forms import AddComponentForm
+        from core.models import ProjectComponent
+
+        parent = Project.objects.create(name="Parent")
+        module = Project.objects.create(name="Module")
+        form = AddComponentForm(parent_project=parent, data={"child_project": module.pk, "quantity": 3})
+        self.assertTrue(form.is_valid())
+        edge = form.save()
+        self.assertEqual(edge.parent_project, parent)
+        self.assertEqual(edge.child_project, module)
+        self.assertEqual(edge.quantity, 3)
+        self.assertTrue(ProjectComponent.objects.filter(parent_project=parent, child_project=module).exists())
+
+
+class AddPartToProjectFormTests(TestCase):
+    """Tests for the AddPartToProjectForm (Phase 3b)."""
+
+    def setUp(self):
+        super().setUp()
+        from core.models import Part
+
+        self.project = Project.objects.create(name="Assembly")
+        self.other = Project.objects.create(name="Other")
+        self.part = Part.objects.create(project=self.other, name="Bolt", quantity=1)
+
+    def test_excludes_already_linked_parts(self):
+        from core.forms import AddPartToProjectForm
+        from core.models import Part
+
+        already = Part.objects.create(project=self.project, name="Nut", quantity=1)
+        form = AddPartToProjectForm(project=self.project)
+        qs = list(form.fields["part"].queryset)
+        self.assertNotIn(already, qs)  # already linked via dual-write edge
+        self.assertIn(self.part, qs)  # library part available
+
+    def test_valid_add_creates_edge(self):
+        from core.forms import AddPartToProjectForm
+        from core.models import ProjectPart
+
+        form = AddPartToProjectForm(project=self.project, data={"part": self.part.pk, "quantity": 4})
+        self.assertTrue(form.is_valid())
+        edge = form.save()
+        self.assertEqual(edge.project, self.project)
+        self.assertEqual(edge.part, self.part)
+        self.assertEqual(edge.quantity, 4)
+        self.assertTrue(ProjectPart.objects.filter(project=self.project, part=self.part).exists())

@@ -7,11 +7,12 @@ from django import forms as django_forms
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.db.models import Count, QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.views import View
-from django.views.generic import CreateView, DeleteView, DetailView, UpdateView
+from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
 from core.forms import PartForm
 from core.mixins import ProjectManageMixin
@@ -28,12 +29,26 @@ from core.views.helpers import _trigger_part_estimation
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "PartLibraryListView",
     "PartDetailView",
     "PartCreateView",
     "PartUpdateView",
     "PartDeleteView",
     "PartReEstimateView",
 ]
+
+
+class PartLibraryListView(LoginRequiredMixin, ListView):
+    """Read-only library of all parts as reusable building blocks."""
+
+    model = Part
+    template_name = "core/parts_library.html"
+    context_object_name = "parts"
+    paginate_by = 50
+
+    def get_queryset(self) -> QuerySet:
+        """Return all parts ordered by name, annotated with their assembly-link count."""
+        return Part.objects.annotate(used_in_count=Count("project_links", distinct=True)).order_by("name")
 
 
 class _SpoolmanFilamentMixin:
@@ -267,9 +282,14 @@ class PartDeleteView(ProjectManageMixin, DeleteView):
     template_name = "core/part_confirm_delete.html"
 
     def get_context_data(self, **kwargs):
-        """Add edge-based "used in" assemblies to template context."""
+        """Add the assemblies that reference this part (its "used in") to context.
+
+        Reads the part's own composition edges (``containing_projects``) so the
+        confirm page can warn that deleting the node removes it from every
+        assembly that references it — not just its legacy owning project.
+        """
         context = super().get_context_data(**kwargs)
-        context["used_in"] = self.object.project.parent_assemblies()
+        context["used_in"] = self.object.containing_projects()
         return context
 
     def get_success_url(self):

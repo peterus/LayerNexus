@@ -105,3 +105,49 @@ class PartReEstimateViewTests(TestDataMixin, TestCase):
         self.part.refresh_from_db()
         # No preset available → warning redirect, values untouched
         self.assertEqual(self.part.filament_used_grams, 50.0)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class PartLibraryViewTests(TestDataMixin, TestCase):
+    """Tests for the read-only parts library (Phase 3b)."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def test_part_library_lists_all_parts(self):
+        Part.objects.create(project=self.project, name="LibPartA", quantity=1)
+        resp = self.client.get(reverse("core:part_library"))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "LibPartA")
+
+    def test_part_library_shows_used_in_count(self):
+        # self.part is linked to self.project via dual-write -> used_in_count == 1
+        resp = self.client.get(reverse("core:part_library"))
+        self.assertEqual(resp.status_code, 200)
+        obj = next(p for p in resp.context["parts"] if p.pk == self.part.pk)
+        self.assertEqual(obj.used_in_count, 1)
+
+    def test_part_library_requires_login(self):
+        self.client.logout()
+        resp = self.client.get(reverse("core:part_library"))
+        self.assertEqual(resp.status_code, 302)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class PartDeleteUsedInTests(TestDataMixin, TestCase):
+    """Node-delete confirm page warns 'used in N assemblies' (Phase 3b)."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def test_delete_confirm_warns_used_in(self):
+        from core.models import Project, ProjectPart
+
+        assembly = Project.objects.create(name="TruckAssembly", created_by=self.user)
+        ProjectPart.objects.create(project=assembly, part=self.part)
+        resp = self.client.get(reverse("core:part_delete", kwargs={"pk": self.part.pk}))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "TruckAssembly")
+        self.assertContains(resp, "used in")
