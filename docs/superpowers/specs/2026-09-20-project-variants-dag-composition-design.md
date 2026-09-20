@@ -131,28 +131,46 @@ ProjectComponent                     ProjectPart
 
 ## Migration & compatibility
 
-- Data migration: each existing `Part.project` → one `ProjectPart` edge (`quantity` taken
-  from the part); each existing `Project.parent`/`quantity` → one `ProjectComponent` edge.
-  The old fields are then removed.
+**Strategy: expand–migrate–contract** (multiple generated migrations — the CI gate
+`makemigrations --check` only requires migrations to be *generated and in sync*, it does
+not forbid several).
+
+- **Expand:** add the `ProjectComponent`/`ProjectPart` tables *additively*, keeping the old
+  `Part.project` and `Project.parent`/`quantity` fields authoritative. A data migration
+  backfills one edge per existing FK relation (`quantity` copied from the node).
+  Dual-write keeps the edges in sync with the old FKs during the transition so nothing
+  reading edges can go stale.
+- **Migrate:** switch consumers (aggregation, then views/forms/templates/admin, then
+  print attribution) onto the edges phase by phase — each phase a green, mergeable PR.
+- **Contract:** once no consumer reads the old fields, a final generated migration removes
+  `Part.project`, `Part.quantity`, `Project.parent`, `Project.quantity`.
 - Existing print jobs: backfill `target_assembly` to the part's (ex-)root assembly where
-  unambiguous; otherwise leave null (unattributed).
-- Exactly **one** new migration (CI gate `makemigrations --check` allows only generated
-  migrations; project convention is a single migration for this change set).
+  unambiguous; otherwise leave null (unattributed) — in the print-attribution phase.
+- **Never hand-edit migrations** (project rule); all migrations are `makemigrations`-
+  generated, with `RunPython` data steps added into the generated files.
 
 ## Delivery phases
 
 Because of the ~130 coupling points plus print attribution, deliver in phases — each green
 and merged before the next starts, TDD throughout, coverage gate ≥ 55 %.
 
-1. **Model + composition core:** through-models plus the single migration that, in one
-   file, creates the edge tables → migrates data from the old FKs (`RunPython`) → removes
-   the old `Part.project`/`Part.quantity` and `Project.parent`/`Project.quantity` fields;
-   aggregation rewrite lands in the same phase so the suite stays green.
-2. **Navigation + editing:** edge-vs-node delete semantics, "Used in" navigation, parts
-   library, assembly editor.
-3. **Print attribution:** `PrintJobPart.target_assembly`, queue/job flow selects context,
-   per-context progress/status.
-4. **Variant convenience:** "Duplicate as variant".
+1. **Expand — composition layer:** the `ProjectComponent`/`ProjectPart` through-models, the
+   additive create-tables migration, the backfill data migration, and dual-write to keep
+   edges in sync with the old FKs. Old fields stay authoritative; no consumer changes yet —
+   the phase is purely additive, so the whole existing suite stays green untouched.
+2. **Migrate — aggregation onto edges:** rewrite `_collect_*` and
+   `aggregate_prefetch_lookups` to traverse the edges; DAG cycle guard + memoization.
+3. **Migrate — navigation + editing:** edge-vs-node delete semantics, "Used in" navigation,
+   parts library, assembly editor; switch views/forms/templates/admin writes onto edges.
+4. **Migrate — print attribution:** `PrintJobPart.target_assembly`, queue/job flow selects
+   context, per-context progress/status; backfill existing jobs.
+5. **Variant convenience:** "Duplicate as variant".
+6. **Contract:** remove the old `Part.project`/`Part.quantity` /
+   `Project.parent`/`Project.quantity` fields and the dual-write shims (final migration).
+
+*This plan document details **Phase 1 (Expand)** only. Phases 2–6 are planned concretely
+once Phase 1 has landed, so their tasks reference real, merged signatures instead of
+guesses.*
 
 ## Blast radius (reference)
 
