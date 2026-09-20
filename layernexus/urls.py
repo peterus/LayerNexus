@@ -97,6 +97,7 @@ urlpatterns = [
     path("health/", health_check, name="health_check"),
     path("admin/", admin.site.urls),
     path("accounts/", include("django.contrib.auth.urls")),
+    path("api/v1/", include("core.api.urls")),
     path("", include("core.urls")),
 ]
 
