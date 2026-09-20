@@ -198,3 +198,128 @@ class CostViewTests(TestDataMixin, TestCase):
     def test_project_cost_get(self):
         r = self.client.get(reverse("core:project_cost", args=[self.project.pk]))
         self.assertEqual(r.status_code, 200)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class AssemblyEditorViewTests(TestDataMixin, TestCase):
+    """Edge write views + assembly editor + delete semantics (Phase 3b)."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def test_add_existing_component_creates_edge(self):
+        from core.models import ProjectComponent
+
+        truck = Project.objects.create(name="Truck", created_by=self.user)
+        cabin = Project.objects.create(name="Cabin", created_by=self.user)
+        resp = self.client.post(
+            reverse("core:project_add_component", kwargs={"pk": truck.pk}),
+            {"child_project": cabin.pk, "quantity": 2},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(ProjectComponent.objects.filter(parent_project=truck, child_project=cabin, quantity=2).exists())
+
+    def test_add_component_rejects_cycle(self):
+        from core.models import ProjectComponent
+
+        a = Project.objects.create(name="CycA", created_by=self.user)
+        b = Project.objects.create(name="CycB", created_by=self.user)
+        ProjectComponent.objects.create(parent_project=a, child_project=b)
+        # adding a under b would cycle -> no edge created
+        resp = self.client.post(
+            reverse("core:project_add_component", kwargs={"pk": b.pk}),
+            {"child_project": a.pk, "quantity": 1},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(ProjectComponent.objects.filter(parent_project=b, child_project=a).exists())
+
+    def test_remove_component_edge_keeps_node(self):
+        from core.models import ProjectComponent
+
+        truck = Project.objects.create(name="Truck", created_by=self.user)
+        cabin = Project.objects.create(name="Cabin", created_by=self.user)
+        edge = ProjectComponent.objects.create(parent_project=truck, child_project=cabin)
+        resp = self.client.post(reverse("core:project_component_remove", kwargs={"pk": edge.pk}))
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(ProjectComponent.objects.filter(pk=edge.pk).exists())
+        self.assertTrue(Project.objects.filter(pk=cabin.pk).exists())  # node survives
+
+    def test_update_component_quantity(self):
+        from core.models import ProjectComponent
+
+        truck = Project.objects.create(name="Truck", created_by=self.user)
+        cabin = Project.objects.create(name="Cabin", created_by=self.user)
+        edge = ProjectComponent.objects.create(parent_project=truck, child_project=cabin, quantity=1)
+        resp = self.client.post(reverse("core:project_component_quantity", kwargs={"pk": edge.pk}), {"quantity": 5})
+        self.assertEqual(resp.status_code, 302)
+        edge.refresh_from_db()
+        self.assertEqual(edge.quantity, 5)
+
+    def test_add_existing_part_creates_edge(self):
+        from core.models import Part, ProjectPart
+
+        assembly = Project.objects.create(name="Assembly", created_by=self.user)
+        lib_part = Part.objects.create(project=self.other_project, name="LibBolt", quantity=1)
+        resp = self.client.post(
+            reverse("core:project_add_part", kwargs={"pk": assembly.pk}),
+            {"part": lib_part.pk, "quantity": 6},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(ProjectPart.objects.filter(project=assembly, part=lib_part, quantity=6).exists())
+
+    def test_remove_part_edge_keeps_node(self):
+        from core.models import Part, ProjectPart
+
+        assembly = Project.objects.create(name="Assembly", created_by=self.user)
+        part = Part.objects.create(project=self.other_project, name="Screw", quantity=1)
+        edge = ProjectPart.objects.create(project=assembly, part=part)
+        resp = self.client.post(reverse("core:project_part_remove", kwargs={"pk": edge.pk}))
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(ProjectPart.objects.filter(pk=edge.pk).exists())
+        self.assertTrue(Part.objects.filter(pk=part.pk).exists())  # part node survives
+
+    def test_detail_shows_assembly_editor_for_manager(self):
+        proj = Project.objects.create(name="EditProj", created_by=self.user)
+        resp = self.client.get(reverse("core:project_detail", kwargs={"pk": proj.pk}))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Add existing module")
+        self.assertContains(resp, "Add existing part")
+
+    def test_add_component_requires_manage_permission(self):
+        from django.contrib.auth.models import Group, User
+
+        operator = User.objects.create_user(username="op_user", password="oppass123")
+        operator.groups.add(Group.objects.get(name="Operator"))
+        self.client.logout()
+        self.client.login(username="op_user", password="oppass123")
+        truck = Project.objects.create(name="Truck", created_by=self.user)
+        cabin = Project.objects.create(name="Cabin", created_by=self.user)
+        resp = self.client.post(
+            reverse("core:project_add_component", kwargs={"pk": truck.pk}),
+            {"child_project": cabin.pk, "quantity": 1},
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_detail_hides_editor_for_operator(self):
+        from django.contrib.auth.models import Group, User
+
+        operator = User.objects.create_user(username="op2_user", password="oppass123")
+        operator.groups.add(Group.objects.get(name="Operator"))
+        self.client.logout()
+        self.client.login(username="op2_user", password="oppass123")
+        proj = Project.objects.create(name="ReadOnlyProj", created_by=self.user)
+        resp = self.client.get(reverse("core:project_detail", kwargs={"pk": proj.pk}))
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, "Add existing module")
+
+    def test_project_delete_confirm_warns_used_in(self):
+        from core.models import ProjectComponent
+
+        cabin = Project.objects.create(name="Cabin", created_by=self.user)
+        truck = Project.objects.create(name="Truck", created_by=self.user)
+        ProjectComponent.objects.create(parent_project=truck, child_project=cabin)
+        resp = self.client.get(reverse("core:project_delete", kwargs={"pk": cabin.pk}))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Truck")
+        self.assertContains(resp, "used in")
