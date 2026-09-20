@@ -299,13 +299,20 @@ class Project(models.Model):
     ) -> list[tuple[Part, int]]:
         """Return ``[(part, multiplier_relative_to_self)]`` over the composition DAG.
 
-        Traverses ``part_links`` (direct parts) and ``child_links`` (child modules),
-        multiplying each edge ``quantity`` along the path. The node itself counts as ×1.
-        A per-node ``_memo`` caches the (path-independent, in an acyclic graph) expansion so
-        a module shared via several paths is expanded once and scaled per incoming edge.
-        ``_path`` guards against a corrupt persisted cycle: a node recurring on its own
-        recursion stack contributes nothing further (traversal terminates, degrading
-        gracefully — consistent with the Phase-1 corrupt-cycle stance).
+        The multiplier is the **product of the ``ProjectComponent`` edge quantities** on the
+        path from this node down to the part's owning module. A direct part of a node counts
+        as membership (×1) — its own ``Part.quantity`` is the leaf count and is applied by the
+        callers (``total_parts_count``, ``total_filament_grams``, …), so ``ProjectPart.quantity``
+        is deliberately **not** folded into the multiplier here (it is redundant with
+        ``Part.quantity`` under the Phase-2 dual-write and is removed in the contract phase).
+
+        Traverses ``part_links`` (direct parts, ×1) and ``child_links`` (child modules,
+        multiplying by each edge ``quantity``). A per-node ``_memo`` caches the
+        (path-independent, in an acyclic graph) expansion so a module shared via several paths
+        is expanded once and scaled per incoming edge. ``_path`` guards against a corrupt
+        persisted cycle: a node recurring on its own recursion stack contributes nothing
+        further (traversal terminates, degrading gracefully — consistent with the Phase-1
+        corrupt-cycle stance).
 
         Args:
             _path: PKs on the current recursion stack (path-local cycle guard).
@@ -319,7 +326,7 @@ class Project(models.Model):
         if self.pk in _path:
             return []
         next_path = _path | {self.pk}
-        rel: list[tuple[Part, int]] = [(link.part, link.quantity) for link in self.part_links.all()]
+        rel: list[tuple[Part, int]] = [(link.part, 1) for link in self.part_links.all()]
         for edge in self.child_links.all():
             for part, mult in edge.child_project._expand_parts_relative(next_path, _memo):
                 rel.append((part, edge.quantity * mult))

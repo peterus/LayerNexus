@@ -15,19 +15,21 @@ class DagPartAggregationTests(TestCase):
         return Part.objects.create(project=home, name=name, quantity=1)
 
     def test_shared_module_counts_under_each_parent(self):
-        # cabin (with 1 part) shared by truck_a and truck_b via edges
+        # cabin (with 1 part) shared by truck_a and truck_b via ProjectComponent edges.
+        # The multiplier is the product of ProjectComponent edge quantities; a direct
+        # ProjectPart contributes membership (x1), its Part.quantity is the leaf count.
         cabin = Project.objects.create(name="cabin")
         bolt = self._part("bolt")
-        ProjectPart.objects.create(project=cabin, part=bolt, quantity=10)
+        ProjectPart.objects.create(project=cabin, part=bolt, quantity=1)
         truck_a = Project.objects.create(name="truck-a")
         truck_b = Project.objects.create(name="truck-b")
-        ProjectComponent.objects.create(parent_project=truck_a, child_project=cabin, quantity=1)
-        ProjectComponent.objects.create(parent_project=truck_b, child_project=cabin, quantity=1)
+        ProjectComponent.objects.create(parent_project=truck_a, child_project=cabin, quantity=10)
+        ProjectComponent.objects.create(parent_project=truck_b, child_project=cabin, quantity=2)
 
         a = {(p.pk, m) for p, m in truck_a._collect_parts_with_multiplier()}
         self.assertIn((bolt.pk, 10), a)
         b = {(p.pk, m) for p, m in truck_b._collect_parts_with_multiplier()}
-        self.assertIn((bolt.pk, 10), b)
+        self.assertIn((bolt.pk, 2), b)
 
     def test_diamond_counts_every_path(self):
         # A->B(1), A->C(1), B->D(2), C->D(3); D has part x(qty 1). needed(x) = 2+3 = 5
