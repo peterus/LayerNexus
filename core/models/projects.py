@@ -214,6 +214,66 @@ class Project(models.Model):
         """Return the number of distinct parts directly attached to this project (via edges)."""
         return self.part_links.count()
 
+    def duplicate_as_variant(self, new_name: str, created_by=None) -> Project:
+        """Create a new assembly that references the same building blocks as this one.
+
+        Copies this project's composition edges (``ProjectComponent`` where it is the
+        parent, ``ProjectPart``) and ``ProjectHardware`` assignments onto a fresh
+        top-level project. The referenced child projects, parts, and hardware objects are
+        shared (not deep-copied), so editing a shared block still affects both variants.
+        Documents are not copied. The caller then re-points the edges that should differ
+        (e.g. swap the hood module) to make the variant diverge.
+
+        Args:
+            new_name: Name for the new variant project.
+            created_by: Optional user to record as creator.
+
+        Returns:
+            The newly created variant :class:`Project`.
+        """
+        from core.models.composition import ProjectComponent, ProjectPart
+        from core.models.hardware import ProjectHardware
+
+        variant = Project.objects.create(
+            name=new_name,
+            description=self.description,
+            default_print_preset=self.default_print_preset,
+            created_by=created_by,
+        )
+        ProjectComponent.objects.bulk_create(
+            [
+                ProjectComponent(
+                    parent_project=variant,
+                    child_project_id=edge.child_project_id,
+                    quantity=edge.quantity,
+                    position=edge.position,
+                )
+                for edge in self.child_links.all()
+            ]
+        )
+        ProjectPart.objects.bulk_create(
+            [
+                ProjectPart(
+                    project=variant,
+                    part_id=link.part_id,
+                    quantity=link.quantity,
+                    position=link.position,
+                )
+                for link in self.part_links.all()
+            ]
+        )
+        ProjectHardware.objects.bulk_create(
+            [
+                ProjectHardware(
+                    project=variant,
+                    hardware_part_id=hw.hardware_part_id,
+                    quantity=hw.quantity,
+                )
+                for hw in self.hardware_assignments.all()
+            ]
+        )
+        return variant
+
     @property
     def effective_default_print_preset(self) -> Optional[OrcaPrintPreset]:
         """Return the effective default print preset, traversing parent projects.
