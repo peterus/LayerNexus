@@ -12,6 +12,16 @@
   </ol>
 </nav>
 {% include "core/includes/_used_in.html" %}
+{% if used_in %}
+<div class="alert alert-warning d-flex align-items-start" role="alert">
+  <i class="bi bi-exclamation-triangle-fill me-2 mt-1"></i>
+  <div>
+    This part is used in {{ used_in|length }} assembl{{ used_in|length|pluralize:"y,ies" }}:
+    {% for assembly in used_in %}<strong>{{ assembly.name }}</strong>{% if not forloop.last %}, {% endif %}{% endfor %}.
+    Deleting it removes it from {% if used_in|length == 1 %}that assembly{% else %}those assemblies{% endif %}.
+  </div>
+</div>
+{% endif %}
 {% url 'core:part_detail' part.pk as cancel %}
 {% include "core/includes/_confirm_delete.html" with object_name=part.name object_type="Part" cancel_url=cancel warning_message="This will also delete all print jobs associated with this part. This action cannot be undone." delete_label="Delete Part" %}
 {% endblock %}
