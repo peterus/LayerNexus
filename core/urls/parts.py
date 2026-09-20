@@ -7,12 +7,14 @@ from core.views import (
     PartCreateView,
     PartDeleteView,
     PartDetailView,
+    PartLibraryListView,
     PartReEstimateView,
     PartUpdateView,
     ProjectReEstimateView,
 )
 
 urlpatterns = [
+    path("parts/", PartLibraryListView.as_view(), name="part_library"),
     path(
         "projects/<int:project_pk>/parts/new/",
         PartCreateView.as_view(),
