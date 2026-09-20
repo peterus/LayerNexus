@@ -230,27 +230,29 @@ class Project(models.Model):
             current = current.parent
         return None
 
-    #: Relation that carries everything ``aggregated_status`` / ``progress_percent``
-    #: need for one project node (parts, their completed-plate job info).
-    _AGGREGATE_PART_LEAF = "parts__job_entries__print_job__plates"
+    #: Relation chain that carries everything the aggregate properties need for one node
+    #: (its parts via composition edges, and each part's completed-plate job info).
+    _AGGREGATE_PART_LEAF = "part_links__part__job_entries__print_job__plates"
 
     @classmethod
     def aggregate_prefetch_lookups(cls, depth: int = 3) -> list[str]:
-        """Prefetch lookups that make the recursive aggregate properties query-flat.
+        """Prefetch lookups that keep the DAG aggregate properties query-flat.
 
         Returns the ``prefetch_related`` arguments a list/detail view should use
         so that ``total_parts_count``, ``progress_percent``, ``aggregated_status``
-        and ``total_filament_grams`` traverse the sub-project tree entirely from
+        and ``total_filament_grams`` traverse the composition DAG entirely from
         cache instead of issuing a query per node/part (the N+1 that made project
         lists with status badges slow).
 
-        The self-referential ``subprojects`` relation cannot be prefetched to
-        unbounded depth, so the tree is covered up to ``depth`` levels — deep
-        enough for realistic project nesting; levels below that degrade
-        gracefully to lazy queries (never worse than before).
+        Covers, up to ``depth`` levels of ``child_links`` nesting, the part-edge leaf
+        (``part_links__part__…``) and the child-edge relation
+        (``child_links__child_project``) so the recursive collectors traverse from
+        cache. The self-referential composition relation cannot be prefetched to
+        unbounded depth; levels below ``depth`` degrade gracefully to lazy queries
+        (never worse than before).
 
         Args:
-            depth: Number of sub-project levels to cover (root counts as 0).
+            depth: Number of child-module levels to cover (root counts as 0).
 
         Returns:
             List of ``prefetch_related`` lookup strings.
@@ -259,63 +261,94 @@ class Project(models.Model):
         prefix = ""
         for _ in range(depth + 1):
             lookups.append(f"{prefix}{cls._AGGREGATE_PART_LEAF}")
-            lookups.append(f"{prefix}subprojects".rstrip("_"))
-            prefix += "subprojects__"
+            lookups.append(f"{prefix}child_links__child_project")
+            prefix += "child_links__child_project__"
         return lookups
 
-    def get_descendant_ids(self, _visited: set[int] | None = None) -> set[int]:
-        """Return set of IDs for all descendant projects (recursive).
+    def get_descendant_ids(self, _path: set[int] | None = None) -> set[int]:
+        """Return the set of PKs of all descendant projects over the composition DAG.
 
-        Used to prevent circular parent references when editing a project.
+        Traverses ``child_links`` (composition edges) instead of the legacy
+        ``subprojects`` FK; a path-local guard makes a corrupt persisted cycle
+        terminate. Shared modules reached via multiple paths appear once in the set.
 
         Args:
-            _visited: Internal accumulator of already-seen project PKs. It acts
-                as a safety net so a corrupt cycle already persisted in the
-                database (e.g. inserted outside model validation) terminates the
-                recursion instead of raising ``RecursionError``.
+            _path: PKs on the current recursion stack (path-local cycle guard) so a
+                corrupt cycle already persisted in the database (e.g. inserted outside
+                model validation) terminates instead of raising ``RecursionError``.
 
         Returns:
             Set of project PKs that are descendants of this project.
         """
-        if _visited is None:
-            _visited = set()
+        if _path is None:
+            _path = set()
+        if self.pk in _path:
+            return set()
+        next_path = _path | {self.pk}
         ids: set[int] = set()
-        for sub in self.subprojects.all():
-            if sub.pk in _visited:
-                continue
-            _visited.add(sub.pk)
-            ids.add(sub.pk)
-            ids |= sub.get_descendant_ids(_visited)
+        for edge in self.child_links.all():
+            child = edge.child_project
+            ids.add(child.pk)
+            ids |= child.get_descendant_ids(next_path)
         return ids
 
-    def _collect_parts_with_multiplier(
-        self, multiplier: int = 1, _visited: set[int] | None = None
+    def _expand_parts_relative(
+        self,
+        _path: set[int],
+        _memo: dict[int, list[tuple[Part, int]]],
     ) -> list[tuple[Part, int]]:
-        """Collect all parts recursively with their effective quantity multiplier.
+        """Return ``[(part, multiplier_relative_to_self)]`` over the composition DAG.
 
-        Traverses the sub-project tree and accumulates the product of all
-        ancestor ``quantity`` values so that filament/part counts at any
-        level reflect how many times that sub-project is actually used.
+        The multiplier is the **product of the ``ProjectComponent`` edge quantities** on the
+        path from this node down to the part's owning module. A direct part of a node counts
+        as membership (×1) — its own ``Part.quantity`` is the leaf count and is applied by the
+        callers (``total_parts_count``, ``total_filament_grams``, …), so ``ProjectPart.quantity``
+        is deliberately **not** folded into the multiplier here (it is redundant with
+        ``Part.quantity`` under the Phase-2 dual-write and is removed in the contract phase).
+
+        Traverses ``part_links`` (direct parts, ×1) and ``child_links`` (child modules,
+        multiplying by each edge ``quantity``). A per-node ``_memo`` caches the
+        (path-independent, in an acyclic graph) expansion so a module shared via several paths
+        is expanded once and scaled per incoming edge. ``_path`` guards against a corrupt
+        persisted cycle: a node recurring on its own recursion stack contributes nothing
+        further (traversal terminates, degrading gracefully — consistent with the Phase-1
+        corrupt-cycle stance).
 
         Args:
-            multiplier: Accumulated parent quantity factor (default 1 for
-                the project itself).
-            _visited: Internal set of already-visited project PKs; a safety net
-                so a corrupt cycle persisted outside validation terminates the
-                recursion instead of raising ``RecursionError``.
+            _path: PKs on the current recursion stack (path-local cycle guard).
+            _memo: Per-node cache of relative expansions, keyed by project PK.
+
+        Returns:
+            List of ``(part, multiplier_relative_to_self)`` tuples.
+        """
+        if self.pk in _memo:
+            return _memo[self.pk]
+        if self.pk in _path:
+            return []
+        next_path = _path | {self.pk}
+        rel: list[tuple[Part, int]] = [(link.part, 1) for link in self.part_links.all()]
+        for edge in self.child_links.all():
+            for part, mult in edge.child_project._expand_parts_relative(next_path, _memo):
+                rel.append((part, edge.quantity * mult))
+        _memo[self.pk] = rel
+        return rel
+
+    def _collect_parts_with_multiplier(self, multiplier: int = 1) -> list[tuple[Part, int]]:
+        """Collect all parts over the composition DAG with their effective multiplier.
+
+        Reads the Phase-1 composition edges (``part_links``/``child_links``). Each part is
+        returned once per distinct path to it, scaled by the product of edge quantities on
+        that path times ``multiplier`` — so a building block shared by two assemblies (or
+        reached via a diamond) contributes correctly to each.
+
+        Args:
+            multiplier: Outer quantity factor applied to every collected part.
 
         Returns:
             List of ``(part, effective_multiplier)`` tuples.
         """
-        if _visited is None:
-            _visited = set()
-        if self.pk in _visited:
-            return []
-        _visited.add(self.pk)
-        result = [(part, multiplier) for part in self.parts.all()]
-        for subproject in self.subprojects.all():
-            result.extend(subproject._collect_parts_with_multiplier(multiplier * subproject.quantity, _visited))
-        return result
+        rel = self._expand_parts_relative(set(), {})
+        return [(part, multiplier * mult) for part, mult in rel]
 
     @property
     def total_parts_count(self) -> int:
@@ -514,53 +547,57 @@ class Project(models.Model):
     # Document & hardware aggregation
     # ------------------------------------------------------------------
 
-    def _collect_documents(self, _visited: set[int] | None = None) -> list[tuple[ProjectDocument, Project]]:
-        """Recursively collect all documents from this project and sub-projects.
+    def _collect_documents(self, _path: set[int] | None = None) -> list[tuple[ProjectDocument, Project]]:
+        """Recursively collect documents from this project and its child modules (DAG).
+
+        Traverses ``child_links`` (composition edges) instead of the legacy
+        ``subprojects`` FK. A path-local guard makes a corrupt persisted cycle
+        terminate; a module shared via several paths contributes its documents once
+        per path, matching the parts/hardware collectors.
 
         Args:
-            _visited: Internal cycle-guard set (see
-                :meth:`_collect_parts_with_multiplier`).
+            _path: PKs on the current recursion stack (path-local cycle guard).
 
         Returns:
             List of ``(ProjectDocument, project)`` tuples so the template can
             group documents by their owning project using a stable identifier.
         """
-        if _visited is None:
-            _visited = set()
-        if self.pk in _visited:
+        if _path is None:
+            _path = set()
+        if self.pk in _path:
             return []
-        _visited.add(self.pk)
+        next_path = _path | {self.pk}
         result = [(doc, self) for doc in self.documents.all()]
-        for subproject in self.subprojects.all():
-            result.extend(subproject._collect_documents(_visited))
+        for edge in self.child_links.all():
+            result.extend(edge.child_project._collect_documents(next_path))
         return result
 
     def _collect_hardware_with_multiplier(
         self,
         multiplier: int = 1,
-        _visited: set[int] | None = None,
+        _path: set[int] | None = None,
     ) -> list[tuple[ProjectHardware, int]]:
-        """Recursively collect hardware assignments with quantity multiplier.
+        """Recursively collect hardware assignments over the DAG with quantity multiplier.
 
-        Works identically to :meth:`_collect_parts_with_multiplier` but
-        for :class:`ProjectHardware` records.
+        Traverses ``child_links`` (composition edges) instead of the legacy
+        ``subprojects`` FK, multiplying each edge ``quantity`` along the path. A
+        path-local guard makes a corrupt persisted cycle terminate.
 
         Args:
             multiplier: Accumulated parent quantity factor.
-            _visited: Internal cycle-guard set (see
-                :meth:`_collect_parts_with_multiplier`).
+            _path: PKs on the current recursion stack (path-local cycle guard).
 
         Returns:
             List of ``(ProjectHardware, effective_multiplier)`` tuples.
         """
-        if _visited is None:
-            _visited = set()
-        if self.pk in _visited:
+        if _path is None:
+            _path = set()
+        if self.pk in _path:
             return []
-        _visited.add(self.pk)
+        next_path = _path | {self.pk}
         result = [(hw, multiplier) for hw in self.hardware_assignments.select_related("hardware_part").all()]
-        for subproject in self.subprojects.all():
-            result.extend(subproject._collect_hardware_with_multiplier(multiplier * subproject.quantity, _visited))
+        for edge in self.child_links.all():
+            result.extend(edge.child_project._collect_hardware_with_multiplier(multiplier * edge.quantity, next_path))
         return result
 
     @property

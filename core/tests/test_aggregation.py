@@ -75,8 +75,8 @@ class ProjectAggregatePrefetchTests(TestCase):
     def test_prefetch_flat_at_full_depth(self):
         """A tree as deep as the prefetch depth is fully cache-served (0 extra queries).
 
-        Proves the trailing ``subprojects`` lookup is required: it keeps
-        ``.subprojects.all()`` at the deepest covered node served from cache
+        Proves the trailing ``child_links__child_project`` lookup is required: it keeps
+        ``.child_links.all()`` at the deepest covered node served from cache
         (empty) instead of firing a query there.
         """
         depth = 3
@@ -183,14 +183,18 @@ class ProjectCycleGuardTests(TestCase):
     def test_descendant_property_guarded_against_corrupt_cycle(self):
         """Even if a cycle is forced into the DB, recursion must not hang.
 
-        ``get_descendant_ids`` uses a visited-set guard so a corrupted cycle
-        (introduced outside validation) terminates instead of recursing forever.
+        ``get_descendant_ids`` traverses the composition ``child_links`` edges with a
+        path-local guard, so a corrupt cycle (introduced outside validation, here via
+        ``bulk_create`` which bypasses the ``ProjectComponent`` cycle guard) terminates
+        instead of recursing forever.
         """
+        from core.models import ProjectComponent
+
         a = Project.objects.create(name="A")
-        b = Project.objects.create(name="B", parent=a)
-        # Force a cycle bypassing validation: a.parent = b
-        Project.objects.filter(pk=a.pk).update(parent=b)
-        a.refresh_from_db()
+        b = Project.objects.create(name="B")
+        ProjectComponent.objects.create(parent_project=a, child_project=b, quantity=1)
+        # Force the closing edge b -> a bypassing the save()/clean() cycle guard.
+        ProjectComponent.objects.bulk_create([ProjectComponent(parent_project=b, child_project=a, quantity=1)])
         # Must terminate and include both nodes rather than RecursionError.
         ids = a.get_descendant_ids()
         self.assertEqual(ids, {a.pk, b.pk})
