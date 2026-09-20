@@ -185,7 +185,26 @@ class PartDetailView(LoginRequiredMixin, DetailView):
         # Candidate assemblies for per-variant print attribution: the top-level
         # assemblies (projects with no parent edges) that transitively contain this
         # part. Blank selection = unattributed.
-        context["candidate_assemblies"] = self._candidate_assemblies(part)
+        candidate_assemblies = self._candidate_assemblies(part)
+        context["candidate_assemblies"] = candidate_assemblies
+
+        # Per-assembly "Used in" breakdown (Phase 6a): this part's needed/printed/remaining
+        # within each top-level assembly that transitively contains it, replacing the global
+        # quantity/remaining/is_complete display.
+        usage: list[dict] = []
+        for assembly in candidate_assemblies:
+            for row in assembly.variant_progress()["parts"]:
+                if row["part"].pk == part.pk:
+                    usage.append(
+                        {
+                            "assembly": assembly,
+                            "needed": row["needed"],
+                            "printed": row["printed"],
+                            "remaining": row["remaining"],
+                        }
+                    )
+                    break
+        context["part_usage"] = usage
 
         return context
 

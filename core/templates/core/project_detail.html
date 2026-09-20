@@ -335,7 +335,7 @@
     </thead>
     <tbody>
       {% for edge in part_edges %}
-      {% with part=edge.part part_quantity=edge.quantity %}
+      {% with part=edge.part part_quantity=edge.quantity prow=variant_rows_by_pk|dict_get:edge.part.pk %}
       <tr>
         <td class="text-center">
           {% if part.spoolman_filament_id and filament_colors|dict_get:part.spoolman_filament_id %}
@@ -361,7 +361,7 @@
           {{ part_quantity }}
           {% endif %}
         </td>
-        <td class="text-center">{{ part.printed_quantity }}/{{ part_quantity }}</td>
+        <td class="text-center" title="Printed for this assembly / needed here">{{ prow.printed|default:0 }}/{{ prow.needed|default:part_quantity }}</td>
         <td>
           {% if part.estimation_status == 'error' %}
           <span class="badge bg-danger" title="{{ part.estimation_error }}"><i class="bi bi-exclamation-triangle me-1"></i>Estimation Error</span>
@@ -369,9 +369,9 @@
           <span class="badge bg-warning text-dark"><span class="spinner-border spinner-border-sm me-1" style="width:.65rem;height:.65rem;"></span>Estimating</span>
           {% elif part.estimation_status == 'pending' %}
           <span class="badge bg-info"><i class="bi bi-hourglass me-1"></i>Waiting</span>
-          {% elif part.is_complete %}
+          {% elif prow and prow.remaining == 0 %}
           <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Complete</span>
-          {% elif part.printed_quantity > 0 %}
+          {% elif prow.printed > 0 %}
           <span class="badge bg-primary"><i class="bi bi-printer me-1"></i>In Progress</span>
           {% else %}
           <span class="badge bg-secondary"><i class="bi bi-hourglass me-1"></i>Pending</span>

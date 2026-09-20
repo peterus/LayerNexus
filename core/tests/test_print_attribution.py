@@ -91,9 +91,9 @@ class VariantProgressTests(TestCase):
         a = Project.objects.create(name="Truck A")
         b = Project.objects.create(name="Truck B")
         home = Project.objects.create(name="home")
-        bolt = Part.objects.create(project=home, name="bolt", quantity=10)  # each truck needs 10
-        ProjectPart.objects.create(project=a, part=bolt, quantity=1)  # membership; part.quantity=10 is the count
-        ProjectPart.objects.create(project=b, part=bolt, quantity=1)
+        bolt = Part.objects.create(project=home, name="bolt", quantity=1)
+        ProjectPart.objects.create(project=a, part=bolt, quantity=10)  # edge count: each truck needs 10
+        ProjectPart.objects.create(project=b, part=bolt, quantity=10)
         self._complete(bolt, 10, a)  # printed 10 bolts FOR Truck A
 
         self.assertEqual(a.variant_progress()["percent"], 100)  # A satisfied
@@ -104,8 +104,8 @@ class VariantProgressTests(TestCase):
 
         a = Project.objects.create(name="Truck A")
         home = Project.objects.create(name="home")
-        bolt = Part.objects.create(project=home, name="bolt", quantity=10)
-        ProjectPart.objects.create(project=a, part=bolt, quantity=1)
+        bolt = Part.objects.create(project=home, name="bolt", quantity=1)
+        ProjectPart.objects.create(project=a, part=bolt, quantity=10)  # edge count: 10 needed
         self._complete(bolt, 4, a)  # 4 of 10
 
         prog = a.variant_progress()
@@ -132,12 +132,46 @@ class VariantProgressTests(TestCase):
         truck = Project.objects.create(name="Truck A")
         wheel = Project.objects.create(name="Wheel")
         home = Project.objects.create(name="home")
-        bolt = Part.objects.create(project=home, name="bolt", quantity=2)  # 2 per wheel
-        ProjectPart.objects.create(project=wheel, part=bolt, quantity=1)
+        bolt = Part.objects.create(project=home, name="bolt", quantity=1)
+        ProjectPart.objects.create(project=wheel, part=bolt, quantity=2)  # edge count: 2 per wheel
         ProjectComponent.objects.create(parent_project=truck, child_project=wheel, quantity=4)  # 4 wheels
 
         prog = truck.variant_progress()
         self.assertEqual(prog["needed"], 8)  # 2 bolts × 4 wheels
+
+
+class AggregatedStatusPerAssemblyTests(TestCase):
+    """``Project.aggregated_status`` completion is per-assembly (Phase 6a, Task 2)."""
+
+    def _complete(self, part, qty, assembly):
+        job = PrintJob.objects.create(status="completed")
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=qty, target_assembly=assembly)
+        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
+
+    def test_complete_only_when_printed_for_this_assembly(self):
+        truck = Project.objects.create(name="Truck")
+        other = Project.objects.create(name="Other")
+        bolt = Part.objects.create(project=truck, name="bolt", quantity=2)  # edge into truck via dual-write
+
+        # Printed 2, but attributed to a DIFFERENT assembly → truck is not complete.
+        self._complete(bolt, 2, other)
+        self.assertNotEqual(truck.aggregated_status, Project.STATUS_COMPLETE)
+
+        # Printed 2 FOR truck → complete.
+        self._complete(bolt, 2, truck)
+        self.assertEqual(truck.aggregated_status, Project.STATUS_COMPLETE)
+
+    def test_in_progress_uses_attributed_prints(self):
+        truck = Project.objects.create(name="Truck")
+        bolt = Part.objects.create(
+            project=truck,
+            name="bolt",
+            quantity=3,
+            filament_used_grams=10.0,
+            estimation_status=Part.ESTIMATION_SUCCESS,
+        )
+        self._complete(bolt, 1, truck)  # 1 of 3 attributed to truck
+        self.assertEqual(truck.aggregated_status, Project.STATUS_IN_PROGRESS)
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -191,3 +225,9 @@ class ProjectDetailVariantProgressTests(TestDataMixin, TestCase):
         truck = Project.objects.create(name="Truck A", created_by=self.user)
         resp = self.client.get(reverse("core:project_detail", kwargs={"pk": truck.pk}))
         self.assertContains(resp, "Build progress")
+
+    def test_detail_shows_per_part_remaining(self):
+        # self.project has self.part (needed via dual-write edge), so the per-variant
+        # build-progress table renders with a Remaining column (Phase 6a).
+        resp = self.client.get(reverse("core:project_detail", kwargs={"pk": self.project.pk}))
+        self.assertContains(resp, "Remaining")

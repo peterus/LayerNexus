@@ -56,6 +56,32 @@ class DagPartAggregationTests(TestCase):
         self.assertIsInstance(a._collect_parts_with_multiplier(), list)  # must return, not hang
 
 
+class EdgeQuantityAuthoritativeTests(TestCase):
+    """Phase 6a: the composition-edge quantity is the authoritative leaf count."""
+
+    def test_same_part_different_edge_quantities_sum_independently(self):
+        truck = Project.objects.create(name="Truck")
+        cabin = Project.objects.create(name="Cabin")
+        frame = Project.objects.create(name="Frame")
+        home = Project.objects.create(name="home")
+        # Part.quantity is now IGNORED by aggregation — the edge quantity rules.
+        bolt = Part.objects.create(project=home, name="bolt", quantity=1)
+        ProjectComponent.objects.create(parent_project=truck, child_project=cabin, quantity=1)
+        ProjectComponent.objects.create(parent_project=truck, child_project=frame, quantity=1)
+        ProjectPart.objects.create(project=cabin, part=bolt, quantity=4)  # 4 in cabin
+        ProjectPart.objects.create(project=frame, part=bolt, quantity=10)  # 10 in frame
+        # total bolts in truck = 4 + 10 = 14 (edge-authoritative)
+        self.assertEqual(truck.total_parts_count, 14)
+
+    def test_edge_quantity_beats_part_quantity(self):
+        # Part.quantity=99 must not leak into the count; only the edge (3) counts.
+        home = Project.objects.create(name="home")
+        module = Project.objects.create(name="module")
+        widget = Part.objects.create(project=home, name="widget", quantity=99)
+        ProjectPart.objects.create(project=module, part=widget, quantity=3)
+        self.assertEqual(module.total_parts_count, 3)
+
+
 class DagHardwareDocumentTests(TestCase):
     def test_hardware_shared_module_via_edges(self):
         from core.models import HardwarePart, ProjectHardware
