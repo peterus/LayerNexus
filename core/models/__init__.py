@@ -1,5 +1,6 @@
 """Models for the LayerNexus 3D printing project management application."""
 
+from core.models.composition import ProjectComponent, ProjectPart
 from core.models.documents import FileVersion, ProjectDocument
 from core.models.hardware import HardwarePart, ProjectHardware
 from core.models.orca_profiles import (
@@ -31,7 +32,9 @@ __all__ = [
     "PrintTimeEstimate",
     "PrinterProfile",
     "Project",
+    "ProjectComponent",
     "ProjectDocument",
     "ProjectHardware",
+    "ProjectPart",
     "SpoolmanFilamentMapping",
 ]
