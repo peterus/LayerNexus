@@ -226,6 +226,29 @@ class Part(models.Model):
         )
         return self.job_entries.filter(pk__in=completed_entry_pks).aggregate(total=Sum("quantity"))["total"] or 0
 
+    def printed_quantity_for(self, assembly: Project) -> int:
+        """Completed-plate print quantity of this part attributed to ``assembly``.
+
+        Same completion rule as :attr:`printed_quantity` (a job counts once it has at
+        least one completed plate), but restricted to job entries whose
+        ``target_assembly`` is ``assembly``. Unattributed entries (``target_assembly``
+        is ``NULL``) are never counted here; they remain in the global
+        :attr:`printed_quantity` only.
+
+        Args:
+            assembly: The build context (top-level assembly project) to filter by.
+
+        Returns:
+            Sum of attributed job-entry quantities that have at least one completed plate.
+        """
+        completed = "completed"
+        completed_pks = (
+            self.job_entries.filter(target_assembly=assembly, print_job__plates__status=completed)
+            .values_list("pk", flat=True)
+            .distinct()
+        )
+        return self.job_entries.filter(pk__in=completed_pks).aggregate(total=Sum("quantity"))["total"] or 0
+
     @property
     def remaining_quantity(self) -> int:
         """Number of this part still needed to complete the project."""
