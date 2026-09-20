@@ -304,7 +304,10 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
 
     Groups parts by ``(effective_print_preset_id, spoolman_filament_id)``
     so that each job contains only compatible parts.  Parts without an
-    STL file or with ``remaining_quantity == 0`` are skipped.
+    STL file or with a **per-assembly remaining of 0** are skipped, and the
+    created ``PrintJobPart``s are attributed to this project via
+    ``target_assembly`` so their prints count toward this assembly's progress
+    (Phase 6a).
 
     Each job is named ``"<Project> — <Material / Preset>"``.
     """
@@ -315,18 +318,20 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
         """Create one draft job per preset/filament group."""
         project = get_object_or_404(Project, pk=pk)
 
-        parts = list(project.parts.select_related("project").all())
-        eligible = [p for p in parts if p.stl_file and p.remaining_quantity > 0]
+        # Per-assembly requirements: needed (edge-authoritative) minus prints attributed
+        # to THIS project. Each row is {part, needed, printed, remaining}.
+        rows = project.variant_progress()["parts"]
+        eligible = [(row["part"], row["remaining"]) for row in rows if row["part"].stl_file and row["remaining"] > 0]
 
         if not eligible:
             messages.warning(request, "No eligible parts found (all printed or missing STL).")
             return redirect("core:project_detail", pk=project.pk)
 
         # Group by (effective_print_preset_id, spoolman_filament_id)
-        groups: dict[tuple[int | None, int | None], list[Part]] = defaultdict(list)
-        for part in eligible:
+        groups: dict[tuple[int | None, int | None], list[tuple[Part, int]]] = defaultdict(list)
+        for part, remaining in eligible:
             key = (part.effective_print_preset_id, part.spoolman_filament_id)
-            groups[key].append(part)
+            groups[key].append((part, remaining))
 
         jobs_created = 0
         parts_added = 0
@@ -341,7 +346,7 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
                 ).first()
                 filament_label = (
                     (mapping.spoolman_filament_name if mapping and mapping.spoolman_filament_name else None)
-                    or next((p.material for p in group_parts if p.material), None)
+                    or next((p.material for p, _ in group_parts if p.material), None)
                     or f"Filament #{filament_id}"
                 )
                 label_parts.append(filament_label)
@@ -356,11 +361,12 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
                 created_by=request.user,
             )
 
-            for part in group_parts:
+            for part, remaining in group_parts:
                 PrintJobPart.objects.create(
                     print_job=job,
                     part=part,
-                    quantity=part.remaining_quantity,
+                    quantity=remaining,
+                    target_assembly=project,
                 )
                 parts_added += 1
 

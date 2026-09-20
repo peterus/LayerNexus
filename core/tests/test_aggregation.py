@@ -305,7 +305,8 @@ class ProjectAggregatedStatusTests(TestDataMixin, TestCase):
             estimation_status=Part.ESTIMATION_SUCCESS,
         )
         job = PrintJob.objects.create(status="completed", created_by=self.user)
-        PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
+        # Attributed to THIS project so it counts toward its per-assembly progress (Phase 6a).
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=1, target_assembly=proj)
         PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         self.assertEqual(proj.aggregated_status, Project.STATUS_IN_PROGRESS)
 
@@ -320,7 +321,8 @@ class ProjectAggregatedStatusTests(TestDataMixin, TestCase):
             estimation_status=Part.ESTIMATION_SUCCESS,
         )
         job = PrintJob.objects.create(status="completed", created_by=self.user)
-        PrintJobPart.objects.create(print_job=job, part=part, quantity=2)
+        # Attributed to THIS project so it counts toward its per-assembly progress (Phase 6a).
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=2, target_assembly=proj)
         PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         self.assertEqual(proj.aggregated_status, Project.STATUS_COMPLETE)
 

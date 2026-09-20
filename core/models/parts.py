@@ -235,6 +235,13 @@ class Part(models.Model):
         is ``NULL``) are never counted here; they remain in the global
         :attr:`printed_quantity` only.
 
+        Two evaluation paths mirror :attr:`printed_quantity` so this stays off the N+1
+        path for prefetched aggregate rendering: when the whole
+        ``job_entries__print_job__plates`` chain is cached (see
+        :meth:`Project.aggregate_prefetch_lookups`) the attributed sum is computed in Python
+        with **no** extra query, filtering on the already-loaded ``target_assembly_id`` FK
+        column; otherwise a single DB aggregate is issued.
+
         Args:
             assembly: The build context (top-level assembly project) to filter by.
 
@@ -242,6 +249,21 @@ class Part(models.Model):
             Sum of attributed job-entry quantities that have at least one completed plate.
         """
         completed = "completed"
+        prefetched = getattr(self, "_prefetched_objects_cache", None)
+        if prefetched is not None and "job_entries" in prefetched:
+            entries = prefetched["job_entries"]
+            if all(
+                "print_job" in entry._state.fields_cache
+                and "plates" in getattr(entry.print_job, "_prefetched_objects_cache", {})
+                for entry in entries
+            ):
+                return sum(
+                    entry.quantity
+                    for entry in entries
+                    if entry.target_assembly_id == assembly.pk
+                    and any(plate.status == completed for plate in entry.print_job.plates.all())
+                )
+
         completed_pks = (
             self.job_entries.filter(target_assembly=assembly, print_job__plates__status=completed)
             .values_list("pk", flat=True)

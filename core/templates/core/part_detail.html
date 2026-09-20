@@ -122,21 +122,37 @@
               <span class="badge bg-secondary bg-opacity-25 text-body ms-1">{{ part.material }}</span>
             {% endif %}
           </dd>
-          <dt class="col-sm-5">Quantity</dt>
-          <dd class="col-sm-7">{{ part.quantity }}</dd>
-          <dt class="col-sm-5">Printed</dt>
-          <dd class="col-sm-7">{{ part.printed_quantity }} / {{ part.quantity }}</dd>
-          <dt class="col-sm-5">Status</dt>
-          <dd class="col-sm-7">
-            {% if part.is_complete %}
-            <span class="badge bg-success">Complete</span>
-            {% elif part.printed_quantity > 0 %}
-            <span class="badge bg-primary">In Progress</span>
-            {% else %}
-            <span class="badge bg-secondary">Pending</span>
-            {% endif %}
-          </dd>
+          <dt class="col-sm-5">Printed (total)</dt>
+          <dd class="col-sm-7">{{ part.printed_quantity }}</dd>
         </dl>
+        <hr class="my-3">
+        <h6 class="mb-2"><i class="bi bi-diagram-2 me-1"></i>Used in assemblies</h6>
+        {% if part_usage %}
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Assembly</th>
+                <th class="text-end">Printed</th>
+                <th class="text-end">Needed</th>
+                <th class="text-end">Remaining</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for use in part_usage %}
+              <tr>
+                <td><a href="{% url 'core:project_detail' use.assembly.pk %}" class="text-decoration-none">{{ use.assembly.name }}</a></td>
+                <td class="text-end">{{ use.printed }}</td>
+                <td class="text-end">{{ use.needed }}</td>
+                <td class="text-end">{% if use.remaining %}<span class="text-warning-emphasis">{{ use.remaining }}</span>{% else %}<i class="bi bi-check-circle text-success"></i>{% endif %}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="text-body-secondary small mb-0">Not used in any assembly yet.</p>
+        {% endif %}
       </div>
     </div>
 
@@ -212,7 +228,7 @@
           </div>
           <div class="mb-2">
             <label for="id_qty" class="form-label form-label-sm">Quantity</label>
-            <input type="number" name="quantity" id="id_qty" value="{{ part.remaining_quantity|default:1 }}" min="1" class="form-control form-control-sm" style="max-width: 120px;">
+            <input type="number" name="quantity" id="id_qty" value="1" min="1" class="form-control form-control-sm" style="max-width: 120px;">
           </div>
           {% if candidate_assemblies %}
           <div class="mb-2">
