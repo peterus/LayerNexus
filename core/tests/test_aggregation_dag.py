@@ -52,3 +52,33 @@ class DagPartAggregationTests(TestCase):
         ProjectComponent.objects.create(parent_project=a, child_project=b, quantity=1)
         ProjectComponent.objects.bulk_create([ProjectComponent(parent_project=b, child_project=a, quantity=1)])
         self.assertIsInstance(a._collect_parts_with_multiplier(), list)  # must return, not hang
+
+
+class DagHardwareDocumentTests(TestCase):
+    def test_hardware_shared_module_via_edges(self):
+        from core.models import HardwarePart, ProjectHardware
+
+        sub = Project.objects.create(name="sub")
+        hp = HardwarePart.objects.create(name="Bolt", category="bolts", unit_price="0.50")
+        ProjectHardware.objects.create(project=sub, hardware_part=hp, quantity=4)
+        root = Project.objects.create(name="root")
+        ProjectComponent.objects.create(parent_project=root, child_project=sub, quantity=3)
+
+        hw = root._collect_hardware_with_multiplier()
+        self.assertEqual(len(hw), 1)
+        obj, mult = hw[0]
+        self.assertEqual(obj.quantity, 4)
+        self.assertEqual(mult, 3)
+
+    def test_documents_collected_via_edges(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from core.models import ProjectDocument
+
+        sub = Project.objects.create(name="sub")
+        ProjectDocument.objects.create(project=sub, name="Sub Doc", file=SimpleUploadedFile("s.pdf", b"x"))
+        root = Project.objects.create(name="root")
+        ProjectComponent.objects.create(parent_project=root, child_project=sub, quantity=1)
+
+        docs = root._collect_documents()
+        self.assertIn("Sub Doc", {d.name for d, _ in docs})

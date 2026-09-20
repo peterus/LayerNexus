@@ -536,53 +536,59 @@ class Project(models.Model):
     # Document & hardware aggregation
     # ------------------------------------------------------------------
 
-    def _collect_documents(self, _visited: set[int] | None = None) -> list[tuple[ProjectDocument, Project]]:
-        """Recursively collect all documents from this project and sub-projects.
+    def _collect_documents(self, _path: set[int] | None = None) -> list[tuple[ProjectDocument, Project]]:
+        """Recursively collect documents from this project and its child modules (DAG).
+
+        Traverses ``child_links`` (composition edges) instead of the legacy
+        ``subprojects`` FK. A path-local guard makes a corrupt persisted cycle
+        terminate; a module shared via several paths contributes its documents once
+        per path, matching the parts/hardware collectors.
 
         Args:
-            _visited: Internal cycle-guard set (see
-                :meth:`_collect_parts_with_multiplier`).
+            _path: PKs on the current recursion stack (path-local cycle guard).
 
         Returns:
             List of ``(ProjectDocument, project)`` tuples so the template can
             group documents by their owning project using a stable identifier.
         """
-        if _visited is None:
-            _visited = set()
-        if self.pk in _visited:
+        if _path is None:
+            _path = set()
+        if self.pk in _path:
             return []
-        _visited.add(self.pk)
+        next_path = _path | {self.pk}
         result = [(doc, self) for doc in self.documents.all()]
-        for subproject in self.subprojects.all():
-            result.extend(subproject._collect_documents(_visited))
+        for edge in self.child_links.all():
+            result.extend(edge.child_project._collect_documents(next_path))
         return result
 
     def _collect_hardware_with_multiplier(
         self,
         multiplier: int = 1,
-        _visited: set[int] | None = None,
+        _path: set[int] | None = None,
     ) -> list[tuple[ProjectHardware, int]]:
-        """Recursively collect hardware assignments with quantity multiplier.
+        """Recursively collect hardware assignments over the DAG with quantity multiplier.
 
-        Works identically to :meth:`_collect_parts_with_multiplier` but
-        for :class:`ProjectHardware` records.
+        Traverses ``child_links`` (composition edges) instead of the legacy
+        ``subprojects`` FK, multiplying each edge ``quantity`` along the path. A
+        path-local guard makes a corrupt persisted cycle terminate.
 
         Args:
             multiplier: Accumulated parent quantity factor.
-            _visited: Internal cycle-guard set (see
-                :meth:`_collect_parts_with_multiplier`).
+            _path: PKs on the current recursion stack (path-local cycle guard).
 
         Returns:
             List of ``(ProjectHardware, effective_multiplier)`` tuples.
         """
-        if _visited is None:
-            _visited = set()
-        if self.pk in _visited:
+        if _path is None:
+            _path = set()
+        if self.pk in _path:
             return []
-        _visited.add(self.pk)
+        next_path = _path | {self.pk}
         result = [(hw, multiplier) for hw in self.hardware_assignments.select_related("hardware_part").all()]
-        for subproject in self.subprojects.all():
-            result.extend(subproject._collect_hardware_with_multiplier(multiplier * subproject.quantity, _visited))
+        for edge in self.child_links.all():
+            result.extend(
+                edge.child_project._collect_hardware_with_multiplier(multiplier * edge.quantity, next_path)
+            )
         return result
 
     @property
