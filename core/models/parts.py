@@ -10,6 +10,7 @@ from django.db.models import CheckConstraint, Q, Sum
 
 if TYPE_CHECKING:
     from core.models.orca_profiles import OrcaPrintPreset
+    from core.models.projects import Project
 
 
 class Part(models.Model):
@@ -122,6 +123,22 @@ class Part(models.Model):
                 part=self,
                 defaults={"quantity": self.quantity},
             )
+
+    def containing_projects(self) -> list["Project"]:
+        """Return distinct projects that include this part via a composition edge.
+
+        Traverses the ``ProjectPart`` edges pointing at this part (``project_links``)
+        rather than the legacy single ``project`` FK, so a part shared by several
+        modules lists all of them (its "used in").
+
+        Returns:
+            Distinct :class:`~core.models.projects.Project` instances, first-seen
+            order preserved.
+        """
+        seen: dict[int, "Project"] = {}
+        for link in self.project_links.select_related("project").all():
+            seen.setdefault(link.project_id, link.project)
+        return list(seen.values())
 
     @property
     def effective_print_preset_id(self) -> Optional[int]:

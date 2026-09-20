@@ -169,11 +169,15 @@ class Project(models.Model):
 
     @property
     def is_subproject(self) -> bool:
-        """Return True if this project is a sub-project of another project."""
-        return self.parent_id is not None
+        """Return True if any assembly references this project via a composition edge."""
+        return self.parent_links.exists()
 
     def get_ancestors(self) -> list[Project]:
         """Return list of ancestor projects from root to direct parent.
+
+        .. deprecated::
+            Single-path breadcrumb over the legacy ``parent`` FK. Superseded by the
+            edge-based :meth:`parent_assemblies` ("Used in"); removed in the contract phase.
 
         Returns:
             Ordered list starting from the root project, ending with the
@@ -187,6 +191,48 @@ class Project(models.Model):
             ancestors.insert(0, current)
             current = current.parent
         return ancestors
+
+    def parent_assemblies(self) -> list[Project]:
+        """Return distinct assemblies that directly contain this project (its "used in").
+
+        Traverses the ``ProjectComponent`` edges pointing at this project
+        (``parent_links``) rather than the legacy single ``parent`` FK, so a module
+        shared by several assemblies lists all of them.
+
+        Returns:
+            Distinct parent :class:`Project` instances (empty list for top-level
+            assemblies), first-seen order preserved.
+        """
+        seen: dict[int, Project] = {}
+        for edge in self.parent_links.select_related("parent_project").all():
+            seen.setdefault(edge.parent_project_id, edge.parent_project)
+        return list(seen.values())
+
+    def child_modules(self) -> list[tuple[Project, int]]:
+        """Return ``(child_project, quantity)`` pairs from composition edges, ordered.
+
+        Reads the ``child_links`` composition edges (ordered by ``position, pk``) instead
+        of the legacy ``subprojects`` FK reverse relation.
+
+        Returns:
+            List of ``(child_project, edge_quantity)`` tuples.
+        """
+        return [(e.child_project, e.quantity) for e in self.child_links.select_related("child_project").all()]
+
+    def direct_parts(self) -> list[tuple[Part, int]]:
+        """Return ``(part, quantity)`` pairs directly attached to this project, ordered.
+
+        Reads the ``part_links`` composition edges (ordered by ``position, pk``) instead
+        of the legacy ``parts`` FK reverse relation.
+
+        Returns:
+            List of ``(part, edge_quantity)`` tuples.
+        """
+        return [(link.part, link.quantity) for link in self.part_links.select_related("part").all()]
+
+    def direct_part_count(self) -> int:
+        """Return the number of distinct parts directly attached to this project (via edges)."""
+        return self.part_links.count()
 
     @property
     def effective_default_print_preset(self) -> Optional[OrcaPrintPreset]:
