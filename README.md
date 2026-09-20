@@ -238,10 +238,22 @@ Send it as a header on every request: `Authorization: Token <key>`.
 | `GET` `PATCH` `DELETE` | `/api/v1/hardware-parts/{id}/` | Retrieve / update / delete a catalogue entry |
 | `GET` `POST` | `/api/v1/projects/{id}/hardware/` | List / assign hardware `{hardware_part, quantity}` (idempotent) |
 | `PATCH` `DELETE` | `/api/v1/projects/{id}/hardware/{id}/` | Update quantity / remove an assignment |
+| `GET` | `/api/v1/spoolman-filaments/` | Lookup: Spoolman filament mappings (valid `spoolman_filament_id` values) |
+| `GET` | `/api/v1/print-presets/` | Lookup: instantiable, resolved print presets (valid `print_preset` values) |
+| `GET` | `/api/v1/projects/{id}/requirements/` | Aggregate BOM: `total_parts_count`, `total_filament_grams/meters`, `filament_requirements`, `hardware_requirements`, `total_hardware_cost`, `variant_progress` |
+| `GET` | `/api/v1/projects/{id}/validate/` | Completeness check → `{ok, issues[]}` (parts missing STL / filament id / estimation error / empty project) |
+| `GET` | `/api/v1/projects/?search=` `/api/v1/parts/?search=` | Full-text search (projects: name/description; parts: name/material) — reuse existing blocks |
+| `POST` | `/api/v1/projects/{id}/duplicate/` | Clone into a new variant `{name}` sharing the same building blocks (write → `can_manage_projects`) |
 
 Composition edges use `get_or_create`, so retrying a step returns the existing edge
 (`200`) instead of erroring. Attaching a sub-project that would form a cycle returns a
 structured `400`.
+
+The **lookup** reads let a client pick valid FK values (a filament id, a print preset)
+before creating parts; **`requirements`/`validate`** let it reason about what the whole
+assembly needs and what is still missing; **`search`** finds existing projects/parts to
+reuse; **`duplicate`** spins off a variant that shares the source's building blocks (the
+referenced child projects, parts and hardware are shared, not deep-copied).
 
 ### Example: build a project iteratively
 
@@ -257,12 +269,22 @@ ASM=$(curl -s -H "$H" -d 'name=Truck' $API/projects/ | jq .id)
 MOD=$(curl -s -H "$H" -d 'name=Chassis' $API/projects/ | jq .id)
 curl -s -H "$H" -d "child_project=$MOD&quantity=1" $API/projects/$ASM/components/
 
-# 3. Create a part in the module, then upload its STL (triggers estimation)
-PART=$(curl -s -H "$H" -d "project=$MOD&name=Axle&quantity=4" $API/parts/ | jq .id)
+# 3. Pick valid FK values before creating a part
+FIL=$(curl -s -H "$H" $API/spoolman-filaments/ | jq '.[0].spoolman_filament_id')
+PRESET=$(curl -s -H "$H" $API/print-presets/ | jq '.[0].id')
+
+# 4. Create a part with those ids, then upload its STL (triggers estimation)
+PART=$(curl -s -H "$H" -d "project=$MOD&name=Axle&quantity=4&spoolman_filament_id=$FIL&print_preset=$PRESET" $API/parts/ | jq .id)
 curl -s -H "$H" -F "stl_file=@axle.stl" $API/parts/$PART/stl/
 
-# 4. Inspect the assembled tree
+# 5. Inspect the assembled tree, aggregate requirements, and completeness
 curl -s -H "$H" $API/projects/$ASM/tree/
+curl -s -H "$H" $API/projects/$ASM/requirements/
+curl -s -H "$H" $API/projects/$ASM/validate/     # {"ok": false, "issues": [...]} until every part is complete
+
+# 6. Reuse: search existing parts, then spin off a variant of the assembly
+curl -s -H "$H" "$API/parts/?search=axle"
+curl -s -H "$H" -d 'name=Truck (long-bed)' $API/projects/$ASM/duplicate/
 ```
 
 ## User Roles & Permissions

@@ -19,12 +19,14 @@ from rest_framework import serializers
 from core.forms.documents import ALLOWED_DOCUMENT_EXTENSIONS, MAX_DOCUMENT_SIZE
 from core.models import (
     HardwarePart,
+    OrcaPrintPreset,
     Part,
     Project,
     ProjectComponent,
     ProjectDocument,
     ProjectHardware,
     ProjectPart,
+    SpoolmanFilamentMapping,
 )
 from core.models.composition import component_would_create_cycle
 
@@ -170,6 +172,28 @@ class ProjectHardwareSerializer(serializers.ModelSerializer):
         model = ProjectHardware
         fields = ["id", "hardware_part", "quantity", "notes", "created_at"]
         read_only_fields = ["id", "created_at"]
+
+
+class SpoolmanFilamentMappingSerializer(serializers.ModelSerializer):
+    """Read-only lookup of a Spoolman filament mapping so a client can pick a valid id.
+
+    Exposes the identifying id plus the cached display name and color, which is all an
+    API client needs to set a part's ``spoolman_filament_id`` to a valid value.
+    """
+
+    class Meta:
+        model = SpoolmanFilamentMapping
+        fields = ["id", "spoolman_filament_id", "spoolman_filament_name", "spoolman_color_hex"]
+        read_only_fields = fields
+
+
+class OrcaPrintPresetSerializer(serializers.ModelSerializer):
+    """Read-only lookup of an instantiable print preset (id + name) for ``part.print_preset``."""
+
+    class Meta:
+        model = OrcaPrintPreset
+        fields = ["id", "name"]
+        read_only_fields = fields
 
 
 class ProjectTreeSerializer(serializers.ModelSerializer):
