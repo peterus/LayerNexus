@@ -385,15 +385,20 @@ class Project(models.Model):
     ) -> list[tuple[Part, int]]:
         """Return ``[(part, multiplier_relative_to_self)]`` over the composition DAG.
 
-        The multiplier is the **product of the ``ProjectComponent`` edge quantities** on the
-        path from this node down to the part's owning module. A direct part of a node counts
-        as membership (×1) — its own ``Part.quantity`` is the leaf count and is applied by the
-        callers (``total_parts_count``, ``total_filament_grams``, …), so ``ProjectPart.quantity``
-        is deliberately **not** folded into the multiplier here (it is redundant with
-        ``Part.quantity`` under the Phase-2 dual-write and is removed in the contract phase).
+        The multiplier is the **product of the composition edge quantities** on the path
+        from this node down to the part — the ``ProjectComponent`` child-edge quantities
+        times the part's own ``ProjectPart.quantity`` edge. The **edge quantity is the leaf
+        count** (Phase 6a): a part attached to a module ``4×`` and ``10×`` in two modules of
+        one assembly counts ``14``, independently of the global ``Part.quantity``. Callers
+        therefore consume the multiplier directly and **must not** additionally multiply by
+        ``Part.quantity`` (that would double-count). Under the Phase-2 dual-write
+        ``ProjectPart.quantity == Part.quantity`` for single-count fixtures, so this flip is
+        behavior-preserving for them; ``Part.quantity`` becomes redundant and is removed in
+        the contract phase.
 
-        Traverses ``part_links`` (direct parts, ×1) and ``child_links`` (child modules,
-        multiplying by each edge ``quantity``). A per-node ``_memo`` caches the
+        Traverses ``part_links`` (direct parts, folding ``ProjectPart.quantity``) and
+        ``child_links`` (child modules, multiplying by each edge ``quantity``). A per-node
+        ``_memo`` caches the
         (path-independent, in an acyclic graph) expansion so a module shared via several paths
         is expanded once and scaled per incoming edge. ``_path`` guards against a corrupt
         persisted cycle: a node recurring on its own recursion stack contributes nothing
@@ -412,7 +417,7 @@ class Project(models.Model):
         if self.pk in _path:
             return []
         next_path = _path | {self.pk}
-        rel: list[tuple[Part, int]] = [(link.part, 1) for link in self.part_links.all()]
+        rel: list[tuple[Part, int]] = [(link.part, link.quantity) for link in self.part_links.all()]
         for edge in self.child_links.all():
             for part, mult in edge.child_project._expand_parts_relative(next_path, _memo):
                 rel.append((part, edge.quantity * mult))
@@ -424,27 +429,39 @@ class Project(models.Model):
 
         Reads the Phase-1 composition edges (``part_links``/``child_links``). Each part is
         returned once per distinct path to it, scaled by the product of edge quantities on
-        that path times ``multiplier`` — so a building block shared by two assemblies (or
-        reached via a diamond) contributes correctly to each.
+        that path (including its own ``ProjectPart.quantity`` edge — the leaf count, Phase 6a)
+        times ``multiplier`` — so a building block shared by two assemblies (or reached via a
+        diamond) contributes correctly to each. The returned multiplier is the **effective
+        count**; callers must not multiply it again by ``Part.quantity``.
 
         Args:
             multiplier: Outer quantity factor applied to every collected part.
 
         Returns:
-            List of ``(part, effective_multiplier)`` tuples.
+            List of ``(part, effective_count)`` tuples.
         """
         rel = self._expand_parts_relative(set(), {})
         return [(part, multiplier * mult) for part, mult in rel]
 
     @property
     def total_parts_count(self) -> int:
-        """Total number of individual parts needed (sum of all part quantities, including sub-projects)."""
-        return sum(p.quantity * mult for p, mult in self._collect_parts_with_multiplier())
+        """Total number of individual parts needed (sum of edge quantities, including sub-projects).
+
+        The composition-edge quantity is authoritative (Phase 6a): the effective count from
+        :meth:`_collect_parts_with_multiplier` already folds ``ProjectPart.quantity`` and the
+        child-edge chain, so it is summed directly (no extra ``× Part.quantity``).
+        """
+        return sum(mult for _p, mult in self._collect_parts_with_multiplier())
 
     @property
     def printed_parts_count(self) -> int:
-        """Total number of parts already printed to completion (including sub-projects)."""
-        return sum(p.printed_quantity * mult for p, mult in self._collect_parts_with_multiplier())
+        """Total number of parts already printed to completion (including sub-projects).
+
+        ``printed_quantity`` is a global (job-based) scalar per part; it is capped at the
+        edge-authoritative effective count per collected path so a part printed more times
+        than an assembly needs never pushes :attr:`progress_percent` past 100%.
+        """
+        return sum(min(p.printed_quantity, mult) for p, mult in self._collect_parts_with_multiplier())
 
     @property
     def progress_percent(self) -> int:
@@ -457,9 +474,9 @@ class Project(models.Model):
     def variant_progress(self) -> dict:
         """Per-assembly print progress using this project as the build context.
 
-        ``needed`` per part = ``part.quantity × edge-chain multiplier`` (from
-        :meth:`_collect_parts_with_multiplier`, i.e. Phase-2 aggregation semantics);
-        ``printed`` = quantities attributed to THIS assembly via
+        ``needed`` per part = the **edge-authoritative effective count** from
+        :meth:`_collect_parts_with_multiplier` (``ProjectPart.quantity`` folded with the
+        child-edge chain, Phase 6a); ``printed`` = quantities attributed to THIS assembly via
         ``PrintJobPart.target_assembly`` (see :meth:`Part.printed_quantity_for`). Each
         part is capped at its need when computing the overall percentage, so
         over-printing one part never pushes the assembly past 100%.
@@ -477,7 +494,7 @@ class Project(models.Model):
         needed_by_part: dict[int, int] = defaultdict(int)
         part_objs: dict[int, Part] = {}
         for part, mult in self._collect_parts_with_multiplier():
-            needed_by_part[part.pk] += part.quantity * mult
+            needed_by_part[part.pk] += mult
             part_objs[part.pk] = part
 
         rows: list[dict] = []
@@ -516,11 +533,18 @@ class Project(models.Model):
         Status priority (highest to lowest):
         - ``error``: at least one part has an estimation error
         - ``estimating``: at least one part is currently being estimated
-        - ``complete``: all parts have been printed
-        - ``in_progress``: at least one part has been printed
+        - ``complete``: all parts have been printed *for this assembly*
+        - ``in_progress``: at least one part has been printed *for this assembly*
         - ``ready``: all parts have filament estimates, none printed yet
         - ``pending``: parts exist but estimates are missing / not started
         - ``empty``: no parts in the project (and no sub-projects with parts)
+
+        The printed/complete signals are **per-assembly** (Phase 6a): a part counts as
+        printed/complete here only for prints attributed to THIS project via
+        ``PrintJobPart.target_assembly`` (see :meth:`variant_progress`). Prints left
+        unattributed (``target_assembly`` NULL) no longer flip a project to
+        in-progress/complete. The estimation signals (error/estimating/ready) stay global to
+        the parts themselves.
 
         Returns:
             One of the STATUS_* constants.
@@ -531,8 +555,6 @@ class Project(models.Model):
 
         has_error = False
         has_estimating = False
-        all_complete = True
-        any_printed = False
         all_estimated = True
 
         for part, _mult in parts_with_mult:
@@ -543,12 +565,13 @@ class Project(models.Model):
                 Part.ESTIMATION_ESTIMATING,
             ):
                 has_estimating = True
-            if not part.is_complete:
-                all_complete = False
-            if part.printed_quantity > 0:
-                any_printed = True
             if not part.filament_used_grams:
                 all_estimated = False
+
+        # Per-assembly printed/complete signals: only prints attributed to THIS project.
+        rows = self.variant_progress()["parts"]
+        all_complete = bool(rows) and all(row["remaining"] == 0 for row in rows)
+        any_printed = any(row["printed"] > 0 for row in rows)
 
         if has_error:
             return self.STATUS_ERROR
@@ -583,26 +606,27 @@ class Project(models.Model):
     def total_filament_grams(self) -> float:
         """Total filament required for all parts in the project (grams), including sub-projects."""
         return sum(
-            p.filament_used_grams * p.quantity * mult
-            for p, mult in self._collect_parts_with_multiplier()
-            if p.filament_used_grams
+            p.filament_used_grams * mult for p, mult in self._collect_parts_with_multiplier() if p.filament_used_grams
         )
 
     @property
     def total_filament_meters(self) -> float:
         """Total filament required for all parts in the project (meters), including sub-projects."""
         return sum(
-            p.filament_used_meters * p.quantity * mult
-            for p, mult in self._collect_parts_with_multiplier()
-            if p.filament_used_meters
+            p.filament_used_meters * mult for p, mult in self._collect_parts_with_multiplier() if p.filament_used_meters
         )
 
     def filament_requirements(self) -> list[dict]:
         """Per-filament-type breakdown of total and remaining filament needs.
 
-        Groups parts (including those from sub-projects, scaled by the
-        sub-project ``quantity``) by ``spoolman_filament_id`` and calculates
-        how much filament is needed in total and how much is still remaining.
+        Groups parts (including those from sub-projects, scaled by the composition
+        edge quantities) by ``spoolman_filament_id`` and calculates how much filament
+        is needed in total and how much is still remaining.
+
+        ``total`` uses the edge-authoritative effective count (Phase 6a); ``remaining`` is
+        **per-assembly** — it uses ``needed − printed_for(self)`` from
+        :meth:`variant_progress` (prints attributed to THIS project), not the global
+        ``Part.remaining_quantity``.
 
         Returns:
             List of dicts with keys: filament_id, filament_name, color,
@@ -611,8 +635,11 @@ class Project(models.Model):
         """
         from collections import defaultdict
 
-        # (part, effective_multiplier) — multiplier accounts for sub-project quantity
+        # (part, effective_count) — folds edge quantities and sub-project chain
         part_mults = self._collect_parts_with_multiplier()
+
+        # Per-assembly remaining instances per part (needed − printed-for-this-assembly).
+        remaining_by_pk: dict[int, int] = {row["part"].pk: row["remaining"] for row in self.variant_progress()["parts"]}
 
         buckets: dict[Optional[int], list[tuple]] = defaultdict(list)
         for part, mult in part_mults:
@@ -634,10 +661,19 @@ class Project(models.Model):
             if mapping and mapping.spoolman_filament_name:
                 filament_name = mapping.spoolman_filament_name
 
-            total_g = sum((p.filament_used_grams or 0) * p.quantity * mult for p, mult in pm_list)
-            total_m = sum((p.filament_used_meters or 0) * p.quantity * mult for p, mult in pm_list)
-            remaining_g = sum((p.filament_used_grams or 0) * p.remaining_quantity * mult for p, mult in pm_list)
-            remaining_m = sum((p.filament_used_meters or 0) * p.remaining_quantity * mult for p, mult in pm_list)
+            total_g = sum((p.filament_used_grams or 0) * mult for p, mult in pm_list)
+            total_m = sum((p.filament_used_meters or 0) * mult for p, mult in pm_list)
+
+            # Remaining is per-assembly and per DISTINCT part (variant_progress already
+            # aggregated needed/printed across all paths), so iterate unique parts to avoid
+            # double-counting a part reached via several paths.
+            distinct_parts = {p.pk: p for p, _ in pm_list}
+            remaining_g = sum(
+                (p.filament_used_grams or 0) * remaining_by_pk.get(pk, 0) for pk, p in distinct_parts.items()
+            )
+            remaining_m = sum(
+                (p.filament_used_meters or 0) * remaining_by_pk.get(pk, 0) for pk, p in distinct_parts.items()
+            )
 
             # Collect material from parts and color from mapping (single source of truth)
             parts = [p for p, _ in pm_list]

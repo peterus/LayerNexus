@@ -111,14 +111,16 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
         self.assertEqual(job.job_parts.first().part, self.part)
 
     def test_skips_fully_printed_parts(self):
-        """Parts with remaining_quantity == 0 are skipped."""
-        # Mark part as fully printed via a completed job plate
+        """Parts with a per-assembly remaining of 0 are skipped."""
+        # Mark part as fully printed FOR this project via a completed, attributed job plate.
         job = PrintJob.objects.create(
             name="Old Job",
             status=PrintJob.STATUS_DRAFT,
             created_by=self.user,
         )
-        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=self.part.quantity)
+        PrintJobPart.objects.create(
+            print_job=job, part=self.part, quantity=self.part.quantity, target_assembly=self.project
+        )
         PrintJobPlate.objects.create(print_job=job, plate_number=1, status="completed")
         # Now remaining_quantity should be 0
         self.assertEqual(self.part.remaining_quantity, 0)
@@ -135,6 +137,28 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
         job = PrintJob.objects.filter(created_by=self.user).first()
         jp = job.job_parts.first()
         self.assertEqual(jp.quantity, self.part.remaining_quantity)
+
+    def test_job_parts_attributed_to_project(self):
+        """Created job parts carry target_assembly == the source project (Phase 6a)."""
+        self.client.post(self._url())
+        job = PrintJob.objects.filter(created_by=self.user).first()
+        jp = job.job_parts.first()
+        self.assertEqual(jp.target_assembly_id, self.project.pk)
+
+    def test_uses_per_assembly_remaining(self):
+        """Quantity is needed − printed-for-this-assembly, not the global remaining."""
+        # 3 needed (self.part.quantity), 1 already printed FOR this project → 2 remaining.
+        done = PrintJob.objects.create(status="completed", created_by=self.user)
+        PrintJobPart.objects.create(print_job=done, part=self.part, quantity=1, target_assembly=self.project)
+        PrintJobPlate.objects.create(print_job=done, plate_number=1, status="completed")
+
+        self.client.post(self._url())
+        new_job = (
+            PrintJob.objects.filter(created_by=self.user, status=PrintJob.STATUS_DRAFT).order_by("-created_at").first()
+        )
+        jp = new_job.job_parts.get(part=self.part)
+        self.assertEqual(jp.quantity, 2)
+        self.assertEqual(jp.target_assembly_id, self.project.pk)
 
     def test_no_eligible_parts_shows_warning(self):
         """When no parts are eligible, a warning message is shown."""

@@ -29,6 +29,12 @@ class PartViewTests(TestDataMixin, TestCase):
         resp = self.client.get(reverse("core:part_detail", kwargs={"pk": self.part.pk}))
         self.assertEqual(resp.status_code, 200)
 
+    def test_part_detail_shows_used_in_breakdown(self):
+        # Phase 6a: per-assembly "Used in" breakdown replaces global quantity/remaining.
+        resp = self.client.get(reverse("core:part_detail", kwargs={"pk": self.part.pk}))
+        self.assertContains(resp, "Used in assemblies")
+        self.assertContains(resp, self.project.name)
+
     def test_part_create_get(self):
         resp = self.client.get(reverse("core:part_create", args=[self.project.pk]))
         self.assertEqual(resp.status_code, 200)

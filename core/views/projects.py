@@ -110,7 +110,11 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
         # Per-variant build progress (Phase 4): print quantities attributed to THIS
         # project as the assembly context. The global aggregate status/progress above
         # is unaffected.
-        context["variant_progress"] = self.object.variant_progress()
+        variant_progress = self.object.variant_progress()
+        context["variant_progress"] = variant_progress
+        # Per-part per-assembly rows keyed by part pk, so the direct-parts table can show
+        # this assembly's printed/remaining instead of the global Part counters (Phase 6a).
+        context["variant_rows_by_pk"] = {row["part"].pk: row for row in variant_progress["parts"]}
 
         # Build filament name and color lookups for part display
         parts = [part for part, _quantity in context["direct_parts"]]
