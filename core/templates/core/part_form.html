@@ -9,7 +9,7 @@
     {% if project %}
     <li class="breadcrumb-item"><a href="{% url 'core:project_detail' project.pk %}">{{ project.name }}</a></li>
     {% elif form.instance.pk %}
-    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' form.instance.project.pk %}">{{ form.instance.project.name }}</a></li>
+    <li class="breadcrumb-item"><a href="{% url 'core:part_library' %}">Parts Library</a></li>
     {% endif %}
     <li class="breadcrumb-item active">{% if form.instance.pk %}Edit {{ form.instance.name }}{% else %}Add Part{% endif %}</li>
   </ol>

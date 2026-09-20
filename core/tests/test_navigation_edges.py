@@ -30,8 +30,7 @@ class ChildAndPartDisplayTests(TestCase):
         truck = Project.objects.create(name="truck")
         cabin = Project.objects.create(name="cabin")
         ProjectComponent.objects.create(parent_project=truck, child_project=cabin, quantity=2, position=0)
-        home = Project.objects.create(name="home")
-        bolt = Part.objects.create(project=home, name="bolt", quantity=1)
+        bolt = Part.objects.create(name="bolt")
         ProjectPart.objects.create(project=truck, part=bolt, quantity=10, position=0)
 
         self.assertEqual([(c.name, q) for c, q in truck.child_modules()], [("cabin", 2)])
@@ -39,10 +38,9 @@ class ChildAndPartDisplayTests(TestCase):
         self.assertEqual(truck.direct_part_count(), 1)
 
     def test_part_containing_projects(self):
-        home = Project.objects.create(name="home")
-        bolt = Part.objects.create(project=home, name="bolt", quantity=1)
+        bolt = Part.objects.create(name="bolt")
         m1 = Project.objects.create(name="m1")
         m2 = Project.objects.create(name="m2")
         ProjectPart.objects.create(project=m1, part=bolt)
         ProjectPart.objects.create(project=m2, part=bolt)
-        self.assertEqual({p.name for p in bolt.containing_projects()}, {"home", "m1", "m2"})
+        self.assertEqual({p.name for p in bolt.containing_projects()}, {"m1", "m2"})

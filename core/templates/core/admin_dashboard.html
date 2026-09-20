@@ -396,7 +396,7 @@
             <a href="{% url 'core:part_detail' part.pk %}" class="text-decoration-none text-truncate me-2">{{ part.name }}</a>
             <small class="text-body-secondary text-nowrap">{{ part.updated_at|timesince }} ago</small>
           </div>
-          <small class="text-body-secondary">{{ part.project.name }}</small>
+          <small class="text-body-secondary">{% with first_link=part.project_links.first %}{% if first_link %}{{ first_link.project.name }}{% else %}—{% endif %}{% endwith %}</small>
         </li>
         {% empty %}
         <li class="list-group-item text-body-secondary">No parts yet.</li>

@@ -6,7 +6,7 @@
 <nav aria-label="breadcrumb" class="mb-3">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
-    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' part.project.pk %}">{{ part.project.name }}</a></li>
+    <li class="breadcrumb-item"><a href="{% url 'core:part_library' %}">Parts Library</a></li>
     <li class="breadcrumb-item"><a href="{% url 'core:part_detail' part.pk %}">{{ part.name }}</a></li>
     <li class="breadcrumb-item active">Delete</li>
   </ol>

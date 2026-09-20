@@ -12,6 +12,7 @@ from core.models import (
     Project,
     ProjectDocument,
     ProjectHardware,
+    ProjectPart,
 )
 from core.tests.mixins import TestDataMixin
 
@@ -47,7 +48,8 @@ class ProjectAggregatePrefetchTests(TestCase):
         root = Project.objects.create(name=f"{name}-root")
         sub = Project.objects.create(name=f"{name}-sub", parent=root, quantity=2)
         for proj in (root, sub):
-            part = Part.objects.create(project=proj, name=f"{proj.name}-p", quantity=2, filament_used_grams=5)
+            part = Part.objects.create(name=f"{proj.name}-p", filament_used_grams=5)
+            ProjectPart.objects.create(project=proj, part=part, quantity=2)
             job = PrintJob.objects.create(status="completed")
             PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
             PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
@@ -83,7 +85,8 @@ class ProjectAggregatePrefetchTests(TestCase):
         node = Project.objects.create(name="d0")
         for level in range(1, depth + 1):
             node = Project.objects.create(name=f"d{level}", parent=node, quantity=1)
-            part = Part.objects.create(project=node, name=f"d{level}-p", quantity=1, filament_used_grams=1)
+            part = Part.objects.create(name=f"d{level}-p", filament_used_grams=1)
+            ProjectPart.objects.create(project=node, part=part, quantity=1)
             job = PrintJob.objects.create(status="completed")
             PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
             PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
@@ -219,8 +222,10 @@ class ProjectCycleGuardTests(TestCase):
         """
         a = Project.objects.create(name="A")
         b = Project.objects.create(name="B", parent=a)
-        Part.objects.create(project=a, name="ap", quantity=1)
-        Part.objects.create(project=b, name="bp", quantity=1)
+        pa = Part.objects.create(name="ap")
+        pb = Part.objects.create(name="bp")
+        ProjectPart.objects.create(project=a, part=pa, quantity=1)
+        ProjectPart.objects.create(project=b, part=pb, quantity=1)
         Project.objects.filter(pk=a.pk).update(parent=b)  # a <-> b cycle
         a.refresh_from_db()
         # None of these may raise RecursionError.
@@ -279,31 +284,22 @@ class ProjectAggregatedStatusTests(TestDataMixin, TestCase):
     def test_pending_status(self):
         """Parts without filament estimates result in 'pending'."""
         proj = Project.objects.create(name="Pending", created_by=self.user)
-        Part.objects.create(project=proj, name="P1", quantity=1, filament_used_grams=None)
+        p = Part.objects.create(name="P1", filament_used_grams=None)
+        ProjectPart.objects.create(project=proj, part=p, quantity=1)
         self.assertEqual(proj.aggregated_status, Project.STATUS_PENDING)
 
     def test_ready_status(self):
         """All parts estimated but none printed → 'ready'."""
         proj = Project.objects.create(name="Ready", created_by=self.user)
-        Part.objects.create(
-            project=proj,
-            name="P1",
-            quantity=1,
-            filament_used_grams=10.0,
-            estimation_status=Part.ESTIMATION_SUCCESS,
-        )
+        p = Part.objects.create(name="P1", filament_used_grams=10.0, estimation_status=Part.ESTIMATION_SUCCESS)
+        ProjectPart.objects.create(project=proj, part=p, quantity=1)
         self.assertEqual(proj.aggregated_status, Project.STATUS_READY)
 
     def test_in_progress_status(self):
         """Some parts printed → 'in_progress'."""
         proj = Project.objects.create(name="InProgress", created_by=self.user)
-        part = Part.objects.create(
-            project=proj,
-            name="P1",
-            quantity=3,
-            filament_used_grams=10.0,
-            estimation_status=Part.ESTIMATION_SUCCESS,
-        )
+        part = Part.objects.create(name="P1", filament_used_grams=10.0, estimation_status=Part.ESTIMATION_SUCCESS)
+        ProjectPart.objects.create(project=proj, part=part, quantity=3)
         job = PrintJob.objects.create(status="completed", created_by=self.user)
         # Attributed to THIS project so it counts toward its per-assembly progress (Phase 6a).
         PrintJobPart.objects.create(print_job=job, part=part, quantity=1, target_assembly=proj)
@@ -313,13 +309,8 @@ class ProjectAggregatedStatusTests(TestDataMixin, TestCase):
     def test_complete_status(self):
         """All parts fully printed → 'complete'."""
         proj = Project.objects.create(name="Complete", created_by=self.user)
-        part = Part.objects.create(
-            project=proj,
-            name="P1",
-            quantity=2,
-            filament_used_grams=10.0,
-            estimation_status=Part.ESTIMATION_SUCCESS,
-        )
+        part = Part.objects.create(name="P1", filament_used_grams=10.0, estimation_status=Part.ESTIMATION_SUCCESS)
+        ProjectPart.objects.create(project=proj, part=part, quantity=2)
         job = PrintJob.objects.create(status="completed", created_by=self.user)
         # Attributed to THIS project so it counts toward its per-assembly progress (Phase 6a).
         PrintJobPart.objects.create(print_job=job, part=part, quantity=2, target_assembly=proj)
@@ -329,79 +320,49 @@ class ProjectAggregatedStatusTests(TestDataMixin, TestCase):
     def test_error_status(self):
         """Any part with estimation error → 'error'."""
         proj = Project.objects.create(name="Error", created_by=self.user)
-        Part.objects.create(
-            project=proj,
-            name="P1",
-            quantity=1,
-            estimation_status=Part.ESTIMATION_ERROR,
-            estimation_error="OrcaSlicer timeout",
+        p = Part.objects.create(
+            name="P1", estimation_status=Part.ESTIMATION_ERROR, estimation_error="OrcaSlicer timeout"
         )
+        ProjectPart.objects.create(project=proj, part=p, quantity=1)
         self.assertEqual(proj.aggregated_status, Project.STATUS_ERROR)
 
     def test_estimating_status(self):
         """Any part with pending estimation → 'estimating'."""
         proj = Project.objects.create(name="Estimating", created_by=self.user)
-        Part.objects.create(
-            project=proj,
-            name="P1",
-            quantity=1,
-            estimation_status=Part.ESTIMATION_PENDING,
-        )
+        p = Part.objects.create(name="P1", estimation_status=Part.ESTIMATION_PENDING)
+        ProjectPart.objects.create(project=proj, part=p, quantity=1)
         self.assertEqual(proj.aggregated_status, Project.STATUS_ESTIMATING)
 
     def test_estimating_active_status(self):
         """Any part actively estimating → 'estimating'."""
         proj = Project.objects.create(name="Active", created_by=self.user)
-        Part.objects.create(
-            project=proj,
-            name="P1",
-            quantity=1,
-            estimation_status=Part.ESTIMATION_ESTIMATING,
-        )
+        p = Part.objects.create(name="P1", estimation_status=Part.ESTIMATION_ESTIMATING)
+        ProjectPart.objects.create(project=proj, part=p, quantity=1)
         self.assertEqual(proj.aggregated_status, Project.STATUS_ESTIMATING)
 
     def test_error_takes_priority_over_estimating(self):
         """Error status wins even if another part is estimating."""
         proj = Project.objects.create(name="Mixed", created_by=self.user)
-        Part.objects.create(
-            project=proj,
-            name="P1",
-            quantity=1,
-            estimation_status=Part.ESTIMATION_ERROR,
-            estimation_error="fail",
-        )
-        Part.objects.create(
-            project=proj,
-            name="P2",
-            quantity=1,
-            estimation_status=Part.ESTIMATION_PENDING,
-        )
+        p1 = Part.objects.create(name="P1", estimation_status=Part.ESTIMATION_ERROR, estimation_error="fail")
+        p2 = Part.objects.create(name="P2", estimation_status=Part.ESTIMATION_PENDING)
+        ProjectPart.objects.create(project=proj, part=p1, quantity=1)
+        ProjectPart.objects.create(project=proj, part=p2, quantity=1)
         self.assertEqual(proj.aggregated_status, Project.STATUS_ERROR)
 
     def test_subproject_parts_included(self):
         """Parts in sub-projects contribute to parent's status."""
         parent = Project.objects.create(name="Parent", created_by=self.user)
         child = Project.objects.create(name="Child", parent=parent, quantity=2, created_by=self.user)
-        Part.objects.create(
-            project=child,
-            name="P1",
-            quantity=1,
-            filament_used_grams=5.0,
-            estimation_status=Part.ESTIMATION_SUCCESS,
-        )
+        p = Part.objects.create(name="P1", filament_used_grams=5.0, estimation_status=Part.ESTIMATION_SUCCESS)
+        ProjectPart.objects.create(project=child, part=p, quantity=1)
         self.assertEqual(parent.aggregated_status, Project.STATUS_READY)
 
     def test_subproject_error_propagates(self):
         """Error in a sub-project part propagates to the parent."""
         parent = Project.objects.create(name="Parent", created_by=self.user)
         child = Project.objects.create(name="Child", parent=parent, quantity=1, created_by=self.user)
-        Part.objects.create(
-            project=child,
-            name="P1",
-            quantity=1,
-            estimation_status=Part.ESTIMATION_ERROR,
-            estimation_error="fail",
-        )
+        p = Part.objects.create(name="P1", estimation_status=Part.ESTIMATION_ERROR, estimation_error="fail")
+        ProjectPart.objects.create(project=child, part=p, quantity=1)
         self.assertEqual(parent.aggregated_status, Project.STATUS_ERROR)
 
 

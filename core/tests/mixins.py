@@ -3,7 +3,7 @@
 from django.contrib.auth.models import Group, User
 from django.test import TestCase
 
-from core.models import Part, PrinterProfile, Project
+from core.models import Part, PrinterProfile, Project, ProjectPart
 
 
 class TestDataMixin:
@@ -18,21 +18,21 @@ class TestDataMixin:
         self.other_user = User.objects.create_user(username="otheruser", password="otherpass123")
         self.project = Project.objects.create(name="Test Project", description="A test project", created_by=self.user)
         self.part = Part.objects.create(
-            project=self.project,
             name="Test Part",
-            quantity=3,
             color="red",
             material="PLA",
             filament_used_grams=10.5,
             filament_used_meters=3.4,
         )
+        ProjectPart.objects.create(project=self.project, part=self.part, quantity=3)
         self.printer = PrinterProfile.objects.create(
             name="Test Printer",
             created_by=self.user,
         )
         # Other user data for isolation tests
         self.other_project = Project.objects.create(name="Other Project", created_by=self.other_user)
-        self.other_part = Part.objects.create(project=self.other_project, name="Other Part", quantity=1)
+        self.other_part = Part.objects.create(name="Other Part")
+        ProjectPart.objects.create(project=self.other_project, part=self.other_part, quantity=1)
         self.other_printer = PrinterProfile.objects.create(name="Other Printer", created_by=self.other_user)
 
 
@@ -59,5 +59,6 @@ class _RBACTestBase(TestCase):
 
         # Shared test data
         self.project = Project.objects.create(name="RBAC Project", created_by=self.admin_user)
-        self.part = Part.objects.create(project=self.project, name="RBAC Part", quantity=1)
+        self.part = Part.objects.create(name="RBAC Part")
+        ProjectPart.objects.create(project=self.project, part=self.part, quantity=1)
         self.printer = PrinterProfile.objects.create(name="RBAC Printer", created_by=self.admin_user)

@@ -18,6 +18,7 @@ from core.models import (
     Project,
     ProjectDocument,
     ProjectHardware,
+    ProjectPart,
 )
 from core.tests.mixins import TestDataMixin
 
@@ -32,7 +33,8 @@ class ProjectModelTests(TestDataMixin, TestCase):
         self.assertEqual(self.project.total_parts_count, 3)
 
     def test_total_parts_count_multiple(self):
-        Part.objects.create(project=self.project, name="Part B", quantity=5)
+        part_b = Part.objects.create(name="Part B")
+        ProjectPart.objects.create(project=self.project, part=part_b, quantity=5)
         self.assertEqual(self.project.total_parts_count, 8)
 
     def test_printed_parts_count_no_jobs(self):
@@ -71,12 +73,8 @@ class ProjectModelTests(TestDataMixin, TestCase):
         self.assertAlmostEqual(self.project.total_filament_grams, 31.5)
 
     def test_total_filament_grams_excludes_null(self):
-        Part.objects.create(
-            project=self.project,
-            name="No filament",
-            quantity=2,
-            filament_used_grams=None,
-        )
+        no_filament = Part.objects.create(name="No filament", filament_used_grams=None)
+        ProjectPart.objects.create(project=self.project, part=no_filament, quantity=2)
         self.assertAlmostEqual(self.project.total_filament_grams, 31.5)
 
     def test_total_filament_meters(self):
@@ -88,7 +86,7 @@ class PartModelTests(TestDataMixin, TestCase):
     """Tests for the Part model."""
 
     def test_str(self):
-        self.assertEqual(str(self.part), "Test Part (Test Project)")
+        self.assertEqual(str(self.part), "Test Part")
 
     def test_color_display_standard(self):
         self.assertEqual(self.part.color_display, "red")
@@ -151,27 +149,6 @@ class PartModelTests(TestDataMixin, TestCase):
         part = Part.objects.get(pk=self.part.pk)
         with self.assertNumQueries(1):
             self.assertEqual(part.printed_quantity, 5)
-
-    def test_remaining_quantity(self):
-        job = PrintJob.objects.create(status="completed", created_by=self.user)
-        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
-        self.assertEqual(self.part.remaining_quantity, 2)
-
-    def test_remaining_quantity_never_negative(self):
-        job = PrintJob.objects.create(status="completed", created_by=self.user)
-        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=10)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
-        self.assertEqual(self.part.remaining_quantity, 0)
-
-    def test_is_complete_false(self):
-        self.assertFalse(self.part.is_complete)
-
-    def test_is_complete_true(self):
-        job = PrintJob.objects.create(status="completed", created_by=self.user)
-        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=3)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
-        self.assertTrue(self.part.is_complete)
 
     def test_estimation_status_default(self):
         """New parts should have estimation_status 'none' by default."""

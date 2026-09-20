@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 
-from django.core.validators import MinValueValidator
-from django.db import models, transaction
-from django.db.models import CheckConstraint, Q, Sum
+from django.db import models
+from django.db.models import Sum
 
 if TYPE_CHECKING:
     from core.models.orca_profiles import OrcaPrintPreset
@@ -14,16 +13,14 @@ if TYPE_CHECKING:
 
 
 class Part(models.Model):
-    """A single part within a project that needs to be printed."""
+    """A standalone reusable part that can be attached to projects via ProjectPart edges."""
 
-    project = models.ForeignKey("core.Project", on_delete=models.CASCADE, related_name="parts")
     name = models.CharField(
         max_length=255,
         blank=True,
         help_text="Optional — derived from the uploaded filename if left empty.",
     )
     stl_file = models.FileField(upload_to="stl_files/", blank=True, null=True)
-    quantity = models.PositiveIntegerField(default=1, validators=[MinValueValidator(1)])
     color = models.CharField(
         max_length=100,
         blank=True,
@@ -85,44 +82,9 @@ class Part(models.Model):
 
     class Meta:
         ordering = ["name"]
-        constraints = [
-            CheckConstraint(
-                condition=Q(quantity__gte=1),
-                name="part_quantity_gte_1",
-            ),
-        ]
 
     def __str__(self) -> str:
-        return f"{self.name} ({self.project.name})"
-
-    def save(self, *args, **kwargs) -> None:
-        """Persist the part and keep its ``ProjectPart`` edge in sync (transition shim).
-
-        During the expand phase the legacy ``project`` FK stays authoritative; this mirror
-        keeps exactly one ``ProjectPart`` edge consistent with it so later phases can read
-        edges without staleness. Removed in the contract phase.
-
-        The FK write and the edge reconciliation run inside one
-        :func:`~django.db.transaction.atomic` block, so a failure in either leaves neither
-        applied and the edge never lags the authoritative FK. This does not serialize two
-        *concurrent* reassignments of the same part against each other — the same bounded,
-        application-level limitation documented on
-        :meth:`Project._assert_parent_acyclic`; the edges self-heal on the next save and via
-        the backfill helper, and the whole shim is removed in the contract phase.
-        """
-        from core.models.composition import ProjectPart
-
-        with transaction.atomic():
-            super().save(*args, **kwargs)
-            if self.project_id is None:
-                ProjectPart.objects.filter(part=self).delete()
-                return
-            ProjectPart.objects.filter(part=self).exclude(project_id=self.project_id).delete()
-            ProjectPart.objects.update_or_create(
-                project_id=self.project_id,
-                part=self,
-                defaults={"quantity": self.quantity},
-            )
+        return self.name
 
     def containing_projects(self) -> list[Project]:
         """Return distinct projects that include this part via a composition edge.
@@ -142,37 +104,21 @@ class Part(models.Model):
 
     @property
     def effective_print_preset_id(self) -> Optional[int]:
-        """Return the effective print preset ID (own or inherited from project hierarchy).
-
-        Resolution order:
-        1. The part's own ``print_preset_id``
-        2. The project's ``default_print_preset_id`` (traversing parent projects)
+        """Return the part's own print preset ID, or ``None`` if not set.
 
         Returns:
-            Print preset primary key, or ``None`` if none is configured.
+            Print preset primary key, or ``None``.
         """
-        if self.print_preset_id:
-            return self.print_preset_id
-        if self.project_id:
-            return self.project.effective_default_print_preset_id
-        return None
+        return self.print_preset_id or None
 
     @property
     def effective_print_preset(self) -> Optional[OrcaPrintPreset]:
-        """Return the effective print preset object (own or inherited from project hierarchy).
-
-        Resolution order:
-        1. The part's own ``print_preset``
-        2. The project's effective default print preset (traversing parent projects)
+        """Return the part's own print preset, or ``None`` if not set.
 
         Returns:
-            OrcaPrintPreset instance, or ``None`` if none is configured.
+            OrcaPrintPreset instance, or ``None``.
         """
-        if self.print_preset_id:
-            return self.print_preset
-        if self.project_id:
-            return self.project.effective_default_print_preset
-        return None
+        return self.print_preset if self.print_preset_id else None
 
     @property
     def color_display(self) -> str:
@@ -270,16 +216,6 @@ class Part(models.Model):
             .distinct()
         )
         return self.job_entries.filter(pk__in=completed_pks).aggregate(total=Sum("quantity"))["total"] or 0
-
-    @property
-    def remaining_quantity(self) -> int:
-        """Number of this part still needed to complete the project."""
-        return max(0, self.quantity - self.printed_quantity)
-
-    @property
-    def is_complete(self) -> bool:
-        """Whether all required instances of this part have been printed."""
-        return self.printed_quantity >= self.quantity
 
 
 class PrintTimeEstimate(models.Model):

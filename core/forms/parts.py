@@ -20,7 +20,6 @@ class PartForm(forms.ModelForm):
         fields = [
             "name",
             "stl_file",
-            "quantity",
             "spoolman_filament_id",
             "color",
             "material",

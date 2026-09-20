@@ -36,9 +36,8 @@ class ApiSearchTests(APITestCase):
 
     def test_part_search_by_name_and_material(self) -> None:
         """?search matches part name or material."""
-        project = Project.objects.create(name="Module")
-        Part.objects.create(project=project, name="Bracket", material="PLA")
-        Part.objects.create(project=project, name="Gear", material="PETG")
+        Part.objects.create(name="Bracket", material="PLA")
+        Part.objects.create(name="Gear", material="PETG")
         by_name = self.client.get("/api/v1/parts/?search=bracket")
         self.assertEqual([p["name"] for p in _results(by_name.data)], ["Bracket"])
         by_material = self.client.get("/api/v1/parts/?search=petg")

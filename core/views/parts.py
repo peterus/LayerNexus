@@ -21,6 +21,7 @@ from core.models import (
     Part,
     PrintJob,
     Project,
+    ProjectPart,
     SpoolmanFilamentMapping,
 )
 from core.services.spoolman import SpoolmanClient, SpoolmanError
@@ -153,7 +154,7 @@ class PartDetailView(LoginRequiredMixin, DetailView):
 
         draft_jobs = PrintJob.objects.filter(
             status=PrintJob.STATUS_DRAFT,
-        ).prefetch_related("job_parts__part__project")
+        ).prefetch_related("job_parts__part")
 
         compatible_jobs = []
         for job in draft_jobs:
@@ -261,10 +262,10 @@ class PartCreateView(_SpoolmanFilamentMixin, ProjectManageMixin, CreateView):
         return form
 
     def form_valid(self, form):
-        form.instance.project = self.project
         self.apply_spoolman_filament(form)
 
         response = super().form_valid(form)
+        ProjectPart.objects.create(project=self.project, part=self.object, quantity=1)
         messages.success(self.request, "Part added successfully.")
 
         # Trigger background estimation slicing
@@ -335,7 +336,7 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["used_in"] = self.object.project.parent_assemblies()
+        context["used_in"] = self.object.containing_projects()
         context["spoolman_configured"] = self._spoolman_configured
         context["spoolman_colors"] = self._spoolman_colors
         context["spoolman_colors_json"] = json.dumps(self._spoolman_colors)
@@ -360,7 +361,7 @@ class PartDeleteView(ProjectManageMixin, DeleteView):
         return context
 
     def get_success_url(self):
-        return reverse_lazy("core:project_detail", kwargs={"pk": self.object.project.pk})
+        return reverse_lazy("core:part_library")
 
     def form_valid(self, form):
         messages.success(self.request, "Part deleted.")

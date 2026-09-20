@@ -79,15 +79,11 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
 
         # Create two parts with PENDING status
         p1 = Part.objects.create(
-            project=self.project,
             name="Worker P1",
-            quantity=1,
             estimation_status=Part.ESTIMATION_PENDING,
         )
         p2 = Part.objects.create(
-            project=self.project,
             name="Worker P2",
-            quantity=1,
             estimation_status=Part.ESTIMATION_PENDING,
         )
 
@@ -149,9 +145,7 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
 
         # Create a pending estimation
         part = Part.objects.create(
-            project=self.project,
             name="Est Part",
-            quantity=1,
             estimation_status=Part.ESTIMATION_PENDING,
         )
 

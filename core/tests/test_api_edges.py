@@ -100,7 +100,7 @@ class ApiPartEdgeTests(APITestCase):
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
         self.owner = Project.objects.create(name="Owner")
         self.other = Project.objects.create(name="Other")
-        self.part = Part.objects.create(project=self.owner, name="Shared bracket", quantity=1)
+        self.part = Part.objects.create(name="Shared bracket")
 
     def test_attach_part_edge(self) -> None:
         """POST attaches an existing part to another project via an edge."""

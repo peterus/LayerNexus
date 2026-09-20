@@ -22,7 +22,7 @@
         {% for item in cost_breakdown %}
         <tr>
           <td>{{ item.part.name }}</td>
-          <td>{{ item.part.quantity }}</td>
+          <td>{{ item.quantity }}</td>
           {% if item.cost %}
           <td>{{ item.cost.filament_cost }}</td>
           <td>{{ item.cost.electricity_cost }}</td>

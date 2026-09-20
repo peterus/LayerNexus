@@ -4,7 +4,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate, Project
+from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate, Project, ProjectPart
 from core.tests.mixins import TestDataMixin
 
 
@@ -12,24 +12,21 @@ class TargetAssemblyFieldTests(TestCase):
     """The ``PrintJobPart.target_assembly`` FK (Task 1)."""
 
     def test_job_part_can_be_attributed_to_assembly(self):
-        home = Project.objects.create(name="home")
         truck = Project.objects.create(name="Truck A")
-        part = Part.objects.create(project=home, name="bolt", quantity=1)
+        part = Part.objects.create(name="bolt")
         job = PrintJob.objects.create()
         jp = PrintJobPart.objects.create(print_job=job, part=part, quantity=5, target_assembly=truck)
         self.assertEqual(jp.target_assembly, truck)
 
     def test_target_assembly_defaults_null(self):
-        home = Project.objects.create(name="home")
-        part = Part.objects.create(project=home, name="bolt", quantity=1)
+        part = Part.objects.create(name="bolt")
         job = PrintJob.objects.create()
         jp = PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
         self.assertIsNone(jp.target_assembly)
 
     def test_deleting_assembly_nulls_attribution(self):
-        home = Project.objects.create(name="home")
         truck = Project.objects.create(name="Truck A")
-        part = Part.objects.create(project=home, name="bolt", quantity=1)
+        part = Part.objects.create(name="bolt")
         job = PrintJob.objects.create()
         jp = PrintJobPart.objects.create(print_job=job, part=part, quantity=5, target_assembly=truck)
         truck.delete()
@@ -47,19 +44,17 @@ class PrintedForContextTests(TestCase):
         return job
 
     def test_printed_quantity_for_filters_by_assembly(self):
-        home = Project.objects.create(name="home")
         a = Project.objects.create(name="Truck A")
         b = Project.objects.create(name="Truck B")
-        bolt = Part.objects.create(project=home, name="bolt", quantity=1)
+        bolt = Part.objects.create(name="bolt")
         self._completed_job_for(bolt, 10, a)  # 10 printed for A
         self.assertEqual(bolt.printed_quantity_for(a), 10)
         self.assertEqual(bolt.printed_quantity_for(b), 0)  # none for B
         self.assertEqual(bolt.printed_quantity, 10)  # global still counts it
 
     def test_unattributed_prints_not_counted_for_any_assembly(self):
-        home = Project.objects.create(name="home")
         a = Project.objects.create(name="Truck A")
-        bolt = Part.objects.create(project=home, name="bolt", quantity=1)
+        bolt = Part.objects.create(name="bolt")
         # Completed but unattributed (target_assembly=None)
         job = PrintJob.objects.create(status="completed")
         PrintJobPart.objects.create(print_job=job, part=bolt, quantity=7)
@@ -68,9 +63,8 @@ class PrintedForContextTests(TestCase):
         self.assertEqual(bolt.printed_quantity, 7)  # still in global
 
     def test_incomplete_jobs_not_counted(self):
-        home = Project.objects.create(name="home")
         a = Project.objects.create(name="Truck A")
-        bolt = Part.objects.create(project=home, name="bolt", quantity=1)
+        bolt = Part.objects.create(name="bolt")
         job = PrintJob.objects.create(status="printing")
         PrintJobPart.objects.create(print_job=job, part=bolt, quantity=4, target_assembly=a)
         PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_PRINTING)
@@ -86,12 +80,9 @@ class VariantProgressTests(TestCase):
         PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
 
     def test_shared_part_progress_is_per_variant(self):
-        from core.models import ProjectPart
-
         a = Project.objects.create(name="Truck A")
         b = Project.objects.create(name="Truck B")
-        home = Project.objects.create(name="home")
-        bolt = Part.objects.create(project=home, name="bolt", quantity=1)
+        bolt = Part.objects.create(name="bolt")
         ProjectPart.objects.create(project=a, part=bolt, quantity=10)  # edge count: each truck needs 10
         ProjectPart.objects.create(project=b, part=bolt, quantity=10)
         self._complete(bolt, 10, a)  # printed 10 bolts FOR Truck A
@@ -100,11 +91,8 @@ class VariantProgressTests(TestCase):
         self.assertEqual(b.variant_progress()["percent"], 0)  # B still needs its own 10
 
     def test_variant_progress_structure_and_partial(self):
-        from core.models import ProjectPart
-
         a = Project.objects.create(name="Truck A")
-        home = Project.objects.create(name="home")
-        bolt = Part.objects.create(project=home, name="bolt", quantity=1)
+        bolt = Part.objects.create(name="bolt")
         ProjectPart.objects.create(project=a, part=bolt, quantity=10)  # edge count: 10 needed
         self._complete(bolt, 4, a)  # 4 of 10
 
@@ -127,12 +115,11 @@ class VariantProgressTests(TestCase):
         self.assertEqual(prog["parts"], [])
 
     def test_child_module_edge_multiplier(self):
-        from core.models import ProjectComponent, ProjectPart
+        from core.models import ProjectComponent
 
         truck = Project.objects.create(name="Truck A")
         wheel = Project.objects.create(name="Wheel")
-        home = Project.objects.create(name="home")
-        bolt = Part.objects.create(project=home, name="bolt", quantity=1)
+        bolt = Part.objects.create(name="bolt")
         ProjectPart.objects.create(project=wheel, part=bolt, quantity=2)  # edge count: 2 per wheel
         ProjectComponent.objects.create(parent_project=truck, child_project=wheel, quantity=4)  # 4 wheels
 
@@ -151,7 +138,8 @@ class AggregatedStatusPerAssemblyTests(TestCase):
     def test_complete_only_when_printed_for_this_assembly(self):
         truck = Project.objects.create(name="Truck")
         other = Project.objects.create(name="Other")
-        bolt = Part.objects.create(project=truck, name="bolt", quantity=2)  # edge into truck via dual-write
+        bolt = Part.objects.create(name="bolt")
+        ProjectPart.objects.create(project=truck, part=bolt, quantity=2)
 
         # Printed 2, but attributed to a DIFFERENT assembly → truck is not complete.
         self._complete(bolt, 2, other)
@@ -164,12 +152,11 @@ class AggregatedStatusPerAssemblyTests(TestCase):
     def test_in_progress_uses_attributed_prints(self):
         truck = Project.objects.create(name="Truck")
         bolt = Part.objects.create(
-            project=truck,
             name="bolt",
-            quantity=3,
             filament_used_grams=10.0,
             estimation_status=Part.ESTIMATION_SUCCESS,
         )
+        ProjectPart.objects.create(project=truck, part=bolt, quantity=3)
         self._complete(bolt, 1, truck)  # 1 of 3 attributed to truck
         self.assertEqual(truck.aggregated_status, Project.STATUS_IN_PROGRESS)
 

@@ -6,7 +6,7 @@ from django.contrib.auth.models import Permission, User
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from core.models import Part, Project
+from core.models import Part, Project, ProjectPart
 
 
 class ApiProjectPartTests(APITestCase):
@@ -38,48 +38,44 @@ class ApiProjectPartTests(APITestCase):
         self.assertFalse(Project.objects.filter(pk=pk).exists())
 
     def test_part_crud_roundtrip(self) -> None:
-        """Create a part in a project, patch scalar fields and delete it."""
-        project = Project.objects.create(name="Module")
+        """Create a standalone part, patch scalar fields and delete it."""
         resp = self.client.post(
             "/api/v1/parts/",
-            {"project": project.pk, "name": "Gear", "quantity": 3, "material": "PLA", "color": "red"},
+            {"name": "Gear", "material": "PLA", "color": "red"},
             format="json",
         )
         self.assertEqual(resp.status_code, 201, resp.data)
         pk = resp.data["id"]
-        self.assertEqual(resp.data["quantity"], 3)
+        self.assertNotIn("quantity", resp.data)
 
         resp = self.client.patch(
             f"/api/v1/parts/{pk}/",
-            {"color": "blue", "notes": "tight fit", "quantity": 5},
+            {"color": "blue", "notes": "tight fit"},
             format="json",
         )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["color"], "blue")
-        self.assertEqual(resp.data["quantity"], 5)
         self.assertEqual(resp.data["notes"], "tight fit")
 
         resp = self.client.delete(f"/api/v1/parts/{pk}/")
         self.assertEqual(resp.status_code, 204)
         self.assertFalse(Part.objects.filter(pk=pk).exists())
 
-    def test_part_create_auto_edge(self) -> None:
-        """Creating a part also materialises the matching ProjectPart edge (shim)."""
+    def test_part_attach_to_project_via_edge(self) -> None:
+        """A part can be attached to a project by creating a ProjectPart edge directly."""
         project = Project.objects.create(name="Module")
-        resp = self.client.post(
-            "/api/v1/parts/",
-            {"project": project.pk, "name": "Bracket"},
-            format="json",
-        )
+        resp = self.client.post("/api/v1/parts/", {"name": "Bracket"}, format="json")
         self.assertEqual(resp.status_code, 201)
-        self.assertTrue(project.part_links.filter(part_id=resp.data["id"]).exists())
+        part_pk = resp.data["id"]
+        ProjectPart.objects.create(project=project, part_id=part_pk, quantity=3)
+        self.assertTrue(project.part_links.filter(part_id=part_pk).exists())
 
     def test_project_tree(self) -> None:
         """The tree endpoint returns nested child modules, direct parts and hardware."""
         parent = Project.objects.create(name="Assembly")
         child = Project.objects.create(name="Sub")
         parent.child_links.create(child_project=child, quantity=2)
-        part = Part.objects.create(project=child, name="Screw holder", quantity=1)
+        part = Part.objects.create(name="Screw holder")
         child.part_links.get_or_create(part=part, defaults={"quantity": 1})
 
         resp = self.client.get(f"/api/v1/projects/{parent.pk}/tree/")

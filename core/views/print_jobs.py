@@ -92,12 +92,12 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
     context_object_name = "job"
 
     def get_queryset(self):
-        return PrintJob.objects.prefetch_related("job_parts__part__project", "plates")
+        return PrintJob.objects.prefetch_related("job_parts__part", "plates")
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         job = self.object
-        context["job_parts"] = job.job_parts.select_related("part__project")
+        context["job_parts"] = job.job_parts.select_related("part")
         context["plates"] = job.plates.all()
         has_parts = job.job_parts.exists()
         parts_valid = has_parts and all(jp.part.stl_file for jp in job.job_parts.select_related("part"))
@@ -109,11 +109,7 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
         context["missing_machine_profile"] = job.status == PrintJob.STATUS_DRAFT and not has_machine
 
         # Resolve effective print preset and filament profile from first part
-        first_jp = job.job_parts.select_related(
-            "part__print_preset",
-            "part__project__default_print_preset",
-            "part__project__parent__default_print_preset",
-        ).first()
+        first_jp = job.job_parts.select_related("part__print_preset").first()
         if first_jp:
             context["effective_print_preset"] = first_jp.part.effective_print_preset
             if first_jp.part.spoolman_filament_id:
@@ -236,7 +232,7 @@ class AddPartToJobView(RoleRequiredMixin, View):
             return redirect("core:part_detail", pk=part.pk)
 
         # Validate preset/filament compatibility with existing parts
-        existing_parts = job.job_parts.select_related("part__project").all()
+        existing_parts = job.job_parts.select_related("part").all()
         if existing_parts:
             effective_preset_id = part.effective_print_preset_id
             effective_filament_id = part.spoolman_filament_id

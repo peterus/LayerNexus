@@ -18,8 +18,7 @@ class DuplicateAsVariantModelTests(TestCase):
     def _source(self):
         truck = Project.objects.create(name="Truck A", description="base")
         cabin = Project.objects.create(name="Cabin")
-        home = Project.objects.create(name="home")
-        bolt = Part.objects.create(project=home, name="bolt", quantity=1)
+        bolt = Part.objects.create(name="bolt")
         hp = HardwarePart.objects.create(name="Screw", category="screws", unit_price="0.10")
         ProjectComponent.objects.create(parent_project=truck, child_project=cabin, quantity=2, position=0)
         ProjectPart.objects.create(project=truck, part=bolt, quantity=10, position=0)

@@ -150,8 +150,7 @@ class ProjectViewTests(TestDataMixin, TestCase):
         from core.models import Part, ProjectPart
 
         proj = Project.objects.create(name="CountProj", created_by=self.user)
-        home = Project.objects.create(name="home", created_by=self.user)
-        p = Part.objects.create(project=home, name="X", quantity=1)
+        p = Part.objects.create(name="X")
         ProjectPart.objects.create(project=proj, part=p)  # direct edge into proj
         resp = self.client.get(reverse("core:project_detail", kwargs={"pk": proj.pk}))
         self.assertContains(resp, "X")  # the referenced part is listed
@@ -284,7 +283,7 @@ class AssemblyEditorViewTests(TestDataMixin, TestCase):
         from core.models import Part, ProjectPart
 
         assembly = Project.objects.create(name="Assembly", created_by=self.user)
-        lib_part = Part.objects.create(project=self.other_project, name="LibBolt", quantity=1)
+        lib_part = Part.objects.create(name="LibBolt")
         resp = self.client.post(
             reverse("core:project_add_part", kwargs={"pk": assembly.pk}),
             {"part": lib_part.pk, "quantity": 6},
@@ -296,7 +295,7 @@ class AssemblyEditorViewTests(TestDataMixin, TestCase):
         from core.models import Part, ProjectPart
 
         assembly = Project.objects.create(name="Assembly", created_by=self.user)
-        part = Part.objects.create(project=self.other_project, name="Screw", quantity=1)
+        part = Part.objects.create(name="Screw")
         edge = ProjectPart.objects.create(project=assembly, part=part)
         resp = self.client.post(reverse("core:project_part_remove", kwargs={"pk": edge.pk}))
         self.assertEqual(resp.status_code, 302)

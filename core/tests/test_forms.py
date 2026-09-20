@@ -366,11 +366,6 @@ class PartFormFileValidationTests(TestCase):
         )
         self.assertTrue(form.is_valid())
 
-    def test_quantity_zero_rejected(self):
-        form = PartForm(data={"name": "Part", "quantity": 0, "color": "black", "material": "PLA"})
-        self.assertFalse(form.is_valid())
-        self.assertIn("quantity", form.errors)
-
 
 @override_settings(MEDIA_ROOT="/tmp/layernexus_test_media/")  # noqa: S108
 class ProjectDocumentFormTests(TestCase):
@@ -557,17 +552,17 @@ class AddPartToProjectFormTests(TestCase):
         from core.models import Part
 
         self.project = Project.objects.create(name="Assembly")
-        self.other = Project.objects.create(name="Other")
-        self.part = Part.objects.create(project=self.other, name="Bolt", quantity=1)
+        self.part = Part.objects.create(name="Bolt")
 
     def test_excludes_already_linked_parts(self):
         from core.forms import AddPartToProjectForm
-        from core.models import Part
+        from core.models import Part, ProjectPart
 
-        already = Part.objects.create(project=self.project, name="Nut", quantity=1)
+        already = Part.objects.create(name="Nut")
+        ProjectPart.objects.create(project=self.project, part=already, quantity=1)
         form = AddPartToProjectForm(project=self.project)
         qs = list(form.fields["part"].queryset)
-        self.assertNotIn(already, qs)  # already linked via dual-write edge
+        self.assertNotIn(already, qs)  # already linked via edge
         self.assertIn(self.part, qs)  # library part available
 
     def test_valid_add_creates_edge(self):

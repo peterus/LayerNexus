@@ -22,7 +22,7 @@ class ApiUploadTests(APITestCase):
         token = Token.objects.create(user=self.user)
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
         self.project = Project.objects.create(name="Module")
-        self.part = Part.objects.create(project=self.project, name="Gear", quantity=1)
+        self.part = Part.objects.create(name="Gear")
 
     def test_stl_upload_sets_file_and_triggers_estimation(self) -> None:
         """Uploading an STL saves the file and calls the shared estimation entrypoint."""

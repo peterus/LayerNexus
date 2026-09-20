@@ -2,12 +2,9 @@
 
 All composition is expressed through the Phase-1 edge models
 (:class:`~core.models.composition.ProjectComponent` / ``ProjectPart``); the legacy
-``Project.parent`` / ``Part.project`` FKs are not exposed as composition inputs so the
-API survives the future Phase-6 contract cleanup. The one unavoidable exception is
-:attr:`PartSerializer.project`: ``Part.project`` is currently ``NOT NULL``, so a part
-must name its owning module on creation. The model's transitional ``save()`` shim then
-keeps the matching ``ProjectPart`` edge in sync, and reusable sharing across assemblies
-is done purely via the ``POST /projects/{id}/parts/`` edge endpoint.
+``Project.parent`` / ``Part.project`` FKs have been removed (Phase-6 contract).
+Parts are created standalone and attached to projects via the
+``POST /projects/{id}/parts/`` edge endpoint.
 """
 
 from __future__ import annotations
@@ -55,20 +52,16 @@ class PartSerializer(serializers.ModelSerializer):
     """Serialize a part's writable scalar fields plus read-only estimation results.
 
     ``stl_file`` is read-only here — it is uploaded through the dedicated multipart
-    ``POST /parts/{id}/stl/`` endpoint so ordinary create/update stays JSON. ``project``
-    is the owning module (required on creation; see the module docstring).
+    ``POST /parts/{id}/stl/`` endpoint so ordinary create/update stays JSON. Parts are
+    attached to projects via the ``POST /projects/{id}/parts/`` edge endpoint.
     """
-
-    project = serializers.PrimaryKeyRelatedField(queryset=Project.objects.all())
 
     class Meta:
         model = Part
         fields = [
             "id",
-            "project",
             "name",
             "stl_file",
-            "quantity",
             "spoolman_filament_id",
             "color",
             "material",

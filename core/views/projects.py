@@ -314,12 +314,12 @@ class ProjectCostView(LoginRequiredMixin, DetailView):
         context = super().get_context_data(**kwargs)
         context["used_in"] = self.object.parent_assemblies()
         project = self.object
-        parts = [part for part, _quantity in project.direct_parts()]
+        parts_with_qty = list(project.direct_parts())
         cost_breakdown = []
         total_cost = 0
 
-        for part in parts:
-            part_costs = {"part": part, "cost": None}
+        for part, qty in parts_with_qty:
+            part_costs = {"part": part, "quantity": qty, "cost": None}
             if part.filament_used_grams and part.estimated_print_time:
                 hours = part.estimated_print_time.total_seconds() / 3600
                 # Try to find a cost profile from recent print jobs
@@ -327,8 +327,8 @@ class ProjectCostView(LoginRequiredMixin, DetailView):
                 if recent_job and hasattr(recent_job.printer, "cost_profile"):
                     cp = recent_job.printer.cost_profile
                     part_costs["cost"] = cp.calculate_print_cost(
-                        hours * part.quantity,
-                        part.filament_used_grams * part.quantity,
+                        hours * qty,
+                        part.filament_used_grams * qty,
                     )
                     total_cost += part_costs["cost"]["total_cost"]
             cost_breakdown.append(part_costs)

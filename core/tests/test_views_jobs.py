@@ -4,7 +4,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate
+from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate, ProjectPart
 from core.tests.mixins import TestDataMixin
 
 
@@ -63,12 +63,11 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
 
     def test_creates_single_job_for_compatible_parts(self):
         """All parts with same preset/filament end up in one job."""
-        Part.objects.create(
-            project=self.project,
+        part_two = Part.objects.create(
             name="Part Two",
-            quantity=2,
             stl_file=SimpleUploadedFile("part2.stl", b"solid part2"),
         )
+        ProjectPart.objects.create(project=self.project, part=part_two, quantity=2)
         resp = self.client.post(self._url())
         self.assertEqual(resp.status_code, 302)
         # One job created
@@ -84,13 +83,12 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
         self.part.spoolman_filament_id = 10
         self.part.save()
 
-        Part.objects.create(
-            project=self.project,
+        part_two = Part.objects.create(
             name="Part Two",
-            quantity=1,
             spoolman_filament_id=20,
             stl_file=SimpleUploadedFile("part2.stl", b"solid part2"),
         )
+        ProjectPart.objects.create(project=self.project, part=part_two, quantity=1)
         resp = self.client.post(self._url())
         self.assertEqual(resp.status_code, 302)
         jobs = PrintJob.objects.filter(created_by=self.user)
@@ -98,11 +96,8 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
 
     def test_skips_parts_without_stl(self):
         """Parts without an STL file are not added to any job."""
-        Part.objects.create(
-            project=self.project,
-            name="No STL Part",
-            quantity=1,
-        )
+        no_stl = Part.objects.create(name="No STL Part")
+        ProjectPart.objects.create(project=self.project, part=no_stl, quantity=1)
         resp = self.client.post(self._url())
         self.assertEqual(resp.status_code, 302)
         job = PrintJob.objects.filter(created_by=self.user).first()
@@ -113,17 +108,14 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
     def test_skips_fully_printed_parts(self):
         """Parts with a per-assembly remaining of 0 are skipped."""
         # Mark part as fully printed FOR this project via a completed, attributed job plate.
+        # Edge quantity is 3 (from TestDataMixin).
         job = PrintJob.objects.create(
             name="Old Job",
             status=PrintJob.STATUS_DRAFT,
             created_by=self.user,
         )
-        PrintJobPart.objects.create(
-            print_job=job, part=self.part, quantity=self.part.quantity, target_assembly=self.project
-        )
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=3, target_assembly=self.project)
         PrintJobPlate.objects.create(print_job=job, plate_number=1, status="completed")
-        # Now remaining_quantity should be 0
-        self.assertEqual(self.part.remaining_quantity, 0)
 
         resp = self.client.post(self._url())
         self.assertEqual(resp.status_code, 302)
@@ -132,11 +124,12 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
         self.assertEqual(new_jobs.count(), 1)  # only the old one
 
     def test_uses_remaining_quantity(self):
-        """Job parts use remaining_quantity, not total quantity."""
+        """Job quantity equals the per-assembly remaining (needed − printed)."""
         self.client.post(self._url())
         job = PrintJob.objects.filter(created_by=self.user).first()
         jp = job.job_parts.first()
-        self.assertEqual(jp.quantity, self.part.remaining_quantity)
+        # Nothing printed yet; remaining == edge quantity (3 from TestDataMixin).
+        self.assertEqual(jp.quantity, 3)
 
     def test_job_parts_attributed_to_project(self):
         """Created job parts carry target_assembly == the source project (Phase 6a)."""
@@ -147,7 +140,7 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
 
     def test_uses_per_assembly_remaining(self):
         """Quantity is needed − printed-for-this-assembly, not the global remaining."""
-        # 3 needed (self.part.quantity), 1 already printed FOR this project → 2 remaining.
+        # 3 needed (edge quantity from TestDataMixin), 1 already printed FOR this project → 2 remaining.
         done = PrintJob.objects.create(status="completed", created_by=self.user)
         PrintJobPart.objects.create(print_job=done, part=self.part, quantity=1, target_assembly=self.project)
         PrintJobPlate.objects.create(print_job=done, plate_number=1, status="completed")
@@ -177,13 +170,12 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
         """When multiple jobs are created, redirect to the project."""
         self.part.spoolman_filament_id = 10
         self.part.save()
-        Part.objects.create(
-            project=self.project,
+        part_two = Part.objects.create(
             name="Part Two",
-            quantity=1,
             spoolman_filament_id=20,
             stl_file=SimpleUploadedFile("part2.stl", b"solid part2"),
         )
+        ProjectPart.objects.create(project=self.project, part=part_two, quantity=1)
         resp = self.client.post(self._url())
         self.assertRedirects(resp, reverse("core:project_detail", args=[self.project.pk]))
 
