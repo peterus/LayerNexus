@@ -394,6 +394,52 @@ class Project(models.Model):
             return 0
         return int(self.printed_parts_count / total * 100)
 
+    def variant_progress(self) -> dict:
+        """Per-assembly print progress using this project as the build context.
+
+        ``needed`` per part = ``part.quantity × edge-chain multiplier`` (from
+        :meth:`_collect_parts_with_multiplier`, i.e. Phase-2 aggregation semantics);
+        ``printed`` = quantities attributed to THIS assembly via
+        ``PrintJobPart.target_assembly`` (see :meth:`Part.printed_quantity_for`). Each
+        part is capped at its need when computing the overall percentage, so
+        over-printing one part never pushes the assembly past 100%.
+
+        The global :attr:`total_parts_count` / :attr:`progress_percent` /
+        :attr:`aggregated_status` are unaffected — this is an additional,
+        context-aware view.
+
+        Returns:
+            Dict with keys ``percent`` (int 0–100), ``needed`` (int), ``printed``
+            (int) and ``parts`` (list of ``{part, needed, printed, remaining}`` dicts).
+        """
+        from collections import defaultdict
+
+        needed_by_part: dict[int, int] = defaultdict(int)
+        part_objs: dict[int, Part] = {}
+        for part, mult in self._collect_parts_with_multiplier():
+            needed_by_part[part.pk] += part.quantity * mult
+            part_objs[part.pk] = part
+
+        rows: list[dict] = []
+        total_needed = 0
+        total_printed = 0
+        for pk, needed in needed_by_part.items():
+            part = part_objs[pk]
+            printed = part.printed_quantity_for(self)
+            total_needed += needed
+            total_printed += min(printed, needed)
+            rows.append(
+                {
+                    "part": part,
+                    "needed": needed,
+                    "printed": printed,
+                    "remaining": max(0, needed - printed),
+                }
+            )
+
+        percent = int(total_printed / total_needed * 100) if total_needed else 0
+        return {"percent": percent, "needed": total_needed, "printed": total_printed, "parts": rows}
+
     # Project-level aggregated status constants
     STATUS_EMPTY = "empty"
     STATUS_ERROR = "error"

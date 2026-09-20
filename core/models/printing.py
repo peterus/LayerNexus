@@ -144,6 +144,15 @@ class PrintJobPart(models.Model):
         validators=[MinValueValidator(1)],
         help_text="How many copies of this part are in the job",
     )
+    target_assembly = models.ForeignKey(
+        "core.Project",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="attributed_job_parts",
+        help_text="Top-level assembly this print contributes to (for per-variant progress). "
+        "Null = unattributed (counted only in global progress).",
+    )
 
     class Meta:
         unique_together = ["print_job", "part"]

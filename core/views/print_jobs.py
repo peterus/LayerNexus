@@ -189,6 +189,23 @@ class AddPartToJobView(RoleRequiredMixin, View):
 
     permission_required = "core.add_printjob"
 
+    @staticmethod
+    def _resolve_target_assembly(request: HttpRequest) -> "Project | None":
+        """Resolve the optional ``target_assembly`` POST param to a ``Project``.
+
+        Args:
+            request: The incoming request; may carry a ``target_assembly`` PK.
+
+        Returns:
+            The referenced :class:`~core.models.Project`, or ``None`` when the param
+            is absent, blank, or does not point at an existing project (invalid input
+            is treated as "unattributed" rather than raising).
+        """
+        raw = request.POST.get("target_assembly")
+        if not raw:
+            return None
+        return Project.objects.filter(pk=raw).first()
+
     def post(self, request: HttpRequest, part_pk: int) -> HttpResponse:
         """Handle adding a part to a print job."""
         part = get_object_or_404(Part, pk=part_pk)
@@ -237,15 +254,22 @@ class AddPartToJobView(RoleRequiredMixin, View):
                 )
                 return redirect("core:part_detail", pk=part.pk)
 
+        # Resolve the optional target assembly (per-variant print attribution).
+        target_assembly = self._resolve_target_assembly(request)
+
         # Add or update the part in the job
         job_part, created = PrintJobPart.objects.get_or_create(
             print_job=job,
             part=part,
-            defaults={"quantity": quantity},
+            defaults={"quantity": quantity, "target_assembly": target_assembly},
         )
         if not created:
             job_part.quantity += quantity
-            job_part.save(update_fields=["quantity"])
+            update_fields = ["quantity"]
+            if target_assembly is not None:
+                job_part.target_assembly = target_assembly
+                update_fields.append("target_assembly")
+            job_part.save(update_fields=update_fields)
             messages.success(
                 request,
                 f"Updated '{part.name}' quantity to {job_part.quantity} in '{job}'.",

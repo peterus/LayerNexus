@@ -106,6 +106,11 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
         context["direct_parts"] = self.object.direct_parts()
         context["used_in"] = self.object.parent_assemblies()
 
+        # Per-variant build progress (Phase 4): print quantities attributed to THIS
+        # project as the assembly context. The global aggregate status/progress above
+        # is unaffected.
+        context["variant_progress"] = self.object.variant_progress()
+
         # Build filament name and color lookups for part display
         parts = [part for part, _quantity in context["direct_parts"]]
         filament_ids = {p.spoolman_filament_id for p in parts if p.spoolman_filament_id}

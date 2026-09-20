@@ -214,6 +214,18 @@
             <label for="id_qty" class="form-label form-label-sm">Quantity</label>
             <input type="number" name="quantity" id="id_qty" value="{{ part.remaining_quantity|default:1 }}" min="1" class="form-control form-control-sm" style="max-width: 120px;">
           </div>
+          {% if candidate_assemblies %}
+          <div class="mb-2">
+            <label for="id_target_assembly" class="form-label form-label-sm">Build target <span class="text-muted">(optional)</span></label>
+            <select name="target_assembly" id="id_target_assembly" class="form-select form-select-sm">
+              <option value="">— Unattributed —</option>
+              {% for assembly in candidate_assemblies %}
+              <option value="{{ assembly.pk }}">{{ assembly.name }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">Attribute this print to a variant for per-build progress.</div>
+          </div>
+          {% endif %}
           <button type="submit" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Add to Job</button>
         </form>
         {% elif not part.stl_file %}

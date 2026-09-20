@@ -168,7 +168,41 @@ class PartDetailView(LoginRequiredMixin, DetailView):
                 spoolman_filament_name = mapping.spoolman_filament_name
         context["spoolman_filament_name"] = spoolman_filament_name
 
+        # Candidate assemblies for per-variant print attribution: the top-level
+        # assemblies (projects with no parent edges) that transitively contain this
+        # part. Blank selection = unattributed.
+        context["candidate_assemblies"] = self._candidate_assemblies(part)
+
         return context
+
+    @staticmethod
+    def _candidate_assemblies(part: Part) -> list[Project]:
+        """Return the top-level assemblies that transitively contain ``part``.
+
+        Walks up the composition edges (``parent_assemblies``) from every project that
+        directly contains the part, collecting the roots (projects with no parent
+        edges). A path-local guard makes a corrupt persisted cycle terminate.
+
+        Args:
+            part: The part whose containing top-level assemblies to resolve.
+
+        Returns:
+            Distinct root :class:`~core.models.Project` instances, first-seen order.
+        """
+        roots: dict[int, Project] = {}
+        visited: set[int] = set()
+        stack = list(part.containing_projects())
+        while stack:
+            project = stack.pop(0)
+            if project.pk in visited:
+                continue
+            visited.add(project.pk)
+            parents = project.parent_assemblies()
+            if not parents:
+                roots.setdefault(project.pk, project)
+            else:
+                stack.extend(parents)
+        return list(roots.values())
 
 
 class PartCreateView(_SpoolmanFilamentMixin, ProjectManageMixin, CreateView):
