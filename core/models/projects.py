@@ -230,27 +230,29 @@ class Project(models.Model):
             current = current.parent
         return None
 
-    #: Relation that carries everything ``aggregated_status`` / ``progress_percent``
-    #: need for one project node (parts, their completed-plate job info).
-    _AGGREGATE_PART_LEAF = "parts__job_entries__print_job__plates"
+    #: Relation chain that carries everything the aggregate properties need for one node
+    #: (its parts via composition edges, and each part's completed-plate job info).
+    _AGGREGATE_PART_LEAF = "part_links__part__job_entries__print_job__plates"
 
     @classmethod
     def aggregate_prefetch_lookups(cls, depth: int = 3) -> list[str]:
-        """Prefetch lookups that make the recursive aggregate properties query-flat.
+        """Prefetch lookups that keep the DAG aggregate properties query-flat.
 
         Returns the ``prefetch_related`` arguments a list/detail view should use
         so that ``total_parts_count``, ``progress_percent``, ``aggregated_status``
-        and ``total_filament_grams`` traverse the sub-project tree entirely from
+        and ``total_filament_grams`` traverse the composition DAG entirely from
         cache instead of issuing a query per node/part (the N+1 that made project
         lists with status badges slow).
 
-        The self-referential ``subprojects`` relation cannot be prefetched to
-        unbounded depth, so the tree is covered up to ``depth`` levels — deep
-        enough for realistic project nesting; levels below that degrade
-        gracefully to lazy queries (never worse than before).
+        Covers, up to ``depth`` levels of ``child_links`` nesting, the part-edge leaf
+        (``part_links__part__…``) and the child-edge relation
+        (``child_links__child_project``) so the recursive collectors traverse from
+        cache. The self-referential composition relation cannot be prefetched to
+        unbounded depth; levels below ``depth`` degrade gracefully to lazy queries
+        (never worse than before).
 
         Args:
-            depth: Number of sub-project levels to cover (root counts as 0).
+            depth: Number of child-module levels to cover (root counts as 0).
 
         Returns:
             List of ``prefetch_related`` lookup strings.
@@ -259,8 +261,8 @@ class Project(models.Model):
         prefix = ""
         for _ in range(depth + 1):
             lookups.append(f"{prefix}{cls._AGGREGATE_PART_LEAF}")
-            lookups.append(f"{prefix}subprojects".rstrip("_"))
-            prefix += "subprojects__"
+            lookups.append(f"{prefix}child_links__child_project")
+            prefix += "child_links__child_project__"
         return lookups
 
     def get_descendant_ids(self, _path: set[int] | None = None) -> set[int]:
@@ -588,9 +590,7 @@ class Project(models.Model):
         next_path = _path | {self.pk}
         result = [(hw, multiplier) for hw in self.hardware_assignments.select_related("hardware_part").all()]
         for edge in self.child_links.all():
-            result.extend(
-                edge.child_project._collect_hardware_with_multiplier(multiplier * edge.quantity, next_path)
-            )
+            result.extend(edge.child_project._collect_hardware_with_multiplier(multiplier * edge.quantity, next_path))
         return result
 
     @property

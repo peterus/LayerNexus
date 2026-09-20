@@ -75,8 +75,8 @@ class ProjectAggregatePrefetchTests(TestCase):
     def test_prefetch_flat_at_full_depth(self):
         """A tree as deep as the prefetch depth is fully cache-served (0 extra queries).
 
-        Proves the trailing ``subprojects`` lookup is required: it keeps
-        ``.subprojects.all()`` at the deepest covered node served from cache
+        Proves the trailing ``child_links__child_project`` lookup is required: it keeps
+        ``.child_links.all()`` at the deepest covered node served from cache
         (empty) instead of firing a query there.
         """
         depth = 3
