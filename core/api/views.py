@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from django.shortcuts import get_object_or_404
-from rest_framework import generics, status, viewsets
+from rest_framework import filters, generics, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.request import Request
@@ -21,6 +21,7 @@ from rest_framework.response import Response
 from core.api.permissions import ReadOrProjectManage
 from core.api.serializers import (
     HardwarePartSerializer,
+    OrcaPrintPresetSerializer,
     PartSerializer,
     ProjectComponentSerializer,
     ProjectDocumentSerializer,
@@ -28,15 +29,18 @@ from core.api.serializers import (
     ProjectPartEdgeSerializer,
     ProjectSerializer,
     ProjectTreeSerializer,
+    SpoolmanFilamentMappingSerializer,
 )
 from core.models import (
     HardwarePart,
+    OrcaPrintPreset,
     Part,
     Project,
     ProjectComponent,
     ProjectDocument,
     ProjectHardware,
     ProjectPart,
+    SpoolmanFilamentMapping,
 )
 from core.views.helpers import _trigger_part_estimation
 
@@ -103,6 +107,25 @@ class HardwarePartViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer: HardwarePartSerializer) -> None:
         """Stamp the creating user onto the catalogue entry."""
         serializer.save(created_by=self.request.user)
+
+
+class SpoolmanFilamentMappingViewSet(viewsets.ReadOnlyModelViewSet):
+    """Read-only lookup of Spoolman filament mappings (valid ``spoolman_filament_id`` choices)."""
+
+    queryset = SpoolmanFilamentMapping.objects.all()
+    serializer_class = SpoolmanFilamentMappingSerializer
+    permission_classes = [ReadOrProjectManage]
+
+
+class OrcaPrintPresetViewSet(viewsets.ReadOnlyModelViewSet):
+    """Read-only lookup of instantiable, resolved print presets (valid ``part.print_preset`` choices)."""
+
+    queryset = OrcaPrintPreset.objects.filter(
+        state=OrcaPrintPreset.STATE_RESOLVED,
+        instantiation=True,
+    )
+    serializer_class = OrcaPrintPresetSerializer
+    permission_classes = [ReadOrProjectManage]
 
 
 class _ProjectScopedMixin:

@@ -12,6 +12,7 @@ from rest_framework.routers import DefaultRouter
 
 from core.api.views import (
     HardwarePartViewSet,
+    OrcaPrintPresetViewSet,
     PartViewSet,
     ProjectComponentDetail,
     ProjectComponentListCreate,
@@ -22,6 +23,7 @@ from core.api.views import (
     ProjectPartDetail,
     ProjectPartListCreate,
     ProjectViewSet,
+    SpoolmanFilamentMappingViewSet,
 )
 
 app_name = "api"
@@ -30,6 +32,8 @@ router = DefaultRouter()
 router.register("projects", ProjectViewSet, basename="project")
 router.register("parts", PartViewSet, basename="part")
 router.register("hardware-parts", HardwarePartViewSet, basename="hardwarepart")
+router.register("spoolman-filaments", SpoolmanFilamentMappingViewSet, basename="spoolman-filament")
+router.register("print-presets", OrcaPrintPresetViewSet, basename="print-preset")
 
 urlpatterns = [
     path("", include(router.urls)),
