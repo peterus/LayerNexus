@@ -110,7 +110,7 @@ class PartDetailView(LoginRequiredMixin, DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         part = self.object
-        context["ancestors"] = part.project.get_ancestors()
+        context["used_in"] = part.containing_projects()
 
         context["print_presets"] = OrcaPrintPreset.objects.filter(
             state=OrcaPrintPreset.STATE_RESOLVED,
@@ -199,7 +199,7 @@ class PartCreateView(_SpoolmanFilamentMixin, ProjectManageMixin, CreateView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["project"] = self.project
-        context["ancestors"] = self.project.get_ancestors()
+        context["used_in"] = self.project.parent_assemblies()
         context["spoolman_configured"] = self._spoolman_configured
         context["spoolman_colors"] = self._spoolman_colors
         context["spoolman_colors_json"] = json.dumps(self._spoolman_colors)
@@ -253,7 +253,7 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["ancestors"] = self.object.project.get_ancestors()
+        context["used_in"] = self.object.project.parent_assemblies()
         context["spoolman_configured"] = self._spoolman_configured
         context["spoolman_colors"] = self._spoolman_colors
         context["spoolman_colors_json"] = json.dumps(self._spoolman_colors)
@@ -267,9 +267,9 @@ class PartDeleteView(ProjectManageMixin, DeleteView):
     template_name = "core/part_confirm_delete.html"
 
     def get_context_data(self, **kwargs):
-        """Add breadcrumb ancestors to template context."""
+        """Add edge-based "used in" assemblies to template context."""
         context = super().get_context_data(**kwargs)
-        context["ancestors"] = self.object.project.get_ancestors()
+        context["used_in"] = self.object.project.parent_assemblies()
         return context
 
     def get_success_url(self):

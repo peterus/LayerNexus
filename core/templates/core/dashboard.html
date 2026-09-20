@@ -125,7 +125,7 @@
           <a href="{% url 'core:project_detail' project.pk %}" class="list-group-item list-group-item-action">
             <div class="d-flex justify-content-between align-items-center mb-1">
               <h6 class="mb-0">{{ project.name }}</h6>
-              <span class="badge bg-secondary">{{ project.parts.count }} parts</span>
+              <span class="badge bg-secondary">{{ project.direct_part_count }} parts</span>
             </div>
             <div class="progress mt-2" style="height: 6px;">
               <div class="progress-bar bg-success" role="progressbar" style="width: {{ project.progress_percent }}%;"

@@ -200,14 +200,13 @@ class ProjectCycleGuardTests(TestCase):
         self.assertEqual(ids, {a.pk, b.pk})
 
     def test_upward_walks_guarded_against_corrupt_cycle(self):
-        """get_ancestors() and effective-preset walks must terminate on a DB cycle."""
+        """Effective-preset parent walks must terminate on a DB cycle."""
         a = Project.objects.create(name="A")
         b = Project.objects.create(name="B", parent=a)
         Project.objects.filter(pk=a.pk).update(parent=b)  # a <-> b cycle
         a.refresh_from_db()
         b.refresh_from_db()
         # These upward parent walks must not loop forever.
-        self.assertLessEqual(len(a.get_ancestors()), 2)
         self.assertIsNone(a.effective_default_print_preset)
         self.assertIsNone(a.effective_default_print_preset_id)
 

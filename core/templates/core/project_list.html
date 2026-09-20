@@ -27,7 +27,7 @@
         <p class="card-text text-body-secondary text-truncate">{{ project.description|markdown|striptags|truncatewords:20 }}</p>
         {% endif %}
         <div class="d-flex gap-3 mb-2">
-          <span class="text-body-secondary"><i class="bi bi-puzzle me-1"></i>{{ project.parts.count }} parts</span>
+          <span class="text-body-secondary"><i class="bi bi-puzzle me-1"></i>{{ project.direct_part_count }} parts</span>
           <span class="text-body-secondary"><i class="bi bi-boxes me-1"></i>{{ project.total_parts_count }} total qty</span>
           {% with status=project.aggregated_status %}
           <span class="badge {% if status == 'error' %}bg-danger{% elif status == 'estimating' %}bg-info{% elif status == 'complete' %}bg-success{% elif status == 'in_progress' %}bg-primary{% elif status == 'ready' %}bg-success bg-opacity-50{% elif status == 'empty' %}bg-secondary bg-opacity-50{% else %}bg-secondary{% endif %}">

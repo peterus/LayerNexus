@@ -6,13 +6,11 @@
 <nav aria-label="breadcrumb" class="mb-3">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
-    {% for ancestor in ancestors %}
-    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' ancestor.pk %}">{{ ancestor.name }}</a></li>
-    {% endfor %}
     <li class="breadcrumb-item"><a href="{% url 'core:project_detail' project.pk %}">{{ project.name }}</a></li>
     <li class="breadcrumb-item active">Delete</li>
   </ol>
 </nav>
+{% include "core/includes/_used_in.html" %}
 {% url 'core:project_detail' project.pk as cancel %}
 {% include "core/includes/_confirm_delete.html" with object_name=project.name object_type="Project" cancel_url=cancel warning_message="This will permanently remove the project and all its parts. This action cannot be undone." delete_label="Delete Project" %}
 {% endblock %}

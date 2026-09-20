@@ -24,6 +24,11 @@ class PartViewTests(TestDataMixin, TestCase):
         resp = self.client.get(reverse("core:part_detail", args=[self.other_part.pk]))
         self.assertEqual(resp.status_code, 200)
 
+    def test_part_detail_renders_with_edges(self):
+        # Part detail must render without get_ancestors (edge-based used-in).
+        resp = self.client.get(reverse("core:part_detail", kwargs={"pk": self.part.pk}))
+        self.assertEqual(resp.status_code, 200)
+
     def test_part_create_get(self):
         resp = self.client.get(reverse("core:part_create", args=[self.project.pk]))
         self.assertEqual(resp.status_code, 200)

@@ -126,6 +126,36 @@ class ProjectViewTests(TestDataMixin, TestCase):
         self.assertNotIn(self.project, parent_qs)
         self.assertNotIn(child, parent_qs)
 
+    def test_detail_shows_used_in_for_shared_module(self):
+        from core.models import ProjectComponent
+
+        cabin = Project.objects.create(name="Cabin", created_by=self.user)
+        truck = Project.objects.create(name="Truck A", created_by=self.user)
+        ProjectComponent.objects.create(parent_project=truck, child_project=cabin)
+        resp = self.client.get(reverse("core:project_detail", kwargs={"pk": cabin.pk}))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Truck A")  # used-in assembly shown
+
+    def test_list_shows_only_top_level_edge_based(self):
+        from core.models import ProjectComponent
+
+        parent = Project.objects.create(name="TopTruck", created_by=self.user)
+        child = Project.objects.create(name="ChildModule", created_by=self.user)
+        ProjectComponent.objects.create(parent_project=parent, child_project=child)
+        resp = self.client.get(reverse("core:project_list"))
+        self.assertContains(resp, "TopTruck")
+        self.assertNotContains(resp, "ChildModule")  # referenced module is not top-level
+
+    def test_detail_part_count_uses_edges(self):
+        from core.models import Part, ProjectPart
+
+        proj = Project.objects.create(name="CountProj", created_by=self.user)
+        home = Project.objects.create(name="home", created_by=self.user)
+        p = Part.objects.create(project=home, name="X", quantity=1)
+        ProjectPart.objects.create(project=proj, part=p)  # direct edge into proj
+        resp = self.client.get(reverse("core:project_detail", kwargs={"pk": proj.pk}))
+        self.assertContains(resp, "X")  # the referenced part is listed
+
 
 class ProjectReEstimateViewTests(TestDataMixin, TestCase):
     """Tests for the ProjectReEstimateView."""
