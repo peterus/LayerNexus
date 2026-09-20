@@ -1,0 +1,54 @@
+"""DAG aggregation: shared modules and diamond multi-path counting via edges."""
+
+from django.test import TestCase
+
+from core.models import Part, Project, ProjectComponent, ProjectPart
+
+
+class DagPartAggregationTests(TestCase):
+    """_collect_parts_with_multiplier must count each path in the DAG."""
+
+    def _part(self, name: str) -> Part:
+        # Part.project is still NOT NULL in Phase 2; give each a distinct home project
+        # so the FK is satisfied. Aggregation reads edges, not this FK.
+        home = Project.objects.create(name=f"home-{name}")
+        return Part.objects.create(project=home, name=name, quantity=1)
+
+    def test_shared_module_counts_under_each_parent(self):
+        # cabin (with 1 part) shared by truck_a and truck_b via edges
+        cabin = Project.objects.create(name="cabin")
+        bolt = self._part("bolt")
+        ProjectPart.objects.create(project=cabin, part=bolt, quantity=10)
+        truck_a = Project.objects.create(name="truck-a")
+        truck_b = Project.objects.create(name="truck-b")
+        ProjectComponent.objects.create(parent_project=truck_a, child_project=cabin, quantity=1)
+        ProjectComponent.objects.create(parent_project=truck_b, child_project=cabin, quantity=1)
+
+        a = {(p.pk, m) for p, m in truck_a._collect_parts_with_multiplier()}
+        self.assertIn((bolt.pk, 10), a)
+        b = {(p.pk, m) for p, m in truck_b._collect_parts_with_multiplier()}
+        self.assertIn((bolt.pk, 10), b)
+
+    def test_diamond_counts_every_path(self):
+        # A->B(1), A->C(1), B->D(2), C->D(3); D has part x(qty 1). needed(x) = 2+3 = 5
+        a = Project.objects.create(name="A")
+        b = Project.objects.create(name="B")
+        c = Project.objects.create(name="C")
+        d = Project.objects.create(name="D")
+        x = self._part("x")
+        ProjectPart.objects.create(project=d, part=x, quantity=1)
+        ProjectComponent.objects.create(parent_project=a, child_project=b, quantity=1)
+        ProjectComponent.objects.create(parent_project=a, child_project=c, quantity=1)
+        ProjectComponent.objects.create(parent_project=b, child_project=d, quantity=2)
+        ProjectComponent.objects.create(parent_project=c, child_project=d, quantity=3)
+
+        total = sum(p.quantity * m for p, m in a._collect_parts_with_multiplier() if p.pk == x.pk)
+        self.assertEqual(total, 5)
+
+    def test_corrupt_cycle_terminates(self):
+        # Force a cycle via edges (bypassing save() guard) and ensure no RecursionError.
+        a = Project.objects.create(name="A")
+        b = Project.objects.create(name="B")
+        ProjectComponent.objects.create(parent_project=a, child_project=b, quantity=1)
+        ProjectComponent.objects.bulk_create([ProjectComponent(parent_project=b, child_project=a, quantity=1)])
+        self.assertIsInstance(a._collect_parts_with_multiplier(), list)  # must return, not hang

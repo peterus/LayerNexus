@@ -288,34 +288,56 @@ class Project(models.Model):
             ids |= sub.get_descendant_ids(_visited)
         return ids
 
-    def _collect_parts_with_multiplier(
-        self, multiplier: int = 1, _visited: set[int] | None = None
+    def _expand_parts_relative(
+        self,
+        _path: set[int],
+        _memo: dict[int, list[tuple[Part, int]]],
     ) -> list[tuple[Part, int]]:
-        """Collect all parts recursively with their effective quantity multiplier.
+        """Return ``[(part, multiplier_relative_to_self)]`` over the composition DAG.
 
-        Traverses the sub-project tree and accumulates the product of all
-        ancestor ``quantity`` values so that filament/part counts at any
-        level reflect how many times that sub-project is actually used.
+        Traverses ``part_links`` (direct parts) and ``child_links`` (child modules),
+        multiplying each edge ``quantity`` along the path. The node itself counts as ×1.
+        A per-node ``_memo`` caches the (path-independent, in an acyclic graph) expansion so
+        a module shared via several paths is expanded once and scaled per incoming edge.
+        ``_path`` guards against a corrupt persisted cycle: a node recurring on its own
+        recursion stack contributes nothing further (traversal terminates, degrading
+        gracefully — consistent with the Phase-1 corrupt-cycle stance).
 
         Args:
-            multiplier: Accumulated parent quantity factor (default 1 for
-                the project itself).
-            _visited: Internal set of already-visited project PKs; a safety net
-                so a corrupt cycle persisted outside validation terminates the
-                recursion instead of raising ``RecursionError``.
+            _path: PKs on the current recursion stack (path-local cycle guard).
+            _memo: Per-node cache of relative expansions, keyed by project PK.
+
+        Returns:
+            List of ``(part, multiplier_relative_to_self)`` tuples.
+        """
+        if self.pk in _memo:
+            return _memo[self.pk]
+        if self.pk in _path:
+            return []
+        next_path = _path | {self.pk}
+        rel: list[tuple[Part, int]] = [(link.part, link.quantity) for link in self.part_links.all()]
+        for edge in self.child_links.all():
+            for part, mult in edge.child_project._expand_parts_relative(next_path, _memo):
+                rel.append((part, edge.quantity * mult))
+        _memo[self.pk] = rel
+        return rel
+
+    def _collect_parts_with_multiplier(self, multiplier: int = 1) -> list[tuple[Part, int]]:
+        """Collect all parts over the composition DAG with their effective multiplier.
+
+        Reads the Phase-1 composition edges (``part_links``/``child_links``). Each part is
+        returned once per distinct path to it, scaled by the product of edge quantities on
+        that path times ``multiplier`` — so a building block shared by two assemblies (or
+        reached via a diamond) contributes correctly to each.
+
+        Args:
+            multiplier: Outer quantity factor applied to every collected part.
 
         Returns:
             List of ``(part, effective_multiplier)`` tuples.
         """
-        if _visited is None:
-            _visited = set()
-        if self.pk in _visited:
-            return []
-        _visited.add(self.pk)
-        result = [(part, multiplier) for part in self.parts.all()]
-        for subproject in self.subprojects.all():
-            result.extend(subproject._collect_parts_with_multiplier(multiplier * subproject.quantity, _visited))
-        return result
+        rel = self._expand_parts_relative(set(), {})
+        return [(part, multiplier * mult) for part, mult in rel]
 
     @property
     def total_parts_count(self) -> int:
