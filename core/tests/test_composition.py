@@ -1,9 +1,11 @@
 """Tests for the composition edge layer (ProjectPart, ProjectComponent)."""
 
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from core.models import Part, Project, ProjectComponent, ProjectPart
+from core.models.composition import component_would_create_cycle
 
 
 class ProjectPartModelTests(TestCase):
@@ -67,3 +69,43 @@ class ProjectComponentModelTests(TestCase):
             ProjectComponent.objects.bulk_create(
                 [ProjectComponent(parent_project=truck, child_project=truck)]
             )
+
+
+class ProjectComponentCycleTests(TestCase):
+    """The composition graph must stay acyclic."""
+
+    def test_direct_cycle_rejected(self):
+        a = Project.objects.create(name="A")
+        b = Project.objects.create(name="B")
+        ProjectComponent.objects.create(parent_project=a, child_project=b)
+        edge = ProjectComponent(parent_project=b, child_project=a)
+        with self.assertRaises(ValidationError):
+            edge.full_clean()
+
+    def test_transitive_cycle_rejected_on_save(self):
+        a = Project.objects.create(name="A")
+        b = Project.objects.create(name="B")
+        c = Project.objects.create(name="C")
+        ProjectComponent.objects.create(parent_project=a, child_project=b)
+        ProjectComponent.objects.create(parent_project=b, child_project=c)
+        # c -> a would close the loop a -> b -> c -> a
+        with self.assertRaises(ValidationError):
+            ProjectComponent.objects.create(parent_project=c, child_project=a)
+
+    def test_shared_child_is_not_a_cycle(self):
+        # Two assemblies sharing the same child is legal (this is the whole point).
+        a = Project.objects.create(name="Truck A")
+        b = Project.objects.create(name="Truck B")
+        cabin = Project.objects.create(name="Cabin")
+        ProjectComponent.objects.create(parent_project=a, child_project=cabin)
+        ProjectComponent.objects.create(parent_project=b, child_project=cabin)  # must not raise
+        self.assertEqual(cabin.parent_links.count(), 2)
+
+    def test_cycle_helper_terminates_on_corrupt_graph(self):
+        a = Project.objects.create(name="A")
+        b = Project.objects.create(name="B")
+        # Force a corrupt cycle bypassing validation.
+        ProjectComponent.objects.create(parent_project=a, child_project=b)
+        ProjectComponent.objects.bulk_create([ProjectComponent(parent_project=b, child_project=a)])
+        # Must return a bool without RecursionError.
+        self.assertIsInstance(component_would_create_cycle(a.pk, b.pk), bool)

@@ -8,9 +8,44 @@ block be shared across multiple assemblies (e.g. two truck variants).
 
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import CheckConstraint, F, Q, UniqueConstraint
+
+
+def component_would_create_cycle(parent_id: int, child_id: int) -> bool:
+    """Return True if adding a ``parent_id -> child_id`` edge would create a cycle.
+
+    A cycle forms when the prospective parent is reachable *from* the child by
+    following existing ``ProjectComponent`` edges downward (parent → child), or when
+    parent and child are the same node. A visited-set guard makes the descent terminate
+    even if a corrupt cycle already exists in the database.
+
+    Args:
+        parent_id: PK of the prospective parent project.
+        child_id: PK of the prospective child project.
+
+    Returns:
+        True if the edge would introduce a cycle, else False.
+    """
+    if parent_id == child_id:
+        return True
+    visited: set[int] = set()
+    stack: list[int] = [child_id]
+    while stack:
+        current = stack.pop()
+        if current == parent_id:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+        stack.extend(
+            ProjectComponent.objects.filter(parent_project_id=current).values_list(
+                "child_project_id", flat=True
+            )
+        )
+    return False
 
 
 class ProjectPart(models.Model):
@@ -90,3 +125,27 @@ class ProjectComponent(models.Model):
 
     def __str__(self) -> str:
         return f"{self.quantity}× {self.child_project_id} in {self.parent_project_id}"
+
+    def clean(self) -> None:
+        """Reject edges that would make an assembly (transitively) contain itself."""
+        super().clean()
+        if (
+            self.parent_project_id
+            and self.child_project_id
+            and component_would_create_cycle(self.parent_project_id, self.child_project_id)
+        ):
+            raise ValidationError(
+                {"child_project": "This would make an assembly contain itself (cycle)."}
+            )
+
+    def save(self, *args, **kwargs) -> None:
+        """Persist the edge, refusing to store one that closes a cycle."""
+        if (
+            self.parent_project_id
+            and self.child_project_id
+            and component_would_create_cycle(self.parent_project_id, self.child_project_id)
+        ):
+            raise ValidationError(
+                {"child_project": "This would make an assembly contain itself (cycle)."}
+            )
+        super().save(*args, **kwargs)
