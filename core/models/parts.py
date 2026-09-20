@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from django.core.validators import MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django.db.models import CheckConstraint, Q, Sum
 
 if TYPE_CHECKING:
@@ -93,6 +93,35 @@ class Part(models.Model):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.project.name})"
+
+    def save(self, *args, **kwargs) -> None:
+        """Persist the part and keep its ``ProjectPart`` edge in sync (transition shim).
+
+        During the expand phase the legacy ``project`` FK stays authoritative; this mirror
+        keeps exactly one ``ProjectPart`` edge consistent with it so later phases can read
+        edges without staleness. Removed in the contract phase.
+
+        The FK write and the edge reconciliation run inside one
+        :func:`~django.db.transaction.atomic` block, so a failure in either leaves neither
+        applied and the edge never lags the authoritative FK. This does not serialize two
+        *concurrent* reassignments of the same part against each other — the same bounded,
+        application-level limitation documented on
+        :meth:`Project._assert_parent_acyclic`; the edges self-heal on the next save and via
+        the backfill helper, and the whole shim is removed in the contract phase.
+        """
+        from core.models.composition import ProjectPart
+
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            if self.project_id is None:
+                ProjectPart.objects.filter(part=self).delete()
+                return
+            ProjectPart.objects.filter(part=self).exclude(project_id=self.project_id).delete()
+            ProjectPart.objects.update_or_create(
+                project_id=self.project_id,
+                part=self,
+                defaults={"quantity": self.quantity},
+            )
 
     @property
     def effective_print_preset_id(self) -> Optional[int]:

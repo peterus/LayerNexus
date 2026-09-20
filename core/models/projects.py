@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Optional
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django.db.models import CheckConstraint, Q
 
 from core.models.parts import Part
@@ -92,9 +92,33 @@ class Project(models.Model):
         here too — a ``project.parent = descendant; project.save()`` from a shell
         or import raises :class:`ValidationError` instead of persisting a graph
         that would later blow up the recursive aggregate properties.
+
+        During the expand phase the legacy ``parent`` FK stays authoritative; this
+        also mirrors exactly one ``ProjectComponent`` edge consistent with it so later
+        phases can read edges without staleness. Removed in the contract phase.
+
+        The FK write and the edge reconciliation run inside one
+        :func:`~django.db.transaction.atomic` block, so a failure in either (e.g. the
+        cycle guard) leaves neither applied and the edge never lags the authoritative FK.
+        This does not serialize two *concurrent* reparentings of the same child against
+        each other — the same bounded, application-level limitation documented on
+        :meth:`_assert_parent_acyclic`; the edges self-heal on the next save and via the
+        backfill helper, and the whole shim is removed in the contract phase.
         """
-        self._assert_parent_acyclic()
-        super().save(*args, **kwargs)
+        from core.models.composition import ProjectComponent
+
+        with transaction.atomic():
+            self._assert_parent_acyclic()
+            super().save(*args, **kwargs)
+            if self.parent_id is None:
+                ProjectComponent.objects.filter(child_project=self).delete()
+                return
+            ProjectComponent.objects.filter(child_project=self).exclude(parent_project_id=self.parent_id).delete()
+            ProjectComponent.objects.update_or_create(
+                parent_project_id=self.parent_id,
+                child_project=self,
+                defaults={"quantity": self.quantity},
+            )
 
     def clean(self) -> None:
         """Validate that the parent assignment does not create a cycle.
