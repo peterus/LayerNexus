@@ -5,43 +5,30 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from core.models import Part, Project, ProjectComponent, ProjectPart
-from core.models.composition import (
-    component_would_create_cycle,
-    rebuild_composition_edges,
-)
+from core.models.composition import component_would_create_cycle
 
 
 class ProjectPartModelTests(TestCase):
-    """Structural tests for the ProjectPart through-model.
-
-    In the expand phase ``Part.project`` is still required (NOT NULL), so each
-    part is created inside a dedicated *home* project distinct from the ``module``
-    it is linked into. Keeping the two projects distinct means the edge asserted
-    here never collides with the ``Part.save()`` dual-write edge (which mirrors
-    the home project), so these tests stay valid once dual-write lands.
-    """
+    """Structural tests for the ProjectPart through-model."""
 
     def test_create_edge_and_reverse_relations(self):
-        home = Project.objects.create(name="Library")
         module = Project.objects.create(name="Cabin")
-        part = Part.objects.create(project=home, name="Bracket")
+        part = Part.objects.create(name="Bracket")
         link = ProjectPart.objects.create(project=module, part=part, quantity=4, position=1)
         self.assertEqual(link.quantity, 4)
         self.assertIn(link, module.part_links.all())
         self.assertIn(link, part.project_links.all())
 
     def test_unique_project_part(self):
-        home = Project.objects.create(name="Library")
         module = Project.objects.create(name="Cabin")
-        part = Part.objects.create(project=home, name="Bracket")
+        part = Part.objects.create(name="Bracket")
         ProjectPart.objects.create(project=module, part=part)
         with self.assertRaises(IntegrityError), transaction.atomic():
             ProjectPart.objects.create(project=module, part=part)
 
     def test_quantity_must_be_positive(self):
-        home = Project.objects.create(name="Library")
         module = Project.objects.create(name="Cabin")
-        part = Part.objects.create(project=home, name="Bracket")
+        part = Part.objects.create(name="Bracket")
         with self.assertRaises(IntegrityError), transaction.atomic():
             ProjectPart.objects.create(project=module, part=part, quantity=0)
 
@@ -129,88 +116,3 @@ class ProjectComponentCycleTests(TestCase):
         ProjectComponent.objects.create(parent_project=a, child_project=b)
         # Adding/keeping the already-present a -> b edge is not a cycle.
         self.assertFalse(component_would_create_cycle(a.pk, b.pk))
-
-
-class RebuildCompositionEdgesTests(TestCase):
-    """The backfill helper mirrors the legacy FK graph into edges, idempotently."""
-
-    def _rebuild(self):
-        rebuild_composition_edges(Project, Part, ProjectComponent, ProjectPart)
-
-    def test_backfills_part_edges_with_quantity(self):
-        module = Project.objects.create(name="Cabin")
-        Part.objects.create(project=module, name="Bracket", quantity=5)
-        ProjectPart.objects.all().delete()  # clear dual-write output to test the helper alone
-        self._rebuild()
-        link = ProjectPart.objects.get(project=module)
-        self.assertEqual(link.part.name, "Bracket")
-        self.assertEqual(link.quantity, 5)
-
-    def test_backfills_component_edges_with_quantity(self):
-        truck = Project.objects.create(name="Truck A")
-        Project.objects.create(name="Cabin", parent=truck, quantity=2)
-        ProjectComponent.objects.all().delete()
-        self._rebuild()
-        edge = ProjectComponent.objects.get(parent_project=truck)
-        self.assertEqual(edge.child_project.name, "Cabin")
-        self.assertEqual(edge.quantity, 2)
-
-    def test_rebuild_is_idempotent(self):
-        module = Project.objects.create(name="Cabin")
-        Part.objects.create(project=module, name="Bracket", quantity=1)
-        self._rebuild()
-        self._rebuild()  # second run must not duplicate or raise
-        self.assertEqual(ProjectPart.objects.filter(project=module).count(), 1)
-
-
-class DualWriteTests(TestCase):
-    """Saving via the legacy FKs keeps composition edges in sync."""
-
-    def test_creating_part_creates_edge(self):
-        module = Project.objects.create(name="Cabin")
-        part = Part.objects.create(project=module, name="Bracket", quantity=3)
-        link = ProjectPart.objects.get(part=part)
-        self.assertEqual(link.project_id, module.pk)
-        self.assertEqual(link.quantity, 3)
-
-    def test_changing_part_quantity_updates_edge(self):
-        module = Project.objects.create(name="Cabin")
-        part = Part.objects.create(project=module, name="Bracket", quantity=3)
-        part.quantity = 7
-        part.save()
-        self.assertEqual(ProjectPart.objects.get(part=part).quantity, 7)
-
-    def test_reassigning_part_project_moves_edge(self):
-        a = Project.objects.create(name="Cabin A")
-        b = Project.objects.create(name="Cabin B")
-        part = Part.objects.create(project=a, name="Bracket", quantity=1)
-        part.project = b
-        part.save()
-        self.assertEqual(ProjectPart.objects.filter(part=part).count(), 1)
-        self.assertEqual(ProjectPart.objects.get(part=part).project_id, b.pk)
-
-    def test_creating_subproject_creates_component_edge(self):
-        truck = Project.objects.create(name="Truck A")
-        cabin = Project.objects.create(name="Cabin", parent=truck, quantity=2)
-        edge = ProjectComponent.objects.get(child_project=cabin)
-        self.assertEqual(edge.parent_project_id, truck.pk)
-        self.assertEqual(edge.quantity, 2)
-
-    def test_clearing_parent_removes_component_edge(self):
-        truck = Project.objects.create(name="Truck A")
-        cabin = Project.objects.create(name="Cabin", parent=truck, quantity=1)
-        cabin.parent = None
-        cabin.save()
-        self.assertFalse(ProjectComponent.objects.filter(child_project=cabin).exists())
-
-    def test_resaving_subproject_unchanged_parent_keeps_single_edge(self):
-        # Re-saving a sub-project whose parent is unchanged goes through the dual-write
-        # update path (update_or_create -> ProjectComponent.save()); it must neither raise
-        # a false cycle error nor duplicate the edge.
-        truck = Project.objects.create(name="Truck A")
-        cabin = Project.objects.create(name="Cabin", parent=truck, quantity=1)
-        cabin.quantity = 4
-        cabin.save()
-        edges = ProjectComponent.objects.filter(child_project=cabin)
-        self.assertEqual(edges.count(), 1)
-        self.assertEqual(edges.get().quantity, 4)

@@ -430,13 +430,9 @@ def _slice_job_in_background(job_pk: int) -> None:
 
     try:
         # Status already set to SLICING by the worker loop (atomic claim)
-        job = PrintJob.objects.prefetch_related("job_parts__part__project").get(pk=job_pk)
+        job = PrintJob.objects.prefetch_related("job_parts__part").get(pk=job_pk)
 
-        job_parts = job.job_parts.select_related(
-            "part__project__default_print_preset",
-            "part__project__parent__default_print_preset",
-            "part__print_preset",
-        )
+        job_parts = job.job_parts.select_related("part__print_preset")
 
         # Build 3MF bundle from job parts
         stl_list = [(jp.part.stl_file.path, jp.quantity) for jp in job_parts]

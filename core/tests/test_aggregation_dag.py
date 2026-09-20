@@ -9,10 +9,7 @@ class DagPartAggregationTests(TestCase):
     """_collect_parts_with_multiplier must count each path in the DAG."""
 
     def _part(self, name: str) -> Part:
-        # Part.project is still NOT NULL in Phase 2; give each a distinct home project
-        # so the FK is satisfied. Aggregation reads edges, not this FK.
-        home = Project.objects.create(name=f"home-{name}")
-        return Part.objects.create(project=home, name=name, quantity=1)
+        return Part.objects.create(name=name)
 
     def test_shared_module_counts_under_each_parent(self):
         # cabin (with 1 part) shared by truck_a and truck_b via ProjectComponent edges.
@@ -44,7 +41,7 @@ class DagPartAggregationTests(TestCase):
         ProjectComponent.objects.create(parent_project=b, child_project=d, quantity=2)
         ProjectComponent.objects.create(parent_project=c, child_project=d, quantity=3)
 
-        total = sum(p.quantity * m for p, m in a._collect_parts_with_multiplier() if p.pk == x.pk)
+        total = sum(m for p, m in a._collect_parts_with_multiplier() if p.pk == x.pk)
         self.assertEqual(total, 5)
 
     def test_corrupt_cycle_terminates(self):
@@ -63,9 +60,7 @@ class EdgeQuantityAuthoritativeTests(TestCase):
         truck = Project.objects.create(name="Truck")
         cabin = Project.objects.create(name="Cabin")
         frame = Project.objects.create(name="Frame")
-        home = Project.objects.create(name="home")
-        # Part.quantity is now IGNORED by aggregation — the edge quantity rules.
-        bolt = Part.objects.create(project=home, name="bolt", quantity=1)
+        bolt = Part.objects.create(name="bolt")
         ProjectComponent.objects.create(parent_project=truck, child_project=cabin, quantity=1)
         ProjectComponent.objects.create(parent_project=truck, child_project=frame, quantity=1)
         ProjectPart.objects.create(project=cabin, part=bolt, quantity=4)  # 4 in cabin
@@ -73,11 +68,10 @@ class EdgeQuantityAuthoritativeTests(TestCase):
         # total bolts in truck = 4 + 10 = 14 (edge-authoritative)
         self.assertEqual(truck.total_parts_count, 14)
 
-    def test_edge_quantity_beats_part_quantity(self):
-        # Part.quantity=99 must not leak into the count; only the edge (3) counts.
-        home = Project.objects.create(name="home")
+    def test_edge_quantity_is_the_leaf_count(self):
+        # Only the edge quantity (3) contributes to total_parts_count.
         module = Project.objects.create(name="module")
-        widget = Part.objects.create(project=home, name="widget", quantity=99)
+        widget = Part.objects.create(name="widget")
         ProjectPart.objects.create(project=module, part=widget, quantity=3)
         self.assertEqual(module.total_parts_count, 3)
 

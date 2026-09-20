@@ -21,12 +21,6 @@ from .models import (
 )
 
 
-class PartInline(admin.TabularInline):
-    model = Part
-    extra = 0
-    fields = ("name", "quantity", "color", "material", "stl_file")
-
-
 class ProjectHardwareInline(admin.TabularInline):
     model = ProjectHardware
     extra = 0
@@ -50,14 +44,14 @@ class ProjectAdmin(admin.ModelAdmin):
     list_display = ("name", "created_by", "created_at", "updated_at")
     list_filter = ("created_by", "created_at")
     search_fields = ("name", "description")
-    inlines = [PartInline, ProjectHardwareInline]
+    inlines = [ProjectHardwareInline]
 
 
 @admin.register(Part)
 class PartAdmin(admin.ModelAdmin):
-    list_display = ("name", "project", "quantity", "color", "material")
-    list_filter = ("color", "material", "project")
-    search_fields = ("name", "project__name")
+    list_display = ("name", "color", "material", "created_at")
+    list_filter = ("color", "material")
+    search_fields = ("name",)
 
 
 @admin.register(PrinterProfile)

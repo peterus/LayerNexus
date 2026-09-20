@@ -72,7 +72,7 @@
               {% for jp in job_parts %}
               <tr>
                 <td><a href="{% url 'core:part_detail' jp.part.pk %}" class="text-decoration-none fw-medium">{{ jp.part.name }}</a></td>
-                <td><a href="{% url 'core:project_detail' jp.part.project.pk %}" class="text-decoration-none">{{ jp.part.project.name }}</a></td>
+                <td>{% if jp.target_assembly %}<a href="{% url 'core:project_detail' jp.target_assembly.pk %}" class="text-decoration-none">{{ jp.target_assembly.name }}</a>{% else %}<span class="text-body-secondary">—</span>{% endif %}</td>
                 <td class="text-center">{{ jp.quantity }}</td>
                 {% if job.status == 'draft' %}
                 <td>

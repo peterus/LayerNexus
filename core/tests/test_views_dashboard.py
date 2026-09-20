@@ -4,7 +4,7 @@ from django.contrib.auth.models import Group
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
-from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate, Project
+from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate, Project, ProjectPart
 from core.tests.mixins import TestDataMixin
 
 
@@ -30,7 +30,8 @@ class DashboardViewTests(TestDataMixin, TestCase):
         root = Project.objects.create(name="Deep Root")
         sub = Project.objects.create(name="Deep Sub", parent=root, quantity=2)
         for proj in (root, sub):
-            part = Part.objects.create(project=proj, name=f"{proj.name}-p", quantity=2)
+            part = Part.objects.create(name=f"{proj.name}-p")
+            ProjectPart.objects.create(project=proj, part=part, quantity=2)
             job = PrintJob.objects.create(status="completed")
             PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
             PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)

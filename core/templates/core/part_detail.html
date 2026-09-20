@@ -7,8 +7,7 @@
 <nav aria-label="breadcrumb" class="mb-3">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
-    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' part.project.pk %}">{{ part.project.name }}</a>
-    </li>
+    <li class="breadcrumb-item"><a href="{% url 'core:part_library' %}">Parts Library</a></li>
     <li class="breadcrumb-item active">{{ part.name }}</li>
   </ol>
 </nav>
@@ -17,7 +16,7 @@
 <div class="d-flex justify-content-between align-items-start mb-4">
   <div>
     <h1 class="h3 mb-1">{{ part.name }}</h1>
-    <p class="text-body-secondary mb-0">Part of <a href="{% url 'core:project_detail' part.project.pk %}">{{ part.project.name }}</a></p>
+    <p class="text-body-secondary mb-0">Reusable part{% if used_in %} — used in {{ used_in|length }} assembl{{ used_in|length|pluralize:"y,ies" }}{% endif %}</p>
   </div>
   <div class="d-flex gap-2">
     {% if perms.core.can_manage_projects %}
