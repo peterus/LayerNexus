@@ -1,0 +1,13 @@
+{% comment %}
+Edge-based "Used in" navigation (Phase 3a). Renders the assemblies that reference
+the current node as badge links. Expects a ``used_in`` context variable (a list of
+Project instances); renders nothing when empty (top-level assembly).
+{% endcomment %}
+{% if used_in %}
+<nav aria-label="Used in" class="mb-3">
+  <span class="text-body-secondary small me-1"><i class="bi bi-diagram-2 me-1"></i>Used in:</span>
+  {% for assembly in used_in %}
+  <a href="{% url 'core:project_detail' assembly.pk %}" class="badge bg-info-subtle text-info-emphasis text-decoration-none">{{ assembly.name }}</a>
+  {% endfor %}
+</nav>
+{% endif %}

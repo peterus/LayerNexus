@@ -7,12 +7,10 @@
 <nav aria-label="breadcrumb" class="mb-3">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
-    {% for ancestor in ancestors %}
-    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' ancestor.pk %}">{{ ancestor.name }}</a></li>
-    {% endfor %}
     <li class="breadcrumb-item active">{{ project.name }}</li>
   </ol>
 </nav>
+{% include "core/includes/_used_in.html" %}
 
 <div class="d-flex justify-content-between align-items-start mb-4">
   <div class="d-flex gap-3 align-items-start">
@@ -55,7 +53,7 @@
   <div class="col-sm-6 col-lg-3">
     <div class="card text-center">
       <div class="card-body">
-        <div class="fs-4 fw-bold">{{ project.parts.count }}</div>
+        <div class="fs-4 fw-bold">{{ project.direct_part_count }}</div>
         <small class="text-body-secondary">Parts</small>
       </div>
     </div>
@@ -181,7 +179,7 @@
   {% endif %}
 </div>
 
-{% if subprojects %}
+{% if child_modules %}
 <div class="table-responsive mb-4">
   <table class="table table-hover align-middle">
     <thead>
@@ -195,7 +193,7 @@
       </tr>
     </thead>
     <tbody>
-      {% for sub in subprojects %}
+      {% for sub, sub_quantity in child_modules %}
       <tr>
         <td>
           {% if sub.image %}
@@ -210,8 +208,8 @@
           <div class="text-body-secondary small">{{ sub.description|truncatechars:60 }}</div>
           {% endif %}
         </td>
-        <td class="text-center"><span class="badge bg-secondary">×{{ sub.quantity }}</span></td>
-        <td class="text-center">{{ sub.parts.count }}</td>
+        <td class="text-center"><span class="badge bg-secondary">×{{ sub_quantity }}</span></td>
+        <td class="text-center">{{ sub.direct_part_count }}</td>
         <td class="text-center">
           {% with status=sub.aggregated_status %}
           <span class="badge {% if status == 'error' %}bg-danger{% elif status == 'estimating' %}bg-info{% elif status == 'complete' %}bg-success{% elif status == 'in_progress' %}bg-primary{% elif status == 'ready' %}bg-success bg-opacity-50{% elif status == 'empty' %}bg-secondary bg-opacity-50{% else %}bg-secondary{% endif %} me-1">
@@ -249,7 +247,7 @@
   {% endif %}
 </div>
 
-{% if project.parts.all %}
+{% if direct_parts %}
 <div class="table-responsive">
   <table class="table table-hover align-middle">
     <thead>
@@ -264,7 +262,7 @@
       </tr>
     </thead>
     <tbody>
-      {% for part in project.parts.all %}
+      {% for part, part_quantity in direct_parts %}
       <tr>
         <td class="text-center">
           {% if part.spoolman_filament_id and filament_colors|dict_get:part.spoolman_filament_id %}
@@ -279,8 +277,8 @@
           <a href="{% url 'core:part_detail' part.pk %}" class="text-decoration-none fw-medium">{{ part.name }}</a>
           {% if part.material %}<span class="badge bg-secondary bg-opacity-25 text-body ms-1">{{ part.material }}</span>{% endif %}
         </td>
-        <td class="text-center">{{ part.quantity }}</td>
-        <td class="text-center">{{ part.printed_quantity }}/{{ part.quantity }}</td>
+        <td class="text-center">{{ part_quantity }}</td>
+        <td class="text-center">{{ part.printed_quantity }}/{{ part_quantity }}</td>
         <td>
           {% if part.estimation_status == 'error' %}
           <span class="badge bg-danger" title="{{ part.estimation_error }}"><i class="bi bi-exclamation-triangle me-1"></i>Estimation Error</span>
@@ -511,7 +509,7 @@
 {# Show aggregated hardware from sub-projects #}
 {% if hardware_requirements %}
 {% with own_count=hardware_assignments.count %}
-{% if hardware_requirements|length > own_count or hardware_requirements|length > 0 and subprojects %}
+{% if hardware_requirements|length > own_count or hardware_requirements|length > 0 and child_modules %}
 <div class="mb-4">
   <h6 class="text-body-secondary"><i class="bi bi-diagram-3 me-1"></i>Aggregated Hardware (incl. Sub-Projects)</h6>
   <div class="table-responsive">
