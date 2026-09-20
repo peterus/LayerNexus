@@ -133,6 +133,48 @@ class PartLibraryViewTests(TestDataMixin, TestCase):
         resp = self.client.get(reverse("core:part_library"))
         self.assertEqual(resp.status_code, 302)
 
+    def test_part_library_search_by_name(self):
+        Part.objects.create(project=self.project, name="AlphaGear", quantity=1, material="PLA")
+        Part.objects.create(project=self.project, name="BetaBracket", quantity=1, material="PETG")
+        resp = self.client.get(reverse("core:part_library"), {"q": "AlphaGear"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "AlphaGear")
+        self.assertNotContains(resp, "BetaBracket")
+
+    def test_part_library_search_empty_returns_all(self):
+        Part.objects.create(project=self.project, name="AlphaGear", quantity=1, material="PLA")
+        Part.objects.create(project=self.project, name="BetaBracket", quantity=1, material="PETG")
+        resp = self.client.get(reverse("core:part_library"), {"q": ""})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "AlphaGear")
+        self.assertContains(resp, "BetaBracket")
+
+    def test_part_library_search_by_material(self):
+        Part.objects.create(project=self.project, name="AlphaGear", quantity=1, material="PLA")
+        Part.objects.create(project=self.project, name="BetaBracket", quantity=1, material="PETG")
+        resp = self.client.get(reverse("core:part_library"), {"q": "PETG"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "BetaBracket")
+        self.assertNotContains(resp, "AlphaGear")
+
+    def test_part_library_search_is_case_insensitive(self):
+        Part.objects.create(project=self.project, name="AlphaGear", quantity=1, material="PLA")
+        resp = self.client.get(reverse("core:part_library"), {"q": "alphagear"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "AlphaGear")
+
+    def test_part_library_search_query_in_context(self):
+        resp = self.client.get(reverse("core:part_library"), {"q": "AlphaGear"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.context["q"], "AlphaGear")
+
+    def test_part_library_search_no_results_message(self):
+        Part.objects.create(project=self.project, name="AlphaGear", quantity=1, material="PLA")
+        resp = self.client.get(reverse("core:part_library"), {"q": "NoSuchThing"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, "AlphaGear")
+        self.assertContains(resp, "No parts match")
+
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
 class PartDeleteUsedInTests(TestDataMixin, TestCase):
