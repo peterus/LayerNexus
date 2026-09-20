@@ -94,6 +94,26 @@ class Part(models.Model):
     def __str__(self) -> str:
         return f"{self.name} ({self.project.name})"
 
+    def save(self, *args, **kwargs) -> None:
+        """Persist the part and keep its ``ProjectPart`` edge in sync (transition shim).
+
+        During the expand phase the legacy ``project`` FK stays authoritative; this mirror
+        keeps exactly one ``ProjectPart`` edge consistent with it so later phases can read
+        edges without staleness. Removed in the contract phase.
+        """
+        super().save(*args, **kwargs)
+        from core.models.composition import ProjectPart
+
+        if self.project_id is None:
+            ProjectPart.objects.filter(part=self).delete()
+            return
+        ProjectPart.objects.filter(part=self).exclude(project_id=self.project_id).delete()
+        ProjectPart.objects.update_or_create(
+            project_id=self.project_id,
+            part=self,
+            defaults={"quantity": self.quantity},
+        )
+
     @property
     def effective_print_preset_id(self) -> Optional[int]:
         """Return the effective print preset ID (own or inherited from project hierarchy).

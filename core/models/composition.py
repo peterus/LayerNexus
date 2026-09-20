@@ -41,9 +41,7 @@ def component_would_create_cycle(parent_id: int, child_id: int) -> bool:
             continue
         visited.add(current)
         stack.extend(
-            ProjectComponent.objects.filter(parent_project_id=current).values_list(
-                "child_project_id", flat=True
-            )
+            ProjectComponent.objects.filter(parent_project_id=current).values_list("child_project_id", flat=True)
         )
     return False
 
@@ -156,6 +154,16 @@ class ProjectComponent(models.Model):
     def __str__(self) -> str:
         return f"{self.quantity}× {self.child_project_id} in {self.parent_project_id}"
 
+    def save(self, *args, **kwargs) -> None:
+        """Persist the edge, refusing to store one that closes a cycle."""
+        if (
+            self.parent_project_id
+            and self.child_project_id
+            and component_would_create_cycle(self.parent_project_id, self.child_project_id)
+        ):
+            raise ValidationError({"child_project": "This would make an assembly contain itself (cycle)."})
+        super().save(*args, **kwargs)
+
     def clean(self) -> None:
         """Reject edges that would make an assembly (transitively) contain itself."""
         super().clean()
@@ -164,18 +172,4 @@ class ProjectComponent(models.Model):
             and self.child_project_id
             and component_would_create_cycle(self.parent_project_id, self.child_project_id)
         ):
-            raise ValidationError(
-                {"child_project": "This would make an assembly contain itself (cycle)."}
-            )
-
-    def save(self, *args, **kwargs) -> None:
-        """Persist the edge, refusing to store one that closes a cycle."""
-        if (
-            self.parent_project_id
-            and self.child_project_id
-            and component_would_create_cycle(self.parent_project_id, self.child_project_id)
-        ):
-            raise ValidationError(
-                {"child_project": "This would make an assembly contain itself (cycle)."}
-            )
-        super().save(*args, **kwargs)
+            raise ValidationError({"child_project": "This would make an assembly contain itself (cycle)."})

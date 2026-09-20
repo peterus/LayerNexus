@@ -92,9 +92,24 @@ class Project(models.Model):
         here too — a ``project.parent = descendant; project.save()`` from a shell
         or import raises :class:`ValidationError` instead of persisting a graph
         that would later blow up the recursive aggregate properties.
+
+        During the expand phase the legacy ``parent`` FK stays authoritative; this
+        also mirrors exactly one ``ProjectComponent`` edge consistent with it so later
+        phases can read edges without staleness. Removed in the contract phase.
         """
         self._assert_parent_acyclic()
         super().save(*args, **kwargs)
+        from core.models.composition import ProjectComponent
+
+        if self.parent_id is None:
+            ProjectComponent.objects.filter(child_project=self).delete()
+            return
+        ProjectComponent.objects.filter(child_project=self).exclude(parent_project_id=self.parent_id).delete()
+        ProjectComponent.objects.update_or_create(
+            parent_project_id=self.parent_id,
+            child_project=self,
+            defaults={"quantity": self.quantity},
+        )
 
     def clean(self) -> None:
         """Validate that the parent assignment does not create a cycle.

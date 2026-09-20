@@ -69,9 +69,7 @@ class ProjectComponentModelTests(TestCase):
         # application-level cycle guard on save() is bypassed (bulk_create).
         truck = Project.objects.create(name="Truck A")
         with self.assertRaises(IntegrityError), transaction.atomic():
-            ProjectComponent.objects.bulk_create(
-                [ProjectComponent(parent_project=truck, child_project=truck)]
-            )
+            ProjectComponent.objects.bulk_create([ProjectComponent(parent_project=truck, child_project=truck)])
 
 
 class ProjectComponentCycleTests(TestCase):
@@ -144,3 +142,44 @@ class RebuildCompositionEdgesTests(TestCase):
         self._rebuild()
         self._rebuild()  # second run must not duplicate or raise
         self.assertEqual(ProjectPart.objects.filter(project=module).count(), 1)
+
+
+class DualWriteTests(TestCase):
+    """Saving via the legacy FKs keeps composition edges in sync."""
+
+    def test_creating_part_creates_edge(self):
+        module = Project.objects.create(name="Cabin")
+        part = Part.objects.create(project=module, name="Bracket", quantity=3)
+        link = ProjectPart.objects.get(part=part)
+        self.assertEqual(link.project_id, module.pk)
+        self.assertEqual(link.quantity, 3)
+
+    def test_changing_part_quantity_updates_edge(self):
+        module = Project.objects.create(name="Cabin")
+        part = Part.objects.create(project=module, name="Bracket", quantity=3)
+        part.quantity = 7
+        part.save()
+        self.assertEqual(ProjectPart.objects.get(part=part).quantity, 7)
+
+    def test_reassigning_part_project_moves_edge(self):
+        a = Project.objects.create(name="Cabin A")
+        b = Project.objects.create(name="Cabin B")
+        part = Part.objects.create(project=a, name="Bracket", quantity=1)
+        part.project = b
+        part.save()
+        self.assertEqual(ProjectPart.objects.filter(part=part).count(), 1)
+        self.assertEqual(ProjectPart.objects.get(part=part).project_id, b.pk)
+
+    def test_creating_subproject_creates_component_edge(self):
+        truck = Project.objects.create(name="Truck A")
+        cabin = Project.objects.create(name="Cabin", parent=truck, quantity=2)
+        edge = ProjectComponent.objects.get(child_project=cabin)
+        self.assertEqual(edge.parent_project_id, truck.pk)
+        self.assertEqual(edge.quantity, 2)
+
+    def test_clearing_parent_removes_component_edge(self):
+        truck = Project.objects.create(name="Truck A")
+        cabin = Project.objects.create(name="Cabin", parent=truck, quantity=1)
+        cabin.parent = None
+        cabin.save()
+        self.assertFalse(ProjectComponent.objects.filter(child_project=cabin).exists())
