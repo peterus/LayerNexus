@@ -111,6 +111,25 @@ class ProjectComponentCycleTests(TestCase):
         # Must return a bool without RecursionError.
         self.assertIsInstance(component_would_create_cycle(a.pk, b.pk), bool)
 
+    def test_resaving_existing_edge_is_not_a_false_cycle(self):
+        # The reachability walk is descendant-only (follows parent->child edges from the
+        # child downward); it never traverses the incoming edge being validated, so
+        # re-saving an unchanged edge must not raise a spurious cycle error.
+        a = Project.objects.create(name="A")
+        b = Project.objects.create(name="B")
+        edge = ProjectComponent.objects.create(parent_project=a, child_project=b, quantity=1)
+        edge.quantity = 5
+        edge.save()  # must not raise
+        edge.full_clean()  # clean() must not raise a false positive either
+        self.assertEqual(ProjectComponent.objects.get(pk=edge.pk).quantity, 5)
+
+    def test_helper_false_for_existing_edge(self):
+        a = Project.objects.create(name="A")
+        b = Project.objects.create(name="B")
+        ProjectComponent.objects.create(parent_project=a, child_project=b)
+        # Adding/keeping the already-present a -> b edge is not a cycle.
+        self.assertFalse(component_would_create_cycle(a.pk, b.pk))
+
 
 class RebuildCompositionEdgesTests(TestCase):
     """The backfill helper mirrors the legacy FK graph into edges, idempotently."""
@@ -183,3 +202,15 @@ class DualWriteTests(TestCase):
         cabin.parent = None
         cabin.save()
         self.assertFalse(ProjectComponent.objects.filter(child_project=cabin).exists())
+
+    def test_resaving_subproject_unchanged_parent_keeps_single_edge(self):
+        # Re-saving a sub-project whose parent is unchanged goes through the dual-write
+        # update path (update_or_create -> ProjectComponent.save()); it must neither raise
+        # a false cycle error nor duplicate the edge.
+        truck = Project.objects.create(name="Truck A")
+        cabin = Project.objects.create(name="Cabin", parent=truck, quantity=1)
+        cabin.quantity = 4
+        cabin.save()
+        edges = ProjectComponent.objects.filter(child_project=cabin)
+        self.assertEqual(edges.count(), 1)
+        self.assertEqual(edges.get().quantity, 4)
