@@ -1,4 +1,11 @@
-from django.apps import AppConfig
+import contextlib
+import logging
+import os
+import threading
+
+from django.apps import AppConfig, apps
+
+logger = logging.getLogger(__name__)
 
 
 class CoreConfig(AppConfig):
@@ -7,30 +14,63 @@ class CoreConfig(AppConfig):
     name = "core"
 
     def ready(self) -> None:
-        """Reset stuck worker items and restart the OrcaSlicer worker on startup.
+        """Schedule stuck-worker recovery shortly after startup.
 
         When the container restarts, parts stuck at 'estimating' and jobs stuck
-        at 'slicing' were being processed by the now-dead worker thread.  Reset
-        them to 'pending' so the worker can pick them up again.
+        at 'slicing' were being processed by the now-dead worker thread.  They
+        must be reset to 'pending' so the worker can pick them up again.
+
+        The recovery touches the database, which must never happen inside
+        ``AppConfig.ready()`` — Django raises ``RuntimeWarning: Accessing the
+        database during app initialization is discouraged`` because the app
+        registry is not yet fully populated.  Instead of querying here, the
+        work is deferred to a short-lived background thread that waits for the
+        registry to finish loading before running (see
+        :meth:`_run_stuck_item_recovery`).
+
+        Only the main server process performs recovery — never management
+        commands or migrations.
         """
-        import os
-
-        # Only run in the main process, not in management commands or migrations
+        # Only run in the main server process (Django autoreload main or gunicorn),
+        # not in management commands or migrations.
         if os.environ.get("RUN_MAIN") == "true" or os.environ.get("SERVER_SOFTWARE", "").startswith("gunicorn"):
-            import contextlib
+            self._schedule_stuck_item_recovery()
 
-            from django.db import OperationalError, ProgrammingError
+    def _schedule_stuck_item_recovery(self) -> None:
+        """Start a daemon thread that runs recovery once the app registry is ready.
 
+        Deferring to a thread keeps ``ready()`` free of database access so the
+        app registry can finish populating first.
+        """
+        thread = threading.Thread(
+            target=self._run_stuck_item_recovery,
+            name="layernexus-stuck-item-recovery",
+            daemon=True,
+        )
+        thread.start()
+
+    def _run_stuck_item_recovery(self) -> None:
+        """Wait for app init to finish, then recover stuck items in this thread.
+
+        Blocks until the app registry reports ready so no query runs during app
+        initialization, suppresses database errors that can occur before
+        migrations have run, and always closes the thread-local database
+        connection afterwards to avoid leaking it.
+        """
+        from django.db import OperationalError, ProgrammingError, connection
+
+        # Wait for the app registry to finish populating before touching the DB.
+        apps.ready_event.wait()
+
+        try:
             with contextlib.suppress(OperationalError, ProgrammingError):
                 self._recover_stuck_items()
+        finally:
+            connection.close()
 
     def _recover_stuck_items(self) -> None:
         """Reset stuck estimations and slicing jobs, then restart the worker."""
-        import logging
-
         from core.models import Part, PrintJob
-
-        logger = logging.getLogger(__name__)
 
         # Reset parts stuck at 'estimating' → 'pending'
         stuck_estimations = Part.objects.filter(

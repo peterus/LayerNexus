@@ -32,6 +32,17 @@ services:
       - DEBUG=${DEBUG:-0}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - WORKER_RELOAD_INTERVAL=${WORKER_RELOAD_INTERVAL:-10}
+    # The image-wide HEALTHCHECK (curl :8000/health/) only fits the web service.
+    # The worker runs `manage.py moonraker_worker` with no HTTP server, so it
+    # would be permanently "unhealthy". Override with a process-liveness probe
+    # that needs no extra packages (grep is in the base image; the worker is
+    # PID 1 in this container).
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q moonraker_worker /proc/1/cmdline || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     restart: unless-stopped
     depends_on:
       - web

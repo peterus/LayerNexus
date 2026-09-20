@@ -47,8 +47,16 @@ LABEL org.opencontainers.image.title="LayerNexus" \
 
 RUN DJANGO_SECRET_KEY=build-placeholder python manage.py collectstatic --noinput
 
-RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser \
-    && chown -R appuser:appgroup /app/media /app/data /app/staticfiles
+# Give appuser a real, writable home directory. `adduser --system` otherwise
+# leaves HOME=/nonexistent, so libraries that write caches/config to $HOME
+# (e.g. fontconfig, matplotlib) fail with
+# "[Errno 13] Permission denied: '/nonexistent'" at runtime.
+RUN addgroup --system appgroup \
+    && adduser --system --ingroup appgroup --home /home/appuser appuser \
+    && mkdir -p /home/appuser \
+    && chown -R appuser:appgroup /app/media /app/data /app/staticfiles /home/appuser
+
+ENV HOME=/home/appuser
 
 USER appuser
 
