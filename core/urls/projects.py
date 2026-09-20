@@ -11,6 +11,7 @@ from core.views import (
     ProjectCreateView,
     ProjectDeleteView,
     ProjectDetailView,
+    ProjectDuplicateAsVariantView,
     ProjectListView,
     ProjectPartDeleteView,
     ProjectPartUpdateView,
@@ -61,6 +62,11 @@ urlpatterns = [
         "projects/<int:pk>/delete/",
         ProjectDeleteView.as_view(),
         name="project_delete",
+    ),
+    path(
+        "projects/<int:pk>/duplicate/",
+        ProjectDuplicateAsVariantView.as_view(),
+        name="project_duplicate",
     ),
     path(
         "projects/<int:pk>/cost/",

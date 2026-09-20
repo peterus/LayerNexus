@@ -7,7 +7,7 @@ from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponse
-from django.shortcuts import get_object_or_404, redirect
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse, reverse_lazy
 from django.views import View
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
@@ -49,6 +49,7 @@ __all__ = [
     "ProjectPartDeleteView",
     "ProjectComponentUpdateView",
     "ProjectPartUpdateView",
+    "ProjectDuplicateAsVariantView",
 ]
 
 
@@ -503,3 +504,42 @@ class ProjectPartUpdateView(ProjectManageMixin, UpdateView):
         """Redirect back with an error instead of rendering a (non-existent) form template."""
         messages.error(self.request, "Invalid quantity.")
         return redirect("core:project_detail", pk=self.object.project_id)
+
+
+class ProjectDuplicateAsVariantView(ProjectManageMixin, View):
+    """Duplicate a project as a new variant (shares child blocks via new edges)."""
+
+    http_method_names = ["get", "post"]
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Render a small confirm form pre-filled with a suggested variant name.
+
+        Args:
+            request: The incoming HTTP request.
+            pk: Primary key of the source project to duplicate.
+
+        Returns:
+            The rendered duplicate-confirmation page.
+        """
+        source = get_object_or_404(Project, pk=pk)
+        return render(
+            request,
+            "core/project_duplicate.html",
+            {"source": source, "suggested_name": f"{source.name} (Variant)"},
+        )
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Create the variant and redirect to its detail page.
+
+        Args:
+            request: The incoming HTTP request.
+            pk: Primary key of the source project to duplicate.
+
+        Returns:
+            Redirect to the newly created variant's detail page.
+        """
+        source = get_object_or_404(Project, pk=pk)
+        name = (request.POST.get("name") or f"{source.name} (Variant)").strip() or f"{source.name} (Variant)"
+        variant = source.duplicate_as_variant(name, created_by=request.user)
+        messages.success(request, f"Created variant “{variant.name}”. Swap the parts that differ.")
+        return redirect("core:project_detail", pk=variant.pk)
