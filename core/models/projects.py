@@ -147,10 +147,10 @@ class Project(models.Model):
         preventing that would need DB-level enforcement (serializable isolation /
         row locks / a recursive-CTE constraint). The consequence is bounded, not
         catastrophic: **every** parent-chain traversal in this model
-        (:meth:`get_ancestors`, :meth:`get_descendant_ids`,
-        :meth:`effective_default_print_preset`, the ``_collect_*`` aggregators)
-        carries a visited-set guard, so a raced cycle degrades to a logically
-        odd graph rather than an infinite loop / ``RecursionError`` at render.
+        (:meth:`get_descendant_ids`, :meth:`effective_default_print_preset`, the
+        ``_collect_*`` aggregators) carries a visited-set guard, so a raced cycle
+        degrades to a logically odd graph rather than an infinite loop /
+        ``RecursionError`` at render.
         """
         if self.parent_id is None:
             return
@@ -171,26 +171,6 @@ class Project(models.Model):
     def is_subproject(self) -> bool:
         """Return True if any assembly references this project via a composition edge."""
         return self.parent_links.exists()
-
-    def get_ancestors(self) -> list[Project]:
-        """Return list of ancestor projects from root to direct parent.
-
-        .. deprecated::
-            Single-path breadcrumb over the legacy ``parent`` FK. Superseded by the
-            edge-based :meth:`parent_assemblies` ("Used in"); removed in the contract phase.
-
-        Returns:
-            Ordered list starting from the root project, ending with the
-            direct parent (empty list for top-level projects).
-        """
-        ancestors: list[Project] = []
-        visited: set[int] = set()
-        current = self.parent
-        while current is not None and current.pk not in visited:
-            visited.add(current.pk)
-            ancestors.insert(0, current)
-            current = current.parent
-        return ancestors
 
     def parent_assemblies(self) -> list[Project]:
         """Return distinct assemblies that directly contain this project (its "used in").

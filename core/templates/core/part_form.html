@@ -6,9 +6,6 @@
 <nav aria-label="breadcrumb" class="mb-3">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
-    {% for ancestor in ancestors %}
-    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' ancestor.pk %}">{{ ancestor.name }}</a></li>
-    {% endfor %}
     {% if project %}
     <li class="breadcrumb-item"><a href="{% url 'core:project_detail' project.pk %}">{{ project.name }}</a></li>
     {% elif form.instance.pk %}
@@ -17,6 +14,7 @@
     <li class="breadcrumb-item active">{% if form.instance.pk %}Edit {{ form.instance.name }}{% else %}Add Part{% endif %}</li>
   </ol>
 </nav>
+{% include "core/includes/_used_in.html" %}
 
 <div class="row justify-content-center">
   <div class="col-lg-8">

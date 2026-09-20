@@ -124,7 +124,7 @@ class Part(models.Model):
                 defaults={"quantity": self.quantity},
             )
 
-    def containing_projects(self) -> list["Project"]:
+    def containing_projects(self) -> list[Project]:
         """Return distinct projects that include this part via a composition edge.
 
         Traverses the ``ProjectPart`` edges pointing at this part (``project_links``)
@@ -135,7 +135,7 @@ class Part(models.Model):
             Distinct :class:`~core.models.projects.Project` instances, first-seen
             order preserved.
         """
-        seen: dict[int, "Project"] = {}
+        seen: dict[int, Project] = {}
         for link in self.project_links.select_related("project").all():
             seen.setdefault(link.project_id, link.project)
         return list(seen.values())
