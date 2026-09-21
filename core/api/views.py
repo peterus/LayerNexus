@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.db.models.deletion import ProtectedError
 from django.shortcuts import get_object_or_404
 from rest_framework import filters, generics, status, viewsets
 from rest_framework.decorators import action
@@ -253,6 +254,24 @@ class HardwarePartViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer: HardwarePartSerializer) -> None:
         """Stamp the creating user onto the catalogue entry."""
         serializer.save(created_by=self.request.user)
+
+    def destroy(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        """Delete the part, returning 409 if it is still referenced by projects."""
+        instance = self.get_object()
+        try:
+            instance.delete()
+        except ProtectedError:
+            used_count = instance.project_assignments.count()
+            return Response(
+                {
+                    "detail": (
+                        f"Cannot delete '{instance.name}': it is used in {used_count} "
+                        f"project{'s' if used_count != 1 else ''}. Remove it from all projects first."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class SpoolmanFilamentMappingViewSet(viewsets.ReadOnlyModelViewSet):

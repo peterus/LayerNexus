@@ -78,3 +78,11 @@ class ApiHardwareTests(APITestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, 403)
+
+    def test_delete_in_use_part_returns_409(self) -> None:
+        """DELETE on a catalogue entry that is still assigned returns 409 Conflict."""
+        hp = HardwarePart.objects.create(name="In-use bolt", category="screws")
+        ProjectHardware.objects.create(project=self.project, hardware_part=hp, quantity=1)
+        resp = self.client.delete(f"/api/v1/hardware-parts/{hp.pk}/")
+        self.assertEqual(resp.status_code, 409)
+        self.assertTrue(HardwarePart.objects.filter(pk=hp.pk).exists())
