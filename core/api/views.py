@@ -82,6 +82,38 @@ class ProjectViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter]
     search_fields = ["name", "description"]
 
+    @action(detail=True, methods=["post"], url_path="re-estimate")
+    def re_estimate(self, request: Request, pk: str | None = None) -> Response:
+        """Queue estimation for every eligible part in the project's composition tree.
+
+        Mirrors :class:`~core.views.projects.ProjectReEstimateView`: collects all
+        distinct parts via the edge-based DAG, clears their existing estimation data,
+        and re-queues them.  Parts without an STL file or a print preset are silently
+        skipped. This is a write action so ``ReadOrProjectManage`` requires the
+        ``core.can_manage_projects`` permission.
+
+        Returns:
+            202 response with ``{"queued": <count>}``.
+        """
+        project = self.get_object()
+        parts = [p for p, _mult in project._collect_parts_with_multiplier()]
+        count = 0
+        for part in parts:
+            if not part.stl_file:
+                continue
+            if not part.effective_print_preset:
+                continue
+            Part.objects.filter(pk=part.pk).update(
+                filament_used_grams=None,
+                filament_used_meters=None,
+                estimated_print_time=None,
+                estimation_status=Part.ESTIMATION_NONE,
+                estimation_error="",
+            )
+            _trigger_part_estimation(part)
+            count += 1
+        return Response({"queued": count}, status=status.HTTP_202_ACCEPTED)
+
     @action(detail=True, methods=["post"])
     def duplicate(self, request: Request, pk: str | None = None) -> Response:
         """Clone this assembly into a new top-level variant (shares its building blocks).
@@ -158,6 +190,31 @@ class PartViewSet(viewsets.ModelViewSet):
     permission_classes = [ReadOrProjectManage]
     filter_backends = [filters.SearchFilter]
     search_fields = ["name", "material"]
+
+    @action(detail=True, methods=["post"], url_path="estimate")
+    def estimate(self, request: Request, pk: str | None = None) -> Response:
+        """Re-queue estimation for a single part, clearing any prior results.
+
+        Mirrors :class:`~core.views.parts.PartReEstimateView`: resets the estimation
+        fields to ``none`` and triggers the background worker.  This is a write action
+        so ``ReadOrProjectManage`` requires the ``core.can_manage_projects`` permission.
+
+        Returns:
+            202 response with the serialized part so the caller can inspect its current
+            ``estimation_status``.
+        """
+        part = self.get_object()
+        Part.objects.filter(pk=part.pk).update(
+            filament_used_grams=None,
+            filament_used_meters=None,
+            estimated_print_time=None,
+            estimation_status=Part.ESTIMATION_NONE,
+            estimation_error="",
+        )
+        _trigger_part_estimation(part)
+        part.refresh_from_db()
+        serializer = PartSerializer(part, context=self.get_serializer_context())
+        return Response(serializer.data, status=status.HTTP_202_ACCEPTED)
 
     @action(
         detail=True,
