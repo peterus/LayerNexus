@@ -304,11 +304,7 @@ def _estimate_part_in_background(part_pk: int) -> None:
     from pathlib import Path as FSPath
 
     try:
-        part = Part.objects.select_related(
-            "project__default_print_preset",
-            "project__parent__default_print_preset",
-            "print_preset",
-        ).get(pk=part_pk)
+        part = Part.objects.select_related("print_preset").get(pk=part_pk)
 
         if not part.stl_file:
             logger.debug("estimate_part(%s): no STL file, skipping", part_pk)
@@ -317,7 +313,7 @@ def _estimate_part_in_background(part_pk: int) -> None:
             )
             return
 
-        # Resolve profiles (traverses parent project hierarchy)
+        # Resolve the part's own print preset (composition is edge-based post Phase-6)
         print_preset = part.effective_print_preset
         if not print_preset:
             logger.debug("estimate_part(%s): no print preset, skipping", part_pk)

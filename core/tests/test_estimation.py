@@ -186,6 +186,42 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
         self.assertEqual(call_order[0], ("slice", job.pk))
         self.assertEqual(call_order[1], ("estimate", part.pk))
 
+    def test_estimate_part_does_not_reference_removed_project_field(self):
+        """Regression: estimation must not select_related the removed Part.project FK.
+
+        Phase-6 removed ``Part.project``; a stale
+        ``select_related("project__default_print_preset", ...)`` in the estimation
+        path crashed every newly uploaded part's estimate with
+        ``Invalid field name(s) given in select_related: 'project'``. The worker must
+        reach a successful estimate using only the part-level print preset.
+        """
+        from core.services import slicing_worker
+
+        self.part.stl_file = SimpleUploadedFile("test.stl", b"solid test")
+        self.part.print_preset = self.preset
+        self.part.save()
+
+        fake_result = MagicMock(
+            total_filament_grams=10.0,
+            total_filament_mm=3000.0,
+            total_print_time_seconds=600,
+        )
+        fake_client = MagicMock()
+        fake_client.slice_bundle.return_value = fake_result
+
+        with (
+            patch.object(slicing_worker, "_find_compatible_machine", return_value=MagicMock()),
+            patch.object(slicing_worker, "create_3mf_bundle", return_value=b"3mf"),
+            patch.object(slicing_worker, "_build_slicer_kwargs", return_value={}),
+            patch.object(slicing_worker, "OrcaSlicerAPIClient", return_value=fake_client),
+        ):
+            slicing_worker._estimate_part_in_background(self.part.pk)
+
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_SUCCESS)
+        self.assertNotIn("select_related", self.part.estimation_error)
+        self.assertEqual(self.part.filament_used_grams, 10.0)
+
     @patch("core.views.print_jobs._start_orcaslicer_worker")
     def test_slice_view_queues_job_as_pending(self, mock_start: "patch"):
         """PrintJobSliceView sets job to PENDING and starts worker."""
