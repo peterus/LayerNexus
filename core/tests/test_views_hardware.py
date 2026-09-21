@@ -167,3 +167,20 @@ class HardwareLibraryViewTests(TestDataMixin, TestCase):
         resp = self.client.get(reverse("core:hardware_library"))
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, ">1<")  # badge with count 1 for hw1
+
+    def test_create_rejects_negative_unit_price(self) -> None:
+        url = reverse("core:hardware_part_create")
+        resp = self.client.post(
+            url, {"name": "Expensive Screw", "category": "screws", "url": "", "unit_price": "-1.00", "notes": ""}
+        )
+        self.assertEqual(resp.status_code, 200)  # re-renders form with error
+        self.assertFalse(HardwarePart.objects.filter(name="Expensive Screw").exists())
+
+    def test_update_rejects_negative_unit_price(self) -> None:
+        url = reverse("core:hardware_part_update", args=[self.hw1.pk])
+        resp = self.client.post(
+            url, {"name": "M3x10 Screw", "category": "screws", "url": "", "unit_price": "-0.50", "notes": ""}
+        )
+        self.assertEqual(resp.status_code, 200)  # re-renders form with error
+        self.hw1.refresh_from_db()
+        self.assertIsNone(self.hw1.unit_price)  # unchanged

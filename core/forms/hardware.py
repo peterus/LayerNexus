@@ -26,6 +26,13 @@ class HardwarePartForm(forms.ModelForm):
             "notes": forms.Textarea(attrs={"rows": 3}),
         }
 
+    def clean_unit_price(self):
+        """Reject negative unit prices."""
+        price = self.cleaned_data.get("unit_price")
+        if price is not None and price < 0:
+            raise forms.ValidationError("Unit price must be zero or greater.")
+        return price
+
     def clean(self) -> dict:
         """Validate that the (name, category) combination is unique, excluding self."""
         cleaned_data = super().clean()

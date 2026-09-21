@@ -4,7 +4,7 @@ import logging
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Q, QuerySet
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect
@@ -129,17 +129,25 @@ class HardwarePartDeleteView(ProjectManageMixin, DeleteView):
         return context
 
     def form_valid(self, form) -> HttpResponse:
-        """Block deletion if the part is still used in projects."""
-        used_count = self.object.project_assignments.count()
-        if used_count > 0:
-            messages.error(
-                self.request,
-                f"Cannot delete '{self.object.name}': it is used in {used_count} "
-                f"project{'s' if used_count != 1 else ''}. Remove it from all projects first.",
-            )
-            return redirect(reverse("core:hardware_part_delete", kwargs={"pk": self.object.pk}))
-        messages.success(self.request, f"Hardware part '{self.object.name}' deleted.")
-        return super().form_valid(form)
+        """Block deletion if the part is still used in projects.
+
+        The reference check and delete are wrapped in a single atomic transaction
+        with a row-level lock on the HardwarePart to prevent a race where a new
+        ProjectHardware assignment is inserted between the count check and the delete.
+        """
+        with transaction.atomic():
+            # Re-fetch with a lock so no concurrent assignment can sneak in.
+            obj = HardwarePart.objects.select_for_update().get(pk=self.object.pk)
+            used_count = obj.project_assignments.count()
+            if used_count > 0:
+                messages.error(
+                    self.request,
+                    f"Cannot delete '{obj.name}': it is used in {used_count} "
+                    f"project{'s' if used_count != 1 else ''}. Remove it from all projects first.",
+                )
+                return redirect(reverse("core:hardware_part_delete", kwargs={"pk": obj.pk}))
+            messages.success(self.request, f"Hardware part '{obj.name}' deleted.")
+            return super().form_valid(form)
 
 
 class ProjectHardwareCreateView(ProjectManageMixin, FormView):
