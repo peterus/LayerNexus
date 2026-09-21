@@ -24,6 +24,7 @@ from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
 from django.urls import include, path, re_path
 from django.views.static import serve
+from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 
 #: CSP applied to every potentially-active uploaded-media response.
 #: ``sandbox`` disables scripts, plugins, forms and same-origin privileges
@@ -97,6 +98,9 @@ urlpatterns = [
     path("health/", health_check, name="health_check"),
     path("admin/", admin.site.urls),
     path("accounts/", include("django.contrib.auth.urls")),
+    path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
+    path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
+    path("api/redoc/", SpectacularRedocView.as_view(url_name="schema"), name="redoc"),
     path("api/v1/", include("core.api.urls")),
     path("", include("core.urls")),
 ]

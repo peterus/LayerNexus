@@ -14,7 +14,8 @@ from typing import Any
 from django.db import IntegrityError
 from django.db.models.deletion import ProtectedError
 from django.shortcuts import get_object_or_404
-from rest_framework import filters, generics, status, viewsets
+from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
+from rest_framework import filters, generics, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.request import Request
@@ -85,6 +86,22 @@ class ProjectViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter]
     search_fields = ["name", "description"]
 
+    @extend_schema(
+        summary="Re-queue estimation for all eligible parts in the project tree",
+        description=(
+            "Collects every distinct part in the composition DAG, clears its prior "
+            "estimation results and re-queues it for the background worker. Parts "
+            "without an STL file or a print preset are silently skipped. "
+            "Write action — requires the `can_manage_projects` permission."
+        ),
+        request=None,
+        responses={
+            202: inline_serializer(
+                "ReEstimateResponse",
+                fields={"queued": serializers.IntegerField()},
+            )
+        },
+    )
     @action(detail=True, methods=["post"], url_path="re-estimate")
     def re_estimate(self, request: Request, pk: str | None = None) -> Response:
         """Queue estimation for every eligible part in the project's composition tree.
@@ -120,6 +137,19 @@ class ProjectViewSet(viewsets.ModelViewSet):
             count += 1
         return Response({"queued": count}, status=status.HTTP_202_ACCEPTED)
 
+    @extend_schema(
+        summary="Clone this project as a new top-level variant",
+        description=(
+            "Creates a new project sharing the same building blocks (child projects, "
+            'parts, hardware). Pass `{"name": "<new name>"}` in the request body. '
+            "Write action — requires the `can_manage_projects` permission."
+        ),
+        request=inline_serializer(
+            "DuplicateRequest",
+            fields={"name": serializers.CharField()},
+        ),
+        responses={201: ProjectSerializer},
+    )
     @action(detail=True, methods=["post"])
     def duplicate(self, request: Request, pk: str | None = None) -> Response:
         """Clone this assembly into a new top-level variant (shares its building blocks).
@@ -136,6 +166,11 @@ class ProjectViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(variant)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
+    @extend_schema(
+        summary="Nested assembly tree for this project",
+        description="Returns the full child-module / part / hardware hierarchy for orientation.",
+        responses={200: ProjectTreeSerializer},
+    )
     @action(detail=True, methods=["get"])
     def tree(self, request: Request, pk: str | None = None) -> Response:
         """Return the nested assembly tree (child modules, parts, hardware) for orientation."""
@@ -143,6 +178,29 @@ class ProjectViewSet(viewsets.ModelViewSet):
         serializer = ProjectTreeSerializer(project, context=self.get_serializer_context())
         return Response(serializer.data)
 
+    @extend_schema(
+        summary="Aggregate build requirements for this project",
+        description=(
+            "Returns rolled-up totals and per-filament/hardware breakdowns across the "
+            "full composition DAG: `total_parts_count`, `total_filament_grams/meters`, "
+            "`total_hardware_cost`, `filament_requirements`, `hardware_requirements`, "
+            "`variant_progress`."
+        ),
+        responses={
+            200: inline_serializer(
+                "RequirementsResponse",
+                fields={
+                    "total_parts_count": serializers.IntegerField(),
+                    "total_filament_grams": serializers.FloatField(allow_null=True),
+                    "total_filament_meters": serializers.FloatField(allow_null=True),
+                    "total_hardware_cost": serializers.FloatField(allow_null=True),
+                    "filament_requirements": serializers.ListField(),
+                    "hardware_requirements": serializers.ListField(),
+                    "variant_progress": serializers.DictField(),
+                },
+            )
+        },
+    )
     @action(detail=True, methods=["get"])
     def requirements(self, request: Request, pk: str | None = None) -> Response:
         """Return the aggregate build requirements (parts, filament, hardware, progress).
@@ -164,6 +222,32 @@ class ProjectViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @extend_schema(
+        summary="Completeness check for this project",
+        description=(
+            "Flags parts missing an STL file, a Spoolman filament id, or whose "
+            "estimation errored, and flags the project itself when it has no parts. "
+            "`ok` is `true` only when `issues` is empty."
+        ),
+        responses={
+            200: inline_serializer(
+                "ValidateResponse",
+                fields={
+                    "ok": serializers.BooleanField(),
+                    "issues": serializers.ListField(
+                        child=inline_serializer(
+                            "ValidationIssue",
+                            fields={
+                                "part_id": serializers.IntegerField(allow_null=True),
+                                "part_name": serializers.CharField(allow_null=True),
+                                "issue": serializers.CharField(),
+                            },
+                        )
+                    ),
+                },
+            )
+        },
+    )
     @action(detail=True, methods=["get"])
     def validate(self, request: Request, pk: str | None = None) -> Response:
         """Report completeness issues that would block building the project.
@@ -197,6 +281,17 @@ class PartViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter]
     search_fields = ["name", "material"]
 
+    @extend_schema(
+        summary="Re-queue estimation for this part",
+        description=(
+            "Validates prerequisites (STL file + print preset present), clears any "
+            "prior estimation results and triggers the background worker. "
+            "Returns 400 if prerequisites are missing (prior results are preserved). "
+            "Write action — requires the `can_manage_projects` permission."
+        ),
+        request=None,
+        responses={202: PartSerializer, 400: OpenApiResponse(description="Missing STL file or print preset.")},
+    )
     @action(detail=True, methods=["post"], url_path="estimate")
     def estimate(self, request: Request, pk: str | None = None) -> Response:
         """Re-queue estimation for a single part, clearing any prior results.
@@ -237,6 +332,20 @@ class PartViewSet(viewsets.ModelViewSet):
         serializer = PartSerializer(part, context=self.get_serializer_context())
         return Response(serializer.data, status=status.HTTP_202_ACCEPTED)
 
+    @extend_schema(
+        summary="Upload an STL or 3MF model file for this part",
+        description=(
+            "Multipart upload: send the file in the `stl_file` field. "
+            "Accepted formats: `.stl`, `.3mf`. Max size: 100 MB. "
+            "Saves the file on the part and triggers the same background estimation the UI runs. "
+            "Write action — requires the `can_manage_projects` permission."
+        ),
+        request=inline_serializer(
+            "StlUploadRequest",
+            fields={"stl_file": serializers.FileField()},
+        ),
+        responses={200: PartSerializer, 400: OpenApiResponse(description="Missing or invalid file.")},
+    )
     @action(
         detail=True,
         methods=["post"],

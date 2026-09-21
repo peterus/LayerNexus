@@ -193,6 +193,18 @@ LayerNexus uses [orca-slicer-api](https://github.com/AFKFelix/orca-slicer-api) �
 3. Spoolman is the primary source for filament data — materials are managed exclusively through Spoolman.
 
 
+## API Documentation
+
+The REST API is self-documented via [drf-spectacular](https://drf-spectacular.readthedocs.io/):
+
+| URL | Description |
+|---|---|
+| `/api/schema/` | Raw OpenAPI 3 schema (YAML) — download or feed to AI agents |
+| `/api/docs/` | Swagger UI — interactive browser-based exploration |
+| `/api/redoc/` | ReDoc — clean reference documentation |
+
+The schema is generated live from the ViewSets and serializers, so it always reflects the current API contract.
+
 ## REST API (iterative build API)
 
 A token-authenticated REST API under `/api/v1/` lets a client (typically an AI agent)
