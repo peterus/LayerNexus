@@ -98,44 +98,52 @@
 
 <div class="card mb-4">
   <div class="card-header d-flex align-items-center justify-content-between">
-    <h5 class="mb-0"><i class="bi bi-diagram-3 me-2"></i>Build progress</h5>
+    <button class="btn btn-link p-0 text-decoration-none text-body fw-semibold d-flex align-items-center"
+            data-bs-toggle="collapse" data-bs-target="#buildProgressBody"
+            aria-expanded="{{ build_progress_expanded|yesno:'true,false' }}"
+            aria-controls="buildProgressBody">
+      <i class="bi bi-diagram-3 me-2"></i>Build progress
+      <i class="bi bi-chevron-down ms-2 small"></i>
+    </button>
     {% if variant_progress.needed %}<span class="badge bg-primary">{{ variant_progress.percent }}%</span>{% endif %}
   </div>
-  <div class="card-body">
-    {% if variant_progress.needed %}
-    <p class="text-body-secondary small mb-2">
-      Prints attributed to this assembly ({{ variant_progress.printed }} of {{ variant_progress.needed }} parts).
-    </p>
-    <div class="progress mb-3" style="height: 10px;">
-      <div class="progress-bar bg-primary" role="progressbar" style="width: {{ variant_progress.percent }}%;" aria-valuenow="{{ variant_progress.percent }}" aria-valuemin="0" aria-valuemax="100"></div>
+  <div class="collapse {% if build_progress_expanded %}show{% endif %}" id="buildProgressBody">
+    <div class="card-body">
+      {% if variant_progress.needed %}
+      <p class="text-body-secondary small mb-2">
+        Prints attributed to this assembly ({{ variant_progress.printed }} of {{ variant_progress.needed }} parts).
+      </p>
+      <div class="progress mb-3" style="height: 10px;">
+        <div class="progress-bar bg-primary" role="progressbar" style="width: {{ variant_progress.percent }}%;" aria-valuenow="{{ variant_progress.percent }}" aria-valuemin="0" aria-valuemax="100"></div>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead>
+            <tr>
+              <th>Part</th>
+              <th class="text-end">Printed</th>
+              <th class="text-end">Needed</th>
+              <th class="text-end">Remaining</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in variant_progress.parts %}
+            <tr>
+              <td><a href="{% url 'core:part_detail' row.part.pk %}" class="text-decoration-none">{{ row.part.name|default:"Unnamed part" }}</a></td>
+              <td class="text-end">{{ row.printed }}</td>
+              <td class="text-end">{{ row.needed }}</td>
+              <td class="text-end">{% if row.remaining %}<span class="text-warning-emphasis">{{ row.remaining }}</span>{% else %}<i class="bi bi-check-circle text-success"></i>{% endif %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="text-body-secondary small mb-0">
+        No parts to build in this assembly yet. Attribute prints to this project when adding parts to a job to track per-variant progress here.
+      </p>
+      {% endif %}
     </div>
-    <div class="table-responsive">
-      <table class="table table-sm align-middle mb-0">
-        <thead>
-          <tr>
-            <th>Part</th>
-            <th class="text-end">Printed</th>
-            <th class="text-end">Needed</th>
-            <th class="text-end">Remaining</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in variant_progress.parts %}
-          <tr>
-            <td><a href="{% url 'core:part_detail' row.part.pk %}" class="text-decoration-none">{{ row.part.name|default:"Unnamed part" }}</a></td>
-            <td class="text-end">{{ row.printed }}</td>
-            <td class="text-end">{{ row.needed }}</td>
-            <td class="text-end">{% if row.remaining %}<span class="text-warning-emphasis">{{ row.remaining }}</span>{% else %}<i class="bi bi-check-circle text-success"></i>{% endif %}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% else %}
-    <p class="text-body-secondary small mb-0">
-      No parts to build in this assembly yet. Attribute prints to this project when adding parts to a job to track per-variant progress here.
-    </p>
-    {% endif %}
   </div>
 </div>
 
