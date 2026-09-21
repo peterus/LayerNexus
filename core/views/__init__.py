@@ -1,6 +1,7 @@
 """Views package for the LayerNexus application."""
 
 from .auth import (
+    ApiTokenView,
     ProfileView,
     RegisterView,
     UserCreateView,
@@ -104,6 +105,7 @@ from .queue import (
 __all__ = [
     "AddPartToJobView",
     "AdminDashboardView",
+    "ApiTokenView",
     "CancelQueueEntryView",
     "CostProfileUpdateView",
     "CreateJobsFromProjectView",
