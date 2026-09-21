@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "rest_framework.authtoken",
+    "drf_spectacular",
     "core",
 ]
 
@@ -66,6 +67,7 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_THROTTLE_CLASSES": [],
     "UNAUTHENTICATED_USER": None,
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
 MIDDLEWARE = [
@@ -186,6 +188,19 @@ APP_VERSION = os.environ.get(
     "APP_VERSION",
     _version_file.read_text().strip() if _version_file.exists() else "dev",
 )
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "LayerNexus API",
+    "DESCRIPTION": (
+        "Token-authenticated REST API for building LayerNexus projects iteratively. "
+        "Covers projects, sub-project composition edges, parts (incl. STL/3MF upload), "
+        "documents, and hardware. Printing (print jobs, queue, printers) is out of scope. "
+        "BREAKING since Phase 6: Part has no project/quantity fields — "
+        "attach parts to projects via POST /api/v1/projects/{id}/parts/."
+    ),
+    "VERSION": APP_VERSION,
+    "SERVE_INCLUDE_SCHEMA": False,
+}
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
