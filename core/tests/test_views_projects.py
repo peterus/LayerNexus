@@ -1,9 +1,19 @@
 """Tests for project-related views."""
 
+from django.contrib.auth.models import Group, User
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
-from core.models import PrinterProfile, Project
+from core.models import (
+    Part,
+    PrinterProfile,
+    PrintJob,
+    PrintJobPart,
+    PrintJobPlate,
+    PrintQueue,
+    Project,
+    ProjectPart,
+)
 from core.tests.mixins import TestDataMixin
 
 
@@ -346,3 +356,66 @@ class AssemblyEditorViewTests(TestDataMixin, TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertContains(resp, "Truck")
         self.assertContains(resp, "used in")
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class BuildProgressExpandedTests(TestCase):
+    """Context flag build_progress_expanded on the project detail view."""
+
+    def setUp(self):
+        super().setUp()
+        self.user = User.objects.create_user(username="bp_testuser", password="testpass123")
+        self.user.groups.add(Group.objects.get(name="Admin"))
+        self.client.login(username="bp_testuser", password="testpass123")
+        self.project = Project.objects.create(name="BP Test Project", created_by=self.user)
+        self.part = Part.objects.create(name="BP Part")
+        ProjectPart.objects.create(project=self.project, part=self.part, quantity=2)
+
+    def _context(self) -> dict:
+        resp = self.client.get(reverse("core:project_detail", args=[self.project.pk]))
+        self.assertEqual(resp.status_code, 200)
+        return resp.context
+
+    def test_false_for_fresh_project(self):
+        self.assertFalse(self._context()["build_progress_expanded"])
+
+    def test_true_when_printed_gt_zero(self):
+        job = PrintJob.objects.create(status=PrintJob.STATUS_COMPLETED)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2, target_assembly=self.project)
+        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
+        self.assertTrue(self._context()["build_progress_expanded"])
+
+    def test_true_when_active_job(self):
+        """Non-terminal job attributed to this project expands the section."""
+        job = PrintJob.objects.create(status=PrintJob.STATUS_PRINTING)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2, target_assembly=self.project)
+        self.assertTrue(self._context()["build_progress_expanded"])
+
+    def test_true_when_job_queued(self):
+        """Job with a PrintQueue entry attributed to this project expands the section."""
+        printer = PrinterProfile.objects.create(name="BP Printer", created_by=self.user)
+        job = PrintJob.objects.create(status=PrintJob.STATUS_UPLOADED)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2, target_assembly=self.project)
+        plate = PrintJobPlate.objects.create(print_job=job, plate_number=1)
+        PrintQueue.objects.create(plate=plate, printer=printer)
+        self.assertTrue(self._context()["build_progress_expanded"])
+
+    def test_false_when_only_cancelled_job(self):
+        """Terminal (cancelled) jobs do not expand the section."""
+        job = PrintJob.objects.create(status=PrintJob.STATUS_CANCELLED)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2, target_assembly=self.project)
+        self.assertFalse(self._context()["build_progress_expanded"])
+
+    def test_false_when_only_failed_job(self):
+        """Terminal (failed) jobs do not expand the section."""
+        job = PrintJob.objects.create(status=PrintJob.STATUS_FAILED)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2, target_assembly=self.project)
+        self.assertFalse(self._context()["build_progress_expanded"])
+
+    def test_template_renders_show_class(self):
+        """Template renders Bootstrap 'show' class when build_progress_expanded is True."""
+        job = PrintJob.objects.create(status=PrintJob.STATUS_PRINTING)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2, target_assembly=self.project)
+        resp = self.client.get(reverse("core:project_detail", args=[self.project.pk]))
+        self.assertContains(resp, "buildProgressBody")
+        self.assertContains(resp, 'class="collapse show"')

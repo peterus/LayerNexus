@@ -25,6 +25,8 @@ from core.mixins import ProjectManageMixin
 from core.models import (
     OrcaPrintPreset,
     Part,
+    PrintJob,
+    PrintJobPart,
     Project,
     ProjectComponent,
     ProjectPart,
@@ -115,6 +117,18 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
         # Per-part per-assembly rows keyed by part pk, so the direct-parts table can show
         # this assembly's printed/remaining instead of the global Part counters (Phase 6a).
         context["variant_rows_by_pk"] = {row["part"].pk: row for row in variant_progress["parts"]}
+
+        # Expand the build-progress section by default when prints exist or an active job
+        # is attributed to this assembly (draft through printing; excludes terminal statuses).
+        _TERMINAL = [PrintJob.STATUS_COMPLETED, PrintJob.STATUS_FAILED, PrintJob.STATUS_CANCELLED]
+        has_active_job_parts: bool = (
+            PrintJobPart.objects.filter(
+                target_assembly=self.object,
+            )
+            .exclude(print_job__status__in=_TERMINAL)
+            .exists()
+        )
+        context["build_progress_expanded"] = variant_progress["printed"] > 0 or has_active_job_parts
 
         # Build filament name and color lookups for part display
         parts = [part for part, _quantity in context["direct_parts"]]
