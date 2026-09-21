@@ -9,9 +9,14 @@ import logging
 import struct
 import zipfile
 from pathlib import Path
-from xml.etree.ElementTree import Element, SubElement, tostring
+from xml.etree.ElementTree import Element, ParseError, SubElement, tostring
 
 logger = logging.getLogger(__name__)
+
+# Reject 3MF archives whose contents decompress to more than this, to guard the
+# worker against ZIP bombs (uploads are user-controlled). 500 MB comfortably
+# covers legitimate high-poly models while capping pathological archives.
+MAX_3MF_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
 
 # 3MF XML namespaces
 NS_3MF = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
@@ -167,6 +172,13 @@ def extract_meshes_from_3mf(
     Reads the ``3D/3dmodel.model`` XML inside the 3MF ZIP and parses
     all ``<object>`` elements with mesh geometry.
 
+    Only direct ``<object><mesh>`` geometry is extracted; 3MF
+    ``<components>`` references and ``<build>`` item transforms are not
+    resolved, so meshes are bundled in their local coordinate system.
+    The single-3MF estimation path bypasses this function (the archive is
+    sent to OrcaSlicer verbatim); extraction is only used to merge simple
+    3MF meshes into mixed STL+3MF bundles.
+
     Args:
         data: Raw bytes of a 3MF ZIP archive.
 
@@ -181,12 +193,28 @@ def extract_meshes_from_3mf(
 
     try:
         with zipfile.ZipFile(io.BytesIO(data), "r") as zf:
-            # Find the 3D model file
-            model_path = None
-            for name in zf.namelist():
-                if name.lower().endswith(".model") and "3d/" in name.lower():
-                    model_path = name
-                    break
+            # Guard against ZIP bombs before decompressing anything.
+            total_uncompressed = sum(info.file_size for info in zf.infolist())
+            if total_uncompressed > MAX_3MF_UNCOMPRESSED_BYTES:
+                raise ThreeMFError(
+                    f"3MF archive too large: {total_uncompressed} bytes uncompressed "
+                    f"exceeds the {MAX_3MF_UNCOMPRESSED_BYTES}-byte limit"
+                )
+
+            # Prefer the standard 3MF model path first, case-insensitively.
+            names = zf.namelist()
+            names_by_lower = {name.lower(): name for name in names}
+            model_path = names_by_lower.get("3d/3dmodel.model")
+
+            # Fall back to the first .model file under a 3d/ path for
+            # non-standard archives that do not contain the standard path.
+            if model_path is None:
+                for name in names:
+                    lower_name = name.lower()
+                    if lower_name.endswith(".model") and "3d/" in lower_name:
+                        model_path = name
+                        break
+
             if model_path is None:
                 raise ThreeMFError("No 3D model file found in 3MF archive")
 
@@ -194,7 +222,10 @@ def extract_meshes_from_3mf(
     except zipfile.BadZipFile as exc:
         raise ThreeMFError(f"Invalid 3MF file: {exc}") from exc
 
-    root = fromstring(model_xml)
+    try:
+        root = fromstring(model_xml)
+    except (ParseError, UnicodeDecodeError) as exc:
+        raise ThreeMFError(f"Malformed 3MF model XML: {exc}") from exc
 
     # Detect namespace from root tag
     ns = ""
@@ -242,7 +273,7 @@ def extract_meshes_from_3mf(
     return meshes
 
 
-def create_3mf_bundle(parts: list[tuple[Path, int]]) -> bytes:
+def create_3mf_bundle(parts: list[tuple[Path | str, int]]) -> bytes:
     """Create a 3MF package containing multiple model files.
 
     Accepts both STL and 3MF files.  Each file is parsed into mesh

@@ -44,8 +44,9 @@ from core.models import (
 )
 from core.views.helpers import _trigger_part_estimation
 
-# STL upload limits mirror the UI ``PartForm.clean_stl_file`` rules.
+# Model-file upload limits mirror the UI ``PartForm.clean_stl_file`` rules.
 STL_MAX_SIZE = 100 * 1024 * 1024  # 100 MB
+ALLOWED_MODEL_EXTENSIONS = (".stl", ".3mf")
 
 
 def _part_ref(part: Part) -> dict[str, Any]:
@@ -166,7 +167,7 @@ class PartViewSet(viewsets.ModelViewSet):
         parser_classes=[MultiPartParser, FormParser],
     )
     def stl(self, request: Request, pk: str | None = None) -> Response:
-        """Attach an uploaded STL file to the part and trigger the same estimation as the UI."""
+        """Attach an uploaded model file (STL or 3MF) to the part and trigger the same estimation as the UI."""
         part = self.get_object()
         uploaded = request.FILES.get("stl_file") or request.FILES.get("file")
         if uploaded is None:
@@ -174,8 +175,11 @@ class PartViewSet(viewsets.ModelViewSet):
                 {"stl_file": ["No file supplied (use the 'stl_file' multipart field)."]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if not uploaded.name.lower().endswith(".stl"):
-            return Response({"stl_file": ["Only STL files are allowed."]}, status=status.HTTP_400_BAD_REQUEST)
+        if not uploaded.name.lower().endswith(ALLOWED_MODEL_EXTENSIONS):
+            return Response(
+                {"stl_file": ["Only STL and 3MF files are allowed."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if uploaded.size > STL_MAX_SIZE:
             return Response({"stl_file": ["File size must be under 100 MB."]}, status=status.HTTP_400_BAD_REQUEST)
 

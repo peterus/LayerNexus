@@ -49,7 +49,7 @@ class PartForm(forms.ModelForm):
         return stl_file
 
     def clean(self) -> dict:
-        """Auto-fill name from the uploaded STL filename if left empty."""
+        """Auto-fill name from the uploaded model filename if left empty."""
         cleaned_data = super().clean()
         name = cleaned_data.get("name", "").strip()
         if not name:

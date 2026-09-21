@@ -299,8 +299,8 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
     """Bulk-create draft print jobs from all eligible parts in a project.
 
     Groups parts by ``(effective_print_preset_id, spoolman_filament_id)``
-    so that each job contains only compatible parts.  Parts without an
-    STL file or with a **per-assembly remaining of 0** are skipped, and the
+    so that each job contains only compatible parts.  Parts without a
+    model file or with a **per-assembly remaining of 0** are skipped, and the
     created ``PrintJobPart``s are attributed to this project via
     ``target_assembly`` so their prints count toward this assembly's progress
     (Phase 6a).
@@ -386,8 +386,8 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
 class PrintJobSliceView(RoleRequiredMixin, View):
     """Trigger slicing for a draft print job.
 
-    Collects all STL files from the job's parts, creates a 3MF bundle,
-    and starts background slicing via OrcaSlicer.
+    Collects all model files (STL or 3MF) from the job's parts, creates a
+    3MF bundle, and starts background slicing via OrcaSlicer.
     """
 
     permission_required = "core.change_printjob"

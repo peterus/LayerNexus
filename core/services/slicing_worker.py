@@ -307,7 +307,7 @@ def _estimate_part_in_background(part_pk: int) -> None:
         part = Part.objects.select_related("print_preset").get(pk=part_pk)
 
         if not part.stl_file:
-            logger.debug("estimate_part(%s): no STL file, skipping", part_pk)
+            logger.debug("estimate_part(%s): no model file, skipping", part_pk)
             Part.objects.filter(pk=part_pk).update(
                 estimation_status=Part.ESTIMATION_NONE,
             )
