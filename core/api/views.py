@@ -96,9 +96,12 @@ class ProjectViewSet(viewsets.ModelViewSet):
             202 response with ``{"queued": <count>}``.
         """
         project = self.get_object()
-        parts = [p for p, _mult in project._collect_parts_with_multiplier()]
+        # ``_collect_parts_with_multiplier`` yields one tuple per path through the
+        # composition DAG, so a part shared by several modules appears repeatedly.
+        # Deduplicate by primary key so each part is reset and queued exactly once.
+        parts = {p.pk: p for p, _mult in project._collect_parts_with_multiplier()}
         count = 0
-        for part in parts:
+        for part in parts.values():
             if not part.stl_file:
                 continue
             if not part.effective_print_preset:
@@ -195,15 +198,30 @@ class PartViewSet(viewsets.ModelViewSet):
     def estimate(self, request: Request, pk: str | None = None) -> Response:
         """Re-queue estimation for a single part, clearing any prior results.
 
-        Mirrors :class:`~core.views.parts.PartReEstimateView`: resets the estimation
+        Mirrors :class:`~core.views.parts.PartReEstimateView`: validates that the part
+        has both an STL file and a resolvable print preset, then resets the estimation
         fields to ``none`` and triggers the background worker.  This is a write action
         so ``ReadOrProjectManage`` requires the ``core.can_manage_projects`` permission.
 
         Returns:
             202 response with the serialized part so the caller can inspect its current
-            ``estimation_status``.
+            ``estimation_status``; 400 if a prerequisite is missing (the prior estimate
+            is left untouched in that case).
         """
         part = self.get_object()
+        # Validate prerequisites before clearing so a part that cannot be estimated
+        # (no STL / no preset) keeps its prior result instead of being silently wiped
+        # while the background worker no-ops.
+        if not part.stl_file:
+            return Response(
+                {"detail": "Part has no STL file to estimate."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not part.effective_print_preset:
+            return Response(
+                {"detail": "Part has no print preset configured."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         Part.objects.filter(pk=part.pk).update(
             filament_used_grams=None,
             filament_used_meters=None,

@@ -8,7 +8,7 @@ from django.contrib import messages
 from django.contrib.auth import login
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.models import Group, User
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import redirect, render
@@ -205,10 +205,23 @@ class ApiTokenView(LoginRequiredMixin, View):
             else:
                 messages.info(request, "An API token already exists. Use Rotate to replace it.")
         elif action == "rotate":
-            Token.objects.filter(user=request.user).delete()
-            token = Token.objects.create(user=request.user)
-            request.session["new_api_token"] = token.key
-            messages.success(request, "API token rotated. Your old token is now invalid.")
+            # Replace the token atomically so overlapping rotate requests can never leave
+            # the user without a token or hit the per-user uniqueness constraint on create.
+            # A concurrent rotate that still loses the race raises IntegrityError; the atomic
+            # block rolls back cleanly (old token preserved), so surface a friendly message
+            # instead of a 500.
+            try:
+                with transaction.atomic():
+                    Token.objects.filter(user=request.user).delete()
+                    token = Token.objects.create(user=request.user)
+            except IntegrityError:
+                messages.error(
+                    request,
+                    "Could not rotate the API token due to a concurrent update. Please try again.",
+                )
+            else:
+                request.session["new_api_token"] = token.key
+                messages.success(request, "API token rotated. Your old token is now invalid.")
         elif action == "revoke":
             Token.objects.filter(user=request.user).delete()
             messages.success(request, "API token revoked.")

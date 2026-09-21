@@ -1,6 +1,9 @@
 """Tests for API token self-service view."""
 
+from unittest import mock
+
 from django.contrib.auth.models import User
+from django.db import IntegrityError
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.authtoken.models import Token
@@ -110,6 +113,20 @@ class ApiTokenRotateTests(TestCase):
         self.client.get(self.url)  # consumes flash
         resp = self.client.get(self.url)
         self.assertNotContains(resp, new_token.key)
+
+    def test_rotate_is_atomic_on_create_failure(self):
+        """A failed replacement create rolls back the delete and reports gracefully."""
+        with mock.patch(
+            "core.views.auth.Token.objects.create",
+            side_effect=IntegrityError("boom"),
+        ):
+            resp = self.client.post(self.url, {"action": "rotate"})
+
+        # No 500: the IntegrityError is caught and the user is redirected with a message.
+        self.assertRedirects(resp, self.url)
+        # The atomic block rolls back the delete, so the original token survives intact.
+        self.assertTrue(Token.objects.filter(key=self.old_token.key).exists())
+        self.assertEqual(Token.objects.filter(user=self.user).count(), 1)
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
