@@ -140,7 +140,7 @@ class HardwarePartDeleteView(ProjectManageMixin, DeleteView):
             response = super().form_valid(form)
             messages.success(self.request, f"Hardware part '{name}' deleted.")
             return response
-        except ProtectedError:
+        except (ProtectedError, IntegrityError):
             used_count = self.object.project_assignments.count()
             messages.error(
                 self.request,

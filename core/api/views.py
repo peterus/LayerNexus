@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.db import IntegrityError
 from django.db.models.deletion import ProtectedError
 from django.shortcuts import get_object_or_404
 from rest_framework import filters, generics, status, viewsets
@@ -260,7 +261,7 @@ class HardwarePartViewSet(viewsets.ModelViewSet):
         instance = self.get_object()
         try:
             instance.delete()
-        except ProtectedError:
+        except (ProtectedError, IntegrityError):
             used_count = instance.project_assignments.count()
             return Response(
                 {
