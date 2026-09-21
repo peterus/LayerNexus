@@ -7,9 +7,37 @@ from django import forms
 from core.models import HardwarePart, Project, ProjectHardware
 
 __all__ = [
+    "HardwarePartForm",
     "ProjectHardwareForm",
     "ProjectHardwareUpdateForm",
 ]
+
+
+class HardwarePartForm(forms.ModelForm):
+    """Form for creating or editing a :class:`HardwarePart` catalogue entry."""
+
+    class Meta:
+        model = HardwarePart
+        fields = ["name", "category", "url", "unit_price", "notes"]
+        widgets = {
+            "category": forms.Select(attrs={"class": "form-select"}),
+            "url": forms.URLInput(attrs={"placeholder": "https://..."}),
+            "unit_price": forms.NumberInput(attrs={"step": "0.01", "min": "0"}),
+            "notes": forms.Textarea(attrs={"rows": 3}),
+        }
+
+    def clean(self) -> dict:
+        """Validate that the (name, category) combination is unique, excluding self."""
+        cleaned_data = super().clean()
+        name = cleaned_data.get("name")
+        category = cleaned_data.get("category")
+        if name and category:
+            qs = HardwarePart.objects.filter(name=name, category=category)
+            if self.instance and self.instance.pk:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise forms.ValidationError(f"A hardware part named '{name}' in category '{category}' already exists.")
+        return cleaned_data
 
 
 class ProjectHardwareForm(forms.Form):

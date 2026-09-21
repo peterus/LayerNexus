@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+
+{% block title %}Hardware Library — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="h3 mb-0"><i class="bi bi-cpu me-2"></i>Hardware Library</h1>
+  <a href="{% url 'core:hardware_part_create' %}" class="btn btn-primary">
+    <i class="bi bi-plus-lg me-1"></i>New Hardware Part
+  </a>
+</div>
+
+<p class="text-body-secondary">All hardware catalogue entries. A hardware part can be referenced by several projects.</p>
+
+<form method="get" role="search" class="mb-4">
+  <div class="row g-2">
+    <div class="col-sm-6 col-md-5">
+      <div class="input-group">
+        <span class="input-group-text"><i class="bi bi-search"></i></span>
+        <input type="search" name="q" value="{{ q }}" class="form-control"
+               placeholder="Search by name…" aria-label="Search hardware parts">
+      </div>
+    </div>
+    <div class="col-sm-4 col-md-3">
+      <select name="category" class="form-select" aria-label="Filter by category">
+        <option value="">All categories</option>
+        {% for value, label in categories %}
+        <option value="{{ value }}" {% if selected_category == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-sm-auto">
+      <button type="submit" class="btn btn-outline-primary">Search</button>
+      {% if q or selected_category %}
+      <a href="{% url 'core:hardware_library' %}" class="btn btn-outline-secondary ms-1">Clear</a>
+      {% endif %}
+    </div>
+  </div>
+</form>
+
+{% if hardware_parts %}
+<div class="table-responsive">
+  <table class="table table-hover align-middle">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Category</th>
+        <th>Unit Price</th>
+        <th class="text-center">Used in</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for part in hardware_parts %}
+      <tr>
+        <td>
+          <span class="fw-medium">{{ part.name }}</span>
+          {% if part.url %}
+          <a href="{{ part.url }}" target="_blank" rel="noopener" class="ms-1 text-body-secondary" title="Open link"><i class="bi bi-box-arrow-up-right small"></i></a>
+          {% endif %}
+          {% if part.notes %}
+          <br><small class="text-body-secondary">{{ part.notes|truncatechars:60 }}</small>
+          {% endif %}
+        </td>
+        <td>
+          <span class="badge bg-secondary bg-opacity-25 text-body">{{ part.get_category_display }}</span>
+        </td>
+        <td>
+          {% if part.unit_price is not None %}
+          <span class="font-monospace">{{ part.unit_price }} €</span>
+          {% else %}
+          <span class="text-body-secondary">—</span>
+          {% endif %}
+        </td>
+        <td class="text-center">
+          <span class="badge bg-info-subtle text-info-emphasis" title="Number of projects using this part">{{ part.used_in_count }}</span>
+        </td>
+        <td>
+          <a href="{% url 'core:hardware_part_update' part.pk %}" class="btn btn-sm btn-outline-secondary" title="Edit"><i class="bi bi-pencil"></i></a>
+          <a href="{% url 'core:hardware_part_delete' part.pk %}" class="btn btn-sm btn-outline-danger ms-1" title="Delete"><i class="bi bi-trash"></i></a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if is_paginated %}
+<nav aria-label="Hardware library pagination">
+  <ul class="pagination">
+    {% if page_obj.has_previous %}
+    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}">Previous</a></li>
+    {% else %}
+    <li class="page-item disabled"><span class="page-link">Previous</span></li>
+    {% endif %}
+    <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
+    {% if page_obj.has_next %}
+    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}{% if q %}&q={{ q|urlencode }}{% endif %}{% if selected_category %}&category={{ selected_category|urlencode }}{% endif %}">Next</a></li>
+    {% else %}
+    <li class="page-item disabled"><span class="page-link">Next</span></li>
+    {% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% elif q or selected_category %}
+<div class="text-center py-5 text-body-secondary">
+  <i class="bi bi-search display-4"></i>
+  <p class="mt-2">No hardware parts match your filters.</p>
+</div>
+{% else %}
+<div class="text-center py-5 text-body-secondary">
+  <i class="bi bi-cpu display-4"></i>
+  <p class="mt-2">No hardware parts yet.</p>
+  <a href="{% url 'core:hardware_part_create' %}" class="btn btn-primary mt-2">
+    <i class="bi bi-plus-lg me-1"></i>Add Hardware Part
+  </a>
+</div>
+{% endif %}
+{% endblock %}

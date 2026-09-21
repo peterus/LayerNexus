@@ -3,23 +3,143 @@
 import logging
 
 from django.contrib import messages
+from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db import IntegrityError
+from django.db.models import Count, Q, QuerySet
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect
-from django.urls import reverse
-from django.views.generic import DeleteView, FormView, UpdateView
+from django.urls import reverse, reverse_lazy
+from django.views.generic import CreateView, DeleteView, FormView, ListView, UpdateView
 
 from core.forms import ProjectHardwareForm, ProjectHardwareUpdateForm
+from core.forms.hardware import HardwarePartForm
 from core.mixins import ProjectManageMixin
-from core.models import Project, ProjectHardware
+from core.models import HardwarePart, Project, ProjectHardware
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "HardwarePartListView",
+    "HardwarePartCreateView",
+    "HardwarePartUpdateView",
+    "HardwarePartDeleteView",
     "ProjectHardwareCreateView",
     "ProjectHardwareUpdateView",
     "ProjectHardwareDeleteView",
 ]
+
+
+class HardwarePartListView(LoginRequiredMixin, ListView):
+    """Read-only library of all hardware catalogue entries."""
+
+    model = HardwarePart
+    template_name = "core/hardware_library.html"
+    context_object_name = "hardware_parts"
+    paginate_by = 50
+
+    def get_queryset(self) -> QuerySet:
+        """Return hardware parts annotated with project usage count, filtered by search/category."""
+        queryset = HardwarePart.objects.annotate(used_in_count=Count("project_assignments", distinct=True)).order_by(
+            "category", "name"
+        )
+        query = self.request.GET.get("q", "").strip()
+        if query:
+            queryset = queryset.filter(Q(name__icontains=query))
+        category = self.request.GET.get("category", "").strip()
+        if category:
+            queryset = queryset.filter(category=category)
+        return queryset
+
+    def get_context_data(self, **kwargs) -> dict:
+        """Add search term, active category filter, and all categories to context."""
+        context = super().get_context_data(**kwargs)
+        context["q"] = self.request.GET.get("q", "").strip()
+        context["selected_category"] = self.request.GET.get("category", "").strip()
+        context["categories"] = HardwarePart.CATEGORY_CHOICES
+        return context
+
+
+class HardwarePartCreateView(ProjectManageMixin, CreateView):
+    """Create a new hardware catalogue entry."""
+
+    model = HardwarePart
+    form_class = HardwarePartForm
+    template_name = "core/hardwarepart_form.html"
+
+    def form_valid(self, form: HardwarePartForm) -> HttpResponse:
+        """Set created_by and save."""
+        form.instance.created_by = self.request.user
+        response = super().form_valid(form)
+        messages.success(self.request, f"Hardware part '{self.object.name}' created.")
+        return response
+
+    def get_success_url(self) -> str:
+        """Redirect to the hardware library after creation."""
+        return reverse_lazy("core:hardware_library")
+
+    def get_context_data(self, **kwargs) -> dict:
+        """Add mode flag for template."""
+        context = super().get_context_data(**kwargs)
+        context["is_edit"] = False
+        return context
+
+
+class HardwarePartUpdateView(ProjectManageMixin, UpdateView):
+    """Edit an existing hardware catalogue entry."""
+
+    model = HardwarePart
+    form_class = HardwarePartForm
+    template_name = "core/hardwarepart_form.html"
+
+    def form_valid(self, form: HardwarePartForm) -> HttpResponse:
+        """Save and show success message."""
+        response = super().form_valid(form)
+        messages.success(self.request, f"Hardware part '{self.object.name}' updated.")
+        return response
+
+    def get_success_url(self) -> str:
+        """Redirect to the hardware library after update."""
+        return reverse_lazy("core:hardware_library")
+
+    def get_context_data(self, **kwargs) -> dict:
+        """Add mode flag for template."""
+        context = super().get_context_data(**kwargs)
+        context["is_edit"] = True
+        return context
+
+
+class HardwarePartDeleteView(ProjectManageMixin, DeleteView):
+    """Delete a hardware catalogue entry.
+
+    Deletion is blocked if any project still references the part.
+    """
+
+    model = HardwarePart
+    template_name = "core/hardwarepart_confirm_delete.html"
+    context_object_name = "hardware_part"
+    success_url = reverse_lazy("core:hardware_library")
+
+    def get_context_data(self, **kwargs) -> dict:
+        """Add project usage count to context."""
+        context = super().get_context_data(**kwargs)
+        context["used_in_count"] = self.object.project_assignments.count()
+        context["used_in_projects"] = self.object.project_assignments.select_related("project").values_list(
+            "project__name", flat=True
+        )
+        return context
+
+    def form_valid(self, form) -> HttpResponse:
+        """Block deletion if the part is still used in projects."""
+        used_count = self.object.project_assignments.count()
+        if used_count > 0:
+            messages.error(
+                self.request,
+                f"Cannot delete '{self.object.name}': it is used in {used_count} "
+                f"project{'s' if used_count != 1 else ''}. Remove it from all projects first.",
+            )
+            return redirect(reverse("core:hardware_part_delete", kwargs={"pk": self.object.pk}))
+        messages.success(self.request, f"Hardware part '{self.object.name}' deleted.")
+        return super().form_valid(form)
 
 
 class ProjectHardwareCreateView(ProjectManageMixin, FormView):
