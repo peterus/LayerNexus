@@ -21,6 +21,10 @@ from .documents import (
     ProjectDocumentDownloadView,
 )
 from .hardware import (
+    HardwarePartCreateView,
+    HardwarePartDeleteView,
+    HardwarePartListView,
+    HardwarePartUpdateView,
     ProjectHardwareCreateView,
     ProjectHardwareDeleteView,
     ProjectHardwareUpdateView,
@@ -111,6 +115,10 @@ __all__ = [
     "CreateJobsFromProjectView",
     "DashboardView",
     "FarmDashboardView",
+    "HardwarePartCreateView",
+    "HardwarePartDeleteView",
+    "HardwarePartListView",
+    "HardwarePartUpdateView",
     "MaterialProfileListView",
     "OrcaFilamentProfileDeleteView",
     "OrcaFilamentProfileDetailView",

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}Delete {{ hardware_part.name }} — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{% url 'core:hardware_library' %}">Hardware Library</a></li>
+    <li class="breadcrumb-item active">Delete</li>
+  </ol>
+</nav>
+
+{% if used_in_count > 0 %}
+<div class="alert alert-danger d-flex align-items-start" role="alert">
+  <i class="bi bi-x-circle-fill me-2 mt-1 flex-shrink-0"></i>
+  <div>
+    <strong>Cannot delete this hardware part.</strong>
+    It is currently used in {{ used_in_count }} project{{ used_in_count|pluralize }}:
+    {% for name in used_in_projects %}
+    <strong>{{ name }}</strong>{% if not forloop.last %}, {% endif %}
+    {% endfor %}.
+    Remove it from all projects first, then delete the catalogue entry.
+  </div>
+</div>
+<a href="{% url 'core:hardware_library' %}" class="btn btn-outline-secondary">
+  <i class="bi bi-arrow-left me-1"></i>Back to Hardware Library
+</a>
+{% else %}
+{% url 'core:hardware_library' as cancel %}
+{% include "core/includes/_confirm_delete.html" with object_name=hardware_part.name object_type="Hardware Part" cancel_url=cancel warning_message="This will permanently delete this hardware part from the catalogue. This action cannot be undone." delete_label="Delete Hardware Part" %}
+{% endif %}
+{% endblock %}

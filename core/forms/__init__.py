@@ -9,6 +9,7 @@ from .documents import (
     ProjectDocumentForm,
 )
 from .hardware import (
+    HardwarePartForm,
     ProjectHardwareForm,
     ProjectHardwareUpdateForm,
 )
@@ -46,6 +47,7 @@ __all__ = [
     "AddPartToJobForm",
     "AddPartToProjectForm",
     "CostProfileForm",
+    "HardwarePartForm",
     "OrcaFilamentProfileImportForm",
     "OrcaMachineProfileImportForm",
     "OrcaPrintPresetImportForm",

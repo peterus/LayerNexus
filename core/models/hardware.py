@@ -90,7 +90,7 @@ class ProjectHardware(models.Model):
     )
     hardware_part = models.ForeignKey(
         HardwarePart,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="project_assignments",
     )
     quantity = models.PositiveIntegerField(
