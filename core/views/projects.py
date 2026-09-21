@@ -379,10 +379,13 @@ class ProjectReEstimateView(ProjectManageMixin, View):
             Redirect to the project detail page.
         """
         project = get_object_or_404(Project, pk=pk)
-        parts = [p for p, _mult in project._collect_parts_with_multiplier()]
+        # ``_collect_parts_with_multiplier`` yields one tuple per path through the
+        # composition DAG, so a part shared by several modules appears repeatedly.
+        # Deduplicate by primary key so each part is reset and queued exactly once.
+        parts = {p.pk: p for p, _mult in project._collect_parts_with_multiplier()}
 
         count = 0
-        for part in parts:
+        for part in parts.values():
             if not part.stl_file:
                 continue
             preset = part.effective_print_preset

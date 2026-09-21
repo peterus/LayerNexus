@@ -1,10 +1,14 @@
 """Tests for project-related views."""
 
+from unittest import mock
+
 from django.contrib.auth.models import Group, User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
 from core.models import (
+    OrcaPrintPreset,
     Part,
     PrinterProfile,
     PrintJob,
@@ -12,6 +16,7 @@ from core.models import (
     PrintJobPlate,
     PrintQueue,
     Project,
+    ProjectComponent,
     ProjectPart,
 )
 from core.tests.mixins import TestDataMixin
@@ -212,6 +217,27 @@ class ProjectReEstimateViewTests(TestDataMixin, TestCase):
         """Re-estimate redirects back to the project detail page."""
         resp = self.client.post(reverse("core:project_re_estimate", args=[self.project.pk]))
         self.assertRedirects(resp, reverse("core:project_detail", args=[self.project.pk]))
+
+    def test_re_estimate_deduplicates_shared_part(self):
+        """A part reachable via several DAG paths is reset and queued exactly once."""
+        preset = OrcaPrintPreset.objects.create(name="Fast", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True)
+        shared = Part.objects.create(name="SharedBracket", print_preset=preset)
+        shared.stl_file.save(
+            "shared.stl", SimpleUploadedFile("s.stl", b"solid\nendsolid", content_type="model/stl"), save=True
+        )
+        # Add the part directly to self.project
+        ProjectPart.objects.create(project=self.project, part=shared, quantity=1)
+        # Also add it via a child module — creates a second DAG path to the same part
+        child = Project.objects.create(name="Module", created_by=self.user)
+        ProjectPart.objects.create(project=child, part=shared, quantity=1)
+        ProjectComponent.objects.create(parent_project=self.project, child_project=child, quantity=1)
+
+        with mock.patch("core.views.projects._trigger_part_estimation") as triggered:
+            resp = self.client.post(reverse("core:project_re_estimate", args=[self.project.pk]))
+
+        self.assertEqual(resp.status_code, 302)
+        triggered.assert_called_once()
+        self.assertEqual(triggered.call_args[0][0].pk, shared.pk)
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
