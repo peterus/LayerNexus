@@ -205,8 +205,11 @@ class ApiTokenView(LoginRequiredMixin, View):
             else:
                 messages.info(request, "An API token already exists. Use Rotate to replace it.")
         elif action == "rotate":
-            Token.objects.filter(user=request.user).delete()
-            token = Token.objects.create(user=request.user)
+            # Replace the token atomically so overlapping rotate requests can never leave
+            # the user without a token or hit the per-user uniqueness constraint on create.
+            with transaction.atomic():
+                Token.objects.filter(user=request.user).delete()
+                token = Token.objects.create(user=request.user)
             request.session["new_api_token"] = token.key
             messages.success(request, "API token rotated. Your old token is now invalid.")
         elif action == "revoke":

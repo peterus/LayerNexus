@@ -9,7 +9,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from core.models import OrcaPrintPreset, Part, Project, ProjectPart
+from core.models import OrcaPrintPreset, Part, Project, ProjectComponent, ProjectPart
 
 
 def _make_preset() -> OrcaPrintPreset:
@@ -78,6 +78,33 @@ class PartEstimateActionTests(APITestCase):
         resp = self.client.post(f"/api/v1/parts/{self.part.pk}/estimate/")
         self.assertEqual(resp.status_code, 403)
 
+    def test_estimate_without_stl_returns_400_and_preserves_estimate(self) -> None:
+        """A part with no STL is rejected with 400 without clearing its prior estimate."""
+        part = Part.objects.create(name="NoSTL", print_preset=_make_preset())
+        part.filament_used_grams = 3.0
+        part.estimation_status = Part.ESTIMATION_SUCCESS
+        part.save()
+
+        with mock.patch("core.api.views._trigger_part_estimation") as triggered:
+            resp = self.client.post(f"/api/v1/parts/{part.pk}/estimate/")
+
+        self.assertEqual(resp.status_code, 400, resp.data)
+        triggered.assert_not_called()
+        part.refresh_from_db()
+        self.assertEqual(part.filament_used_grams, 3.0)
+        self.assertEqual(part.estimation_status, Part.ESTIMATION_SUCCESS)
+
+    def test_estimate_without_preset_returns_400(self) -> None:
+        """A part with an STL but no resolvable print preset is rejected with 400."""
+        part = Part.objects.create(name="NoPreset")
+        part.stl_file.save("np.stl", _stl_file(), save=True)
+
+        with mock.patch("core.api.views._trigger_part_estimation") as triggered:
+            resp = self.client.post(f"/api/v1/parts/{part.pk}/estimate/")
+
+        self.assertEqual(resp.status_code, 400, resp.data)
+        triggered.assert_not_called()
+
 
 class ProjectReEstimateActionTests(APITestCase):
     """POST /api/v1/projects/{id}/re-estimate/ — bulk re-estimation for a project tree."""
@@ -141,3 +168,19 @@ class ProjectReEstimateActionTests(APITestCase):
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
         resp = self.client.post(f"/api/v1/projects/{self.project.pk}/re-estimate/")
         self.assertEqual(resp.status_code, 403)
+
+    def test_reestimate_deduplicates_shared_part(self) -> None:
+        """A part reached via several composition paths is queued exactly once."""
+        # The eligible part is reachable both directly and through a child module,
+        # so ``_collect_parts_with_multiplier`` yields it once per path.
+        child = Project.objects.create(name="Module")
+        ProjectPart.objects.create(project=child, part=self.part_with_stl, quantity=1)
+        ProjectComponent.objects.create(parent_project=self.project, child_project=child, quantity=1)
+
+        with mock.patch("core.api.views._trigger_part_estimation") as triggered:
+            resp = self.client.post(f"/api/v1/projects/{self.project.pk}/re-estimate/")
+
+        self.assertEqual(resp.status_code, 202, resp.data)
+        self.assertEqual(resp.data["queued"], 1)
+        triggered.assert_called_once()
+        self.assertEqual(triggered.call_args[0][0].pk, self.part_with_stl.pk)
