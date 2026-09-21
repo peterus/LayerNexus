@@ -35,6 +35,17 @@ class ApiUploadTests(APITestCase):
         self.assertIn("gear", self.part.stl_file.name)
         triggered.assert_called_once_with(self.part)
 
+    def test_3mf_upload_accepted(self) -> None:
+        """Uploading a 3MF file is accepted just like an STL (parity with the UI form)."""
+        upload = SimpleUploadedFile("gear.3mf", b"PK\x03\x04fake", content_type="model/3mf")
+        with mock.patch("core.api.views._trigger_part_estimation") as triggered:
+            resp = self.client.post(f"/api/v1/parts/{self.part.pk}/stl/", {"stl_file": upload}, format="multipart")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.part.refresh_from_db()
+        self.assertTrue(self.part.stl_file)
+        self.assertTrue(self.part.is_3mf)
+        triggered.assert_called_once_with(self.part)
+
     def test_stl_upload_rejects_non_stl(self) -> None:
         """A non-STL upload is rejected with 400."""
         upload = SimpleUploadedFile("gear.txt", b"not stl", content_type="text/plain")

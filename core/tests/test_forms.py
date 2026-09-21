@@ -366,6 +366,35 @@ class PartFormFileValidationTests(TestCase):
         )
         self.assertTrue(form.is_valid())
 
+    def test_3mf_file_valid(self):
+        threemf = SimpleUploadedFile(
+            "model.3mf",
+            b"PK\x03\x04",
+            content_type="model/3mf",
+        )
+        form = PartForm(
+            data={"name": "Part", "quantity": 1, "color": "black", "material": "PLA"},
+            files={"stl_file": threemf},
+        )
+        self.assertTrue(form.is_valid())
+
+    def test_3mf_mixed_case_extension(self):
+        threemf = SimpleUploadedFile("model.3MF", b"PK\x03\x04", content_type="application/octet-stream")
+        form = PartForm(
+            data={"name": "Part", "quantity": 1, "color": "black", "material": "PLA"},
+            files={"stl_file": threemf},
+        )
+        self.assertTrue(form.is_valid())
+
+    def test_3mf_file_name_derivation(self):
+        threemf = SimpleUploadedFile("MyModel_v2.3mf", b"PK\x03\x04", content_type="application/octet-stream")
+        form = PartForm(
+            data={"name": "", "quantity": 1, "color": "black", "material": "PLA"},
+            files={"stl_file": threemf},
+        )
+        self.assertTrue(form.is_valid())
+        self.assertEqual(form.cleaned_data["name"], "MyModel_v2")
+
 
 @override_settings(MEDIA_ROOT="/tmp/layernexus_test_media/")  # noqa: S108
 class ProjectDocumentFormTests(TestCase):

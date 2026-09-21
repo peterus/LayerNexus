@@ -207,7 +207,7 @@ class AddPartToJobView(RoleRequiredMixin, View):
         part = get_object_or_404(Part, pk=part_pk)
 
         if not part.stl_file:
-            messages.error(request, f"Part '{part.name}' has no STL file.")
+            messages.error(request, f"Part '{part.name}' has no model file.")
             return redirect("core:part_detail", pk=part.pk)
 
         form = AddPartToJobForm(request.POST, user=request.user)
@@ -299,8 +299,8 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
     """Bulk-create draft print jobs from all eligible parts in a project.
 
     Groups parts by ``(effective_print_preset_id, spoolman_filament_id)``
-    so that each job contains only compatible parts.  Parts without an
-    STL file or with a **per-assembly remaining of 0** are skipped, and the
+    so that each job contains only compatible parts.  Parts without a
+    model file or with a **per-assembly remaining of 0** are skipped, and the
     created ``PrintJobPart``s are attributed to this project via
     ``target_assembly`` so their prints count toward this assembly's progress
     (Phase 6a).
@@ -320,7 +320,7 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
         eligible = [(row["part"], row["remaining"]) for row in rows if row["part"].stl_file and row["remaining"] > 0]
 
         if not eligible:
-            messages.warning(request, "No eligible parts found (all printed or missing STL).")
+            messages.warning(request, "No eligible parts found (all printed or missing model file).")
             return redirect("core:project_detail", pk=project.pk)
 
         # Group by (effective_print_preset_id, spoolman_filament_id)
@@ -386,8 +386,8 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
 class PrintJobSliceView(RoleRequiredMixin, View):
     """Trigger slicing for a draft print job.
 
-    Collects all STL files from the job's parts, creates a 3MF bundle,
-    and starts background slicing via OrcaSlicer.
+    Collects all model files (STL or 3MF) from the job's parts, creates a
+    3MF bundle, and starts background slicing via OrcaSlicer.
     """
 
     permission_required = "core.change_printjob"
@@ -420,12 +420,12 @@ class PrintJobSliceView(RoleRequiredMixin, View):
             messages.error(request, "Job has no parts to slice.")
             return redirect("core:printjob_detail", pk=pk)
 
-        # Validate all parts have STL files
-        missing_stl = [jp.part.name for jp in job_parts if not jp.part.stl_file]
-        if missing_stl:
+        # Validate all parts have model files
+        missing_files = [jp.part.name for jp in job_parts if not jp.part.stl_file]
+        if missing_files:
             messages.error(
                 request,
-                f"Parts without STL files: {', '.join(missing_stl)}",
+                f"Parts without model files: {', '.join(missing_files)}",
             )
             return redirect("core:printjob_detail", pk=pk)
 

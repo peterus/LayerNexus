@@ -222,6 +222,51 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
         self.assertNotIn("select_related", self.part.estimation_error)
         self.assertEqual(self.part.filament_used_grams, 10.0)
 
+    def test_is_3mf_property_detects_extension(self):
+        """``Part.is_3mf`` is True only for ``.3mf`` uploads, not ``.stl``."""
+        self.part.stl_file = SimpleUploadedFile("model.3mf", b"PK\x03\x04fake")
+        self.part.save()
+        self.part.refresh_from_db()
+        self.assertTrue(self.part.is_3mf)
+
+        self.part.stl_file = SimpleUploadedFile("model.stl", b"solid test")
+        self.part.save()
+        self.part.refresh_from_db()
+        self.assertFalse(self.part.is_3mf)
+
+    def test_3mf_estimation_bypasses_bundle_creation(self):
+        """3MF uploads are sent to the slicer verbatim, never re-bundled."""
+        from core.services import slicing_worker
+
+        raw_3mf = b"PK\x03\x04fake-3mf-bytes"
+        self.part.stl_file = SimpleUploadedFile("model.3mf", raw_3mf)
+        self.part.print_preset = self.preset
+        self.part.save()
+
+        fake_result = MagicMock(
+            total_filament_grams=10.0,
+            total_filament_mm=3000.0,
+            total_print_time_seconds=600,
+        )
+        fake_client = MagicMock()
+        fake_client.slice_bundle.return_value = fake_result
+
+        with (
+            patch.object(slicing_worker, "_find_compatible_machine", return_value=MagicMock()),
+            patch.object(slicing_worker, "create_3mf_bundle") as mock_bundle,
+            patch.object(slicing_worker, "_build_slicer_kwargs", return_value={}),
+            patch.object(slicing_worker, "OrcaSlicerAPIClient", return_value=fake_client),
+        ):
+            slicing_worker._estimate_part_in_background(self.part.pk)
+
+        # The uploaded 3MF must be sliced as-is, without going through the bundler.
+        mock_bundle.assert_not_called()
+        fake_client.slice_bundle.assert_called_once()
+        self.assertEqual(fake_client.slice_bundle.call_args[0][0], raw_3mf)
+
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_SUCCESS)
+
     @patch("core.views.print_jobs._start_orcaslicer_worker")
     def test_slice_view_queues_job_as_pending(self, mock_start: "patch"):
         """PrintJobSliceView sets job to PENDING and starts worker."""
