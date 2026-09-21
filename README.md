@@ -230,6 +230,7 @@ Send it as a header on every request: `Authorization: Token <key>`.
 | `GET` `POST` | `/api/v1/parts/` | List / create parts (all writable fields; `project` names the owning module) |
 | `GET` `PATCH` `DELETE` | `/api/v1/parts/{id}/` | Retrieve / update / delete a part |
 | `POST` | `/api/v1/parts/{id}/stl/` | Multipart STL upload (`stl_file`) → saves file, triggers estimation |
+| `POST` | `/api/v1/parts/{id}/estimate/` | Re-queue estimation for this part → clears prior results, starts worker; returns 202 + serialized part (write → `can_manage_projects`) |
 | `GET` `POST` | `/api/v1/projects/{id}/parts/` | List / attach an existing part `{part, quantity}` (idempotent edge) |
 | `PATCH` `DELETE` | `/api/v1/projects/{id}/parts/{edge_id}/` | Update quantity / detach a part |
 | `GET` `POST` | `/api/v1/projects/{id}/documents/` | List / upload documents (multipart; same types/size as the UI) |
@@ -244,6 +245,7 @@ Send it as a header on every request: `Authorization: Token <key>`.
 | `GET` | `/api/v1/projects/{id}/validate/` | Completeness check → `{ok, issues[]}` (parts missing STL / filament id / estimation error / empty project) |
 | `GET` | `/api/v1/projects/?search=` `/api/v1/parts/?search=` | Full-text search (projects: name/description; parts: name/material) — reuse existing blocks |
 | `POST` | `/api/v1/projects/{id}/duplicate/` | Clone into a new variant `{name}` sharing the same building blocks (write → `can_manage_projects`) |
+| `POST` | `/api/v1/projects/{id}/re-estimate/` | Re-queue estimation for every eligible part in the project tree → returns 202 + `{"queued": <count>}` (write → `can_manage_projects`) |
 
 Composition edges use `get_or_create`, so retrying a step returns the existing edge
 (`200`) instead of erroring. Attaching a sub-project that would form a cycle returns a
