@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}API Token — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="d-flex align-items-center mb-4">
+      <h1 class="h3 mb-0"><i class="bi bi-key me-2"></i>API Token</h1>
+    </div>
+
+    {% if new_token_key %}
+    <div class="alert alert-success" role="alert">
+      <h5 class="alert-heading"><i class="bi bi-check-circle me-2"></i>Token ready — copy it now</h5>
+      <p class="mb-2 text-body-secondary small">This is the only time the full token is shown. Store it securely.</p>
+      <div class="input-group">
+        <code id="api-token-value" class="form-control font-monospace">{{ new_token_key }}</code>
+        <button id="copy-token-btn" class="btn btn-outline-secondary" type="button">
+          <i class="bi bi-clipboard me-1"></i><span class="btn-label">Copy</span>
+        </button>
+      </div>
+      <p class="mt-2 mb-0 small">Use it as: <code>Authorization: Token {{ new_token_key }}</code></p>
+    </div>
+    {% endif %}
+
+    <div class="card">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-shield-lock me-2"></i>Token Status</h5>
+      </div>
+      <div class="card-body">
+        {% if token %}
+        <p class="mb-1">
+          <strong>Status:</strong> <span class="badge bg-success">Active</span>
+        </p>
+        <p class="mb-3">
+          <strong>Created:</strong> {{ token.created|date:"N j, Y, P" }}
+        </p>
+        <p class="mb-3 text-body-secondary small">
+          The token is masked for security. Use <em>Rotate</em> to replace it with a new one,
+          or <em>Revoke</em> to delete it entirely.
+        </p>
+        <div class="d-flex gap-2 flex-wrap">
+          <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="rotate">
+            <button type="submit" class="btn btn-warning"
+                    onclick="return confirm('Rotate token? Your current token will stop working immediately.')">
+              <i class="bi bi-arrow-repeat me-1"></i>Rotate
+            </button>
+          </form>
+          <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="action" value="revoke">
+            <button type="submit" class="btn btn-outline-danger"
+                    onclick="return confirm('Revoke token? API access will stop working immediately.')">
+              <i class="bi bi-trash me-1"></i>Revoke
+            </button>
+          </form>
+        </div>
+        {% else %}
+        <p class="text-body-secondary mb-3">No API token exists for your account yet.</p>
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="generate">
+          <button type="submit" class="btn btn-primary">
+            <i class="bi bi-plus-lg me-1"></i>Generate Token
+          </button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+
+    <p class="mt-3 text-body-secondary small">
+      Tokens authenticate API requests via the
+      <code>Authorization: Token &lt;key&gt;</code> header against
+      <code>/api/v1/</code> and <code>/api/v2/</code>.
+    </p>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{% if new_token_key %}
+<script src="{% static 'js/api-token.js' %}"></script>
+{% endif %}
+{% endblock %}

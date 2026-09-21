@@ -11,9 +11,10 @@ from django.contrib.auth.models import Group, User
 from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponse
-from django.shortcuts import redirect
+from django.shortcuts import redirect, render
 from django.urls import reverse, reverse_lazy
-from django.views.generic import CreateView, DeleteView, ListView, UpdateView
+from django.views.generic import CreateView, DeleteView, ListView, UpdateView, View
+from rest_framework.authtoken.models import Token
 
 from core.forms import ProfileUpdateForm, UserManagementForm, UserRegistrationForm
 from core.mixins import AdminRequiredMixin
@@ -22,6 +23,7 @@ from core.models import Part, PrintJob
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "ApiTokenView",
     "RegisterView",
     "ProfileView",
     "UserListView",
@@ -164,3 +166,52 @@ class UserDeleteView(AdminRequiredMixin, DeleteView):
             return redirect("core:user_list")
         messages.success(self.request, f"User '{self.get_object().username}' deleted.")
         return super().form_valid(form)
+
+
+class ApiTokenView(LoginRequiredMixin, View):
+    """Self-service API token management for the logged-in user.
+
+    GET shows the current token status (exists / created date).
+    POST with action=generate creates a token if one does not exist.
+    POST with action=rotate deletes the existing token and creates a new one.
+    POST with action=revoke deletes the token.
+    The raw key is exposed only immediately after generate/rotate, via a
+    one-shot session value that is consumed on the next GET.
+    """
+
+    template_name = "core/api_token.html"
+
+    def get(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+        """Render token status page, consuming any pending new-token flash."""
+        new_token_key: str | None = request.session.pop("new_api_token", None)
+        try:
+            token: Token | None = request.user.auth_token  # type: ignore[attr-defined]
+        except Token.DoesNotExist:
+            token = None
+        return render(
+            request,
+            self.template_name,
+            {"token": token, "new_token_key": new_token_key},
+        )
+
+    def post(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+        """Handle token generate / rotate / revoke actions."""
+        action = request.POST.get("action")
+        if action == "generate":
+            token, created = Token.objects.get_or_create(user=request.user)
+            if created:
+                request.session["new_api_token"] = token.key
+                messages.success(request, "API token generated successfully.")
+            else:
+                messages.info(request, "An API token already exists. Use Rotate to replace it.")
+        elif action == "rotate":
+            Token.objects.filter(user=request.user).delete()
+            token = Token.objects.create(user=request.user)
+            request.session["new_api_token"] = token.key
+            messages.success(request, "API token rotated. Your old token is now invalid.")
+        elif action == "revoke":
+            Token.objects.filter(user=request.user).delete()
+            messages.success(request, "API token revoked.")
+        else:
+            messages.error(request, "Unknown action.")
+        return redirect(reverse("core:api_token"))
