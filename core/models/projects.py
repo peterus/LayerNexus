@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Optional
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django.db.models import CheckConstraint, Q
 
 from core.models.parts import Part
@@ -106,17 +106,23 @@ class Project(models.Model):
         ``ProjectComponent`` edge UI (which owns edge deletion); the additive mirror
         here is an interim bridge for the still-present legacy ``parent`` FK and is
         removed together with that field in the contract phase.
+
+        The FK row and the mirrored edge are written inside one
+        :func:`~django.db.transaction.atomic` block, so a failure of the edge upsert
+        rolls back the FK write too — the two dependent writes never commit apart
+        (no parent row left without its mirrored edge).
         """
         self._assert_parent_acyclic()
-        super().save(*args, **kwargs)
-        if self.parent_id is not None:
-            from core.models.composition import ProjectComponent
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            if self.parent_id is not None:
+                from core.models.composition import ProjectComponent
 
-            ProjectComponent.objects.update_or_create(
-                parent_project_id=self.parent_id,
-                child_project=self,
-                defaults={"quantity": self.quantity},
-            )
+                ProjectComponent.objects.update_or_create(
+                    parent_project_id=self.parent_id,
+                    child_project=self,
+                    defaults={"quantity": self.quantity},
+                )
 
     def clean(self) -> None:
         """Validate that the parent assignment does not create a cycle.
