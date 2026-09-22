@@ -313,8 +313,15 @@ def _estimate_part_in_background(part_pk: int) -> None:
             )
             return
 
-        # Resolve the part's own print preset (composition is edge-based post Phase-6)
-        print_preset = part.effective_print_preset
+        # Variant B: resolve against containing projects; refuse to guess when ambiguous.
+        print_preset, ambiguous = part.resolve_estimation_preset()
+        if ambiguous:
+            logger.info("estimate_part(%s): preset ambiguous across projects", part_pk)
+            Part.objects.filter(pk=part_pk).update(
+                estimation_status=Part.ESTIMATION_ERROR,
+                estimation_error="Preset ambiguous across projects — set an override on the part.",
+            )
+            return
         if not print_preset:
             logger.debug("estimate_part(%s): no print preset, skipping", part_pk)
             Part.objects.filter(pk=part_pk).update(
@@ -379,7 +386,8 @@ def _estimate_part_in_background(part_pk: int) -> None:
         if updated:
             part.estimation_status = Part.ESTIMATION_SUCCESS
             part.estimation_error = ""
-            updated.extend(["estimation_status", "estimation_error"])
+            part.estimated_with_preset = print_preset
+            updated.extend(["estimation_status", "estimation_error", "estimated_with_preset"])
             part.save(update_fields=updated)
             logger.info(
                 "estimate_part(%s): saved estimates — %sg, %sm, %ss",

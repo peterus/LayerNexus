@@ -606,3 +606,67 @@ class SliceJobUsesJobPresetTests(TestCase):
             slicing_worker._slice_job_in_background(job.pk)
 
         self.assertEqual(captured["print_preset"], job_preset)
+
+
+class EstimationPresetResolutionTests(TestCase):
+    def _preset(self, name):
+        from core.models import OrcaPrintPreset
+
+        return OrcaPrintPreset.objects.create(
+            name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+
+    def test_single_project_preset_is_unambiguous(self) -> None:
+        from core.models import Part, Project, ProjectPart
+
+        preset = self._preset("Proj")
+        project = Project.objects.create(name="Proj", default_print_preset=preset)
+        part = Part.objects.create(name="p")
+        ProjectPart.objects.create(project=project, part=part, quantity=1)
+        resolved, ambiguous = part.resolve_estimation_preset()
+        self.assertEqual((resolved, ambiguous), (preset, False))
+
+    def test_override_is_unambiguous_even_with_many_projects(self) -> None:
+        from core.models import Part, Project, ProjectPart
+
+        override = self._preset("Override")
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        part = Part.objects.create(name="p", print_preset=override)
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+        self.assertEqual(part.resolve_estimation_preset(), (override, False))
+
+    def test_multiple_different_project_presets_is_ambiguous(self) -> None:
+        from core.models import Part, Project, ProjectPart
+
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        part = Part.objects.create(name="p")
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+        resolved, ambiguous = part.resolve_estimation_preset()
+        self.assertTrue(ambiguous)
+        self.assertIsNone(resolved)
+
+    def test_ambiguous_part_estimation_sets_error_status(self) -> None:
+        from unittest import mock
+
+        from core.models import Part, Project, ProjectPart
+        from core.services import slicing_worker
+
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        part = Part.objects.create(name="p", estimation_status=Part.ESTIMATION_ESTIMATING)
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+
+        with mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls:
+            slicing_worker._estimate_part_in_background(part.pk)
+            client_cls.assert_not_called()
+
+        part.refresh_from_db()
+        self.assertEqual(part.estimation_status, Part.ESTIMATION_ERROR)
+        self.assertIn("ambiguous", part.estimation_error.lower())

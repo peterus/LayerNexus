@@ -155,6 +155,32 @@ class Part(models.Model):
         """
         return self.print_preset if self.print_preset_id else None
 
+    def resolve_estimation_preset(self) -> tuple[Optional[OrcaPrintPreset], bool]:
+        """Resolve the preset to estimate this part with, flagging ambiguity.
+
+        Variant B without a build context: an explicit override wins; otherwise the
+        ``default_print_preset`` of the containing projects is used when they all agree
+        (or there is exactly one). When two or more containing projects disagree and there
+        is no override, the preset is **ambiguous** — estimation must not guess.
+
+        Returns:
+            ``(preset, ambiguous)``. When ``ambiguous`` is ``True`` the preset is ``None``
+            and the caller should mark the estimate as needing an override rather than
+            picking one. When ``ambiguous`` is ``False`` the preset may still be ``None``
+            (no override and no containing-project default).
+        """
+        if self.print_preset_id is not None:
+            return self.print_preset, False
+        distinct: dict[int, OrcaPrintPreset] = {}
+        for project in self.containing_projects():
+            if project.default_print_preset_id is not None:
+                distinct[project.default_print_preset_id] = project.default_print_preset
+        if len(distinct) > 1:
+            return None, True
+        if len(distinct) == 1:
+            return next(iter(distinct.values())), False
+        return None, False
+
     @property
     def color_display(self) -> str:
         """Display-friendly color string ('—' if not set)."""
