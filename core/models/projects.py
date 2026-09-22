@@ -443,6 +443,63 @@ class Project(models.Model):
         rel = self._expand_parts_relative(set(), {})
         return [(part, multiplier * mult) for part, mult in rel]
 
+    def resolve_part_presets(self) -> list[tuple[Part, int, Optional[OrcaPrintPreset]]]:
+        """Expand the composition DAG, resolving each part's preset per build path.
+
+        Traverses ``part_links``/``child_links`` like :meth:`_collect_parts_with_multiplier`
+        but additionally carries the **nearest directly-containing project** down each path so
+        the leaf resolution (:func:`core.models.parts.resolve_part_preset`) can apply the
+        override-else-nearest-project rule (Variant B). A part shared via several paths appears
+        once per path, each with the preset of the module that contains it on that path.
+
+        Returns:
+            List of ``(part, effective_count, resolved_preset)`` tuples, where
+            ``effective_count`` matches :meth:`_collect_parts_with_multiplier` and
+            ``resolved_preset`` is an :class:`OrcaPrintPreset` or ``None``.
+        """
+        from core.models.parts import resolve_part_preset
+
+        results: list[tuple[Part, int, Optional[OrcaPrintPreset]]] = []
+        self._resolve_presets_walk(nearest=self, multiplier=1, _path=set(), _out=results, _resolve=resolve_part_preset)
+        return results
+
+    def _resolve_presets_walk(
+        self,
+        nearest: Project,
+        multiplier: int,
+        _path: set[int],
+        _out: list[tuple[Part, int, Optional[OrcaPrintPreset]]],
+        _resolve,
+    ) -> None:
+        """Depth-first helper for :meth:`resolve_part_presets` (nearest-project carrier).
+
+        ``nearest`` is the project directly containing the parts at this node. Direct parts
+        (``part_links``) resolve against ``nearest``; child modules recurse with the child as
+        the new ``nearest`` and the edge quantity folded into ``multiplier``. ``_path`` guards
+        a corrupt persisted cycle (a node on its own stack contributes nothing further).
+
+        Args:
+            nearest: Project directly containing the parts collected at this node.
+            multiplier: Product of edge quantities on the path to this node.
+            _path: PKs on the current recursion stack (path-local cycle guard).
+            _out: Accumulator receiving ``(part, effective_count, resolved_preset)`` tuples.
+            _resolve: The leaf resolver ``resolve_part_preset`` (injected to avoid re-import).
+        """
+        if self.pk in _path:
+            return
+        next_path = _path | {self.pk}
+        for link in self.part_links.select_related("part").all():
+            preset = _resolve(link.part, nearest)
+            _out.append((link.part, multiplier * link.quantity, preset))
+        for edge in self.child_links.select_related("child_project").all():
+            edge.child_project._resolve_presets_walk(
+                nearest=edge.child_project,
+                multiplier=multiplier * edge.quantity,
+                _path=next_path,
+                _out=_out,
+                _resolve=_resolve,
+            )
+
     @property
     def total_parts_count(self) -> int:
         """Total number of individual parts needed (sum of edge quantities, including sub-projects).

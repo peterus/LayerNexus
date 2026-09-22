@@ -12,6 +12,28 @@ if TYPE_CHECKING:
     from core.models.projects import Project
 
 
+def resolve_part_preset(part: Part, nearest_project: Project | None) -> Optional[OrcaPrintPreset]:
+    """Resolve a part's effective print preset given its nearest containing project.
+
+    Applies the Variant-B precedence: an explicit ``part.print_preset`` override wins;
+    otherwise the ``default_print_preset`` of the nearest directly-containing project on
+    the current build path is used; otherwise ``None``.
+
+    Args:
+        part: The part whose print preset to resolve.
+        nearest_project: The project directly containing the part on this build path,
+            or ``None`` when there is no project context.
+
+    Returns:
+        The resolved :class:`~core.models.orca_profiles.OrcaPrintPreset`, or ``None``.
+    """
+    if part.print_preset_id is not None:
+        return part.print_preset
+    if nearest_project is not None and nearest_project.default_print_preset_id is not None:
+        return nearest_project.default_print_preset
+    return None
+
+
 class Part(models.Model):
     """A standalone reusable part that can be attached to projects via ProjectPart edges."""
 
