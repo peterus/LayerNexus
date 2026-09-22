@@ -396,13 +396,16 @@ class ProjectReEstimateView(ProjectManageMixin, View):
             if preset is None and not ambiguous:
                 continue
 
+            # Pin the project-context preset in the transient request channel (not the
+            # provenance field) so the worker estimates with it; clear stale provenance.
             Part.objects.filter(pk=part.pk).update(
                 filament_used_grams=None,
                 filament_used_meters=None,
                 estimated_print_time=None,
                 estimation_status=Part.ESTIMATION_NONE,
                 estimation_error="",
-                estimated_with_preset=preset,
+                estimated_with_preset=None,
+                estimation_requested_preset=preset,
             )
             _trigger_part_estimation(part)
             count += 1

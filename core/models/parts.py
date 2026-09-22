@@ -74,6 +74,18 @@ class Part(models.Model):
         related_name="estimated_parts",
         help_text="The print preset that produced the currently stored estimate.",
     )
+    estimation_requested_preset = models.ForeignKey(
+        "OrcaPrintPreset",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="estimation_requests",
+        help_text=(
+            "Transient queue-time channel: a whole-project re-estimate pins the "
+            "project-context preset here so the worker estimates with it. Consumed "
+            "(cleared) by the worker on claim; never used as estimate provenance."
+        ),
+    )
     notes = models.TextField(blank=True)
 
     # Filament usage estimates (back-filled from first successful PrintJob slice)
@@ -318,6 +330,34 @@ class Part(models.Model):
             .distinct()
         )
         return self.job_entries.filter(pk__in=completed_pks).aggregate(total=Sum("quantity"))["total"] or 0
+
+    def printed_quantity_for_by_preset(self, assembly: Project) -> dict[Optional[int], int]:
+        """Attributed completed-plate quantities for ``assembly``, grouped by job preset.
+
+        Same completion rule and attribution as :meth:`printed_quantity_for`, but the sum
+        is split by the producing job's pinned ``print_preset`` so a per-preset job-creation
+        split can subtract prints from the correct bundle instead of one aggregate. Prints
+        from legacy jobs with no pinned preset are grouped under the ``None`` key (the caller
+        allocates those greedily).
+
+        Args:
+            assembly: The build context (top-level assembly project) to filter by.
+
+        Returns:
+            ``{print_preset_id_or_None: quantity}`` over attributed, completed job entries.
+        """
+        completed = "completed"
+        completed_pks = (
+            self.job_entries.filter(target_assembly=assembly, print_job__plates__status=completed)
+            .values_list("pk", flat=True)
+            .distinct()
+        )
+        rows = (
+            self.job_entries.filter(pk__in=completed_pks)
+            .values("print_job__print_preset")
+            .annotate(total=Sum("quantity"))
+        )
+        return {row["print_job__print_preset"]: row["total"] for row in rows}
 
 
 class PrintTimeEstimate(models.Model):

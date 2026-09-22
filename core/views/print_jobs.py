@@ -355,9 +355,10 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
             part_objs[part.pk] = part
             needed_by_key[(part.pk, preset.pk if preset is not None else None)] += count
 
-        # Subtract prints attributed to THIS assembly, allocating each part's printed count
-        # greedily across its preset bundles so the per-part totals still match
-        # ``variant_progress()``. Group the surviving remainder by (preset, filament).
+        # Subtract prints attributed to THIS assembly. Prints from a job pinned to a given
+        # preset reduce that preset's bundle; prints from legacy unpinned jobs (preset
+        # ``None``) are allocated greedily across the remaining bundles. This keeps a
+        # part printed under one preset from wrongly depleting a different preset's bundle.
         keys_by_part: dict[int, list[int | None]] = defaultdict(list)
         for part_pk, preset_id in needed_by_key:
             keys_by_part[part_pk].append(preset_id)
@@ -365,12 +366,22 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
         groups: dict[tuple[int | None, int | None], list[tuple[Part, int]]] = defaultdict(list)
         for part_pk, preset_ids in keys_by_part.items():
             part = part_objs[part_pk]
-            printed = part.printed_quantity_for(project)
+            printed_by_preset = part.printed_quantity_for_by_preset(project)
+            # Prints from jobs with no pinned preset (``None`` key) are legacy and applied
+            # greedily below; they must NOT also be matched directly by a None-preset bundle
+            # (that would double-count them).
+            legacy_printed = printed_by_preset.get(None, 0)
+            remainders: list[tuple[int | None, int]] = []
             for preset_id in preset_ids:
                 needed = needed_by_key[(part_pk, preset_id)]
-                used = min(printed, needed)
-                printed -= used
-                remaining = needed - used
+                direct = printed_by_preset.get(preset_id, 0) if preset_id is not None else 0
+                remainders.append((preset_id, max(0, needed - direct)))
+            # Apply legacy (unpinned-job) prints greedily to whatever remainder is left.
+            for idx, (preset_id, remaining) in enumerate(remainders):
+                used = min(legacy_printed, remaining)
+                legacy_printed -= used
+                remainders[idx] = (preset_id, remaining - used)
+            for preset_id, remaining in remainders:
                 if remaining > 0:
                     groups[(preset_id, part.spoolman_filament_id)].append((part, remaining))
 

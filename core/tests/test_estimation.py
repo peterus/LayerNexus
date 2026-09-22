@@ -784,8 +784,8 @@ class ProjectContextEstimationTests(TestCase):
         part = Part.objects.create(name="p", estimation_status=Part.ESTIMATION_ESTIMATING)
         part.stl_file.name = "stl_files/p.stl"
         # ...but a pinned requested preset must win over the context-free ambiguity.
-        part.estimated_with_preset = requested
-        part.save(update_fields=["stl_file", "estimated_with_preset"])
+        part.estimation_requested_preset = requested
+        part.save(update_fields=["stl_file", "estimation_requested_preset"])
         ProjectPart.objects.create(project=a, part=part, quantity=1)
         ProjectPart.objects.create(project=b, part=part, quantity=1)
 
@@ -805,6 +805,8 @@ class ProjectContextEstimationTests(TestCase):
         self.assertEqual(captured["preset"], requested)
         part.refresh_from_db()
         self.assertNotEqual(part.estimation_status, Part.ESTIMATION_ERROR)
+        # The transient request channel is consumed (cleared) on claim.
+        self.assertIsNone(part.estimation_requested_preset_id)
 
     def test_worker_clears_provenance_on_ambiguous(self) -> None:
         from unittest import mock
@@ -869,4 +871,6 @@ class ProjectContextEstimationTests(TestCase):
         self.assertEqual(resp.status_code, 302)
         shared.refresh_from_db()
         self.assertEqual(shared.estimation_status, Part.ESTIMATION_PENDING)
-        self.assertEqual(shared.estimated_with_preset_id, agreed.pk)
+        # The project-context preset is pinned in the transient request channel, not provenance.
+        self.assertEqual(shared.estimation_requested_preset_id, agreed.pk)
+        self.assertIsNone(shared.estimated_with_preset_id)

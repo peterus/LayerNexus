@@ -410,8 +410,8 @@ class PartReEstimateView(ProjectManageMixin, View):
             messages.warning(request, "No print preset configured — cannot estimate.")
             return redirect("core:part_detail", pk=part.pk)
 
-        # Clear the provenance too: the single-part path carries no build context, so the
-        # worker must resolve the preset itself rather than reuse a pinned one.
+        # Clear provenance AND any stale request channel: the single-part path carries no
+        # build context, so the worker must resolve the preset itself.
         Part.objects.filter(pk=part.pk).update(
             filament_used_grams=None,
             filament_used_meters=None,
@@ -419,6 +419,7 @@ class PartReEstimateView(ProjectManageMixin, View):
             estimation_status=Part.ESTIMATION_NONE,
             estimation_error="",
             estimated_with_preset=None,
+            estimation_requested_preset=None,
         )
         _trigger_part_estimation(part)
         messages.info(request, f"Re-estimation started for '{part.name}'.")

@@ -133,13 +133,16 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 continue
             if preset is None and not ambiguous:
                 continue
+            # Pin the project-context preset in the transient request channel (not the
+            # provenance field) so the worker estimates with it; clear stale provenance.
             Part.objects.filter(pk=part.pk).update(
                 filament_used_grams=None,
                 filament_used_meters=None,
                 estimated_print_time=None,
                 estimation_status=Part.ESTIMATION_NONE,
                 estimation_error="",
-                estimated_with_preset=preset,
+                estimated_with_preset=None,
+                estimation_requested_preset=preset,
             )
             _trigger_part_estimation(part)
             count += 1
@@ -330,8 +333,8 @@ class PartViewSet(viewsets.ModelViewSet):
                 {"detail": "Part has no resolvable print preset (no override and no project default)."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        # Clear the provenance too: the single-part path carries no build context, so the
-        # worker must resolve the preset itself rather than reuse a pinned one.
+        # Clear provenance AND any stale request channel: the single-part path carries no
+        # build context, so the worker must resolve the preset itself.
         Part.objects.filter(pk=part.pk).update(
             filament_used_grams=None,
             filament_used_meters=None,
@@ -339,6 +342,7 @@ class PartViewSet(viewsets.ModelViewSet):
             estimation_status=Part.ESTIMATION_NONE,
             estimation_error="",
             estimated_with_preset=None,
+            estimation_requested_preset=None,
         )
         _trigger_part_estimation(part)
         part.refresh_from_db()

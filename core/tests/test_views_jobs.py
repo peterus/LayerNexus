@@ -445,3 +445,42 @@ class PartDetailDraftJobFilterTests(TestDataMixin, TestCase):
         offered = {j.pk for j in resp.context["draft_jobs"]}
         self.assertIn(match.pk, offered)
         self.assertNotIn(mismatch.pk, offered)
+
+
+class CreateJobsPrintedByPresetTests(TestDataMixin, TestCase):
+    """Prints made under one preset's job only deplete that preset's bundle (Copilot #54)."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def _preset(self, name):
+        return OrcaPrintPreset.objects.create(
+            name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+
+    def test_completed_prints_deplete_only_their_own_preset_bundle(self):
+        from core.models import Project, ProjectComponent
+
+        cabin_preset = self._preset("CabinPreset")
+        frame_preset = self._preset("FramePreset")
+        top = Project.objects.create(name="Truck", default_print_preset=self._preset("Truck"), created_by=self.user)
+        cabin = Project.objects.create(name="Cabin", default_print_preset=cabin_preset, created_by=self.user)
+        frame = Project.objects.create(name="Frame", default_print_preset=frame_preset, created_by=self.user)
+        ProjectComponent.objects.create(parent_project=top, child_project=cabin, quantity=1)
+        ProjectComponent.objects.create(parent_project=top, child_project=frame, quantity=1)
+        bolt = Part.objects.create(name="bolt", stl_file=SimpleUploadedFile("bolt.stl", b"solid"))
+        ProjectPart.objects.create(project=cabin, part=bolt, quantity=4)  # CabinPreset bundle
+        ProjectPart.objects.create(project=frame, part=bolt, quantity=10)  # FramePreset bundle
+
+        # 3 already printed under a FramePreset-pinned job attributed to Truck.
+        done = PrintJob.objects.create(name="done", status="completed", created_by=self.user, print_preset=frame_preset)
+        PrintJobPart.objects.create(print_job=done, part=bolt, quantity=3, target_assembly=top)
+        PrintJobPlate.objects.create(print_job=done, plate_number=1, status="completed")
+
+        resp = self.client.post(reverse("core:project_create_jobs", args=[top.pk]))
+        self.assertEqual(resp.status_code, 302)
+        jobs = {j.print_preset.name: j for j in PrintJob.objects.filter(status=PrintJob.STATUS_DRAFT)}
+        # Cabin bundle stays at 4 (its prints were NOT touched); Frame bundle is 10-3=7.
+        self.assertEqual(jobs["CabinPreset"].job_parts.get(part=bolt).quantity, 4)
+        self.assertEqual(jobs["FramePreset"].job_parts.get(part=bolt).quantity, 7)

@@ -304,7 +304,15 @@ def _estimate_part_in_background(part_pk: int) -> None:
     from pathlib import Path as FSPath
 
     try:
-        part = Part.objects.select_related("print_preset", "estimated_with_preset").get(pk=part_pk)
+        part = Part.objects.select_related("print_preset", "estimation_requested_preset").get(pk=part_pk)
+
+        # Consume the transient queue-time preset channel on claim: a whole-project
+        # re-estimate pins the project-context preset in ``estimation_requested_preset``.
+        # Clearing it now (exactly once) keeps it from being mistaken for a later request
+        # and stops a part edit that clears estimates from leaving a stale value behind.
+        requested_preset = part.estimation_requested_preset if part.estimation_requested_preset_id else None
+        if requested_preset is not None:
+            Part.objects.filter(pk=part_pk).update(estimation_requested_preset=None)
 
         if not part.stl_file:
             logger.debug("estimate_part(%s): no model file, skipping", part_pk)
@@ -314,11 +322,9 @@ def _estimate_part_in_background(part_pk: int) -> None:
             )
             return
 
-        # A whole-project re-estimate pins the project-context preset on the part before
-        # queuing (Variant B); honor it so a shared part is estimated with the requesting
-        # project's preset instead of being flagged context-free-ambiguous.
-        if part.estimated_with_preset_id is not None:
-            print_preset = part.estimated_with_preset
+        if requested_preset is not None:
+            # Honor the requesting project's context preset instead of resolving.
+            print_preset = requested_preset
         else:
             # No build context: resolve against containing projects; refuse to guess when
             # the containing-project defaults disagree.
