@@ -282,3 +282,23 @@ class AddPartToJobPresetTests(TestDataMixin, TestCase):
         )
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(PrintJob.objects.count(), before)  # no job created
+
+
+class JobDetailEffectivePresetTests(TestCase):
+    def test_detail_uses_job_pinned_preset(self):
+        from django.contrib.auth.models import User
+
+        job_preset = OrcaPrintPreset.objects.create(
+            name="JobPreset", orca_name="JobPreset", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        part_preset = OrcaPrintPreset.objects.create(
+            name="PartPreset", orca_name="PartPreset", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        part = Part.objects.create(name="p", print_preset=part_preset)
+        job = PrintJob.objects.create(name="J", print_preset=job_preset)
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
+
+        user = User.objects.create_user("viewer", password="pw")
+        self.client.force_login(user)
+        resp = self.client.get(reverse("core:printjob_detail", kwargs={"pk": job.pk}))
+        self.assertEqual(resp.context["effective_print_preset"], job_preset)
