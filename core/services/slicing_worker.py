@@ -304,30 +304,40 @@ def _estimate_part_in_background(part_pk: int) -> None:
     from pathlib import Path as FSPath
 
     try:
-        part = Part.objects.select_related("print_preset").get(pk=part_pk)
+        part = Part.objects.select_related("print_preset", "estimated_with_preset").get(pk=part_pk)
 
         if not part.stl_file:
             logger.debug("estimate_part(%s): no model file, skipping", part_pk)
             Part.objects.filter(pk=part_pk).update(
                 estimation_status=Part.ESTIMATION_NONE,
+                estimated_with_preset=None,
             )
             return
 
-        # Variant B: resolve against containing projects; refuse to guess when ambiguous.
-        print_preset, ambiguous = part.resolve_estimation_preset()
-        if ambiguous:
-            logger.info("estimate_part(%s): preset ambiguous across projects", part_pk)
-            Part.objects.filter(pk=part_pk).update(
-                estimation_status=Part.ESTIMATION_ERROR,
-                estimation_error="Preset ambiguous across projects — set an override on the part.",
-            )
-            return
-        if not print_preset:
-            logger.debug("estimate_part(%s): no print preset, skipping", part_pk)
-            Part.objects.filter(pk=part_pk).update(
-                estimation_status=Part.ESTIMATION_NONE,
-            )
-            return
+        # A whole-project re-estimate pins the project-context preset on the part before
+        # queuing (Variant B); honor it so a shared part is estimated with the requesting
+        # project's preset instead of being flagged context-free-ambiguous.
+        if part.estimated_with_preset_id is not None:
+            print_preset = part.estimated_with_preset
+        else:
+            # No build context: resolve against containing projects; refuse to guess when
+            # the containing-project defaults disagree.
+            print_preset, ambiguous = part.resolve_estimation_preset()
+            if ambiguous:
+                logger.info("estimate_part(%s): preset ambiguous across projects", part_pk)
+                Part.objects.filter(pk=part_pk).update(
+                    estimation_status=Part.ESTIMATION_ERROR,
+                    estimation_error="Preset ambiguous across projects — set an override on the part.",
+                    estimated_with_preset=None,
+                )
+                return
+            if not print_preset:
+                logger.debug("estimate_part(%s): no print preset, skipping", part_pk)
+                Part.objects.filter(pk=part_pk).update(
+                    estimation_status=Part.ESTIMATION_NONE,
+                    estimated_with_preset=None,
+                )
+                return
 
         # Find a compatible machine profile for this preset
         machine_profile = _find_compatible_machine(print_preset)

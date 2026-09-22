@@ -383,12 +383,17 @@ class ProjectReEstimateView(ProjectManageMixin, View):
         # composition DAG, so a part shared by several modules appears repeatedly.
         # Deduplicate by primary key so each part is reset and queued exactly once.
         parts = {p.pk: p for p, _mult in project._collect_parts_with_multiplier()}
+        # Variant B: resolve each part's preset in THIS project's context so a legacy part
+        # with no override but a project default is estimated (not skipped), and pin it so
+        # the background worker uses the project-context preset instead of guessing.
+        preset_map = project.resolve_estimation_preset_map()
 
         count = 0
         for part in parts.values():
-            # Variant B: estimable if the preset resolves (or is ambiguous) in this
-            # project context. Preserves the #51 shared-part dedup above.
-            if not part.is_estimable():
+            preset, ambiguous = preset_map.get(part.pk, (None, False))
+            if not part.stl_file:
+                continue
+            if preset is None and not ambiguous:
                 continue
 
             Part.objects.filter(pk=part.pk).update(
@@ -397,6 +402,7 @@ class ProjectReEstimateView(ProjectManageMixin, View):
                 estimated_print_time=None,
                 estimation_status=Part.ESTIMATION_NONE,
                 estimation_error="",
+                estimated_with_preset=preset,
             )
             _trigger_part_estimation(part)
             count += 1

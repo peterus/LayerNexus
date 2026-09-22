@@ -737,3 +737,136 @@ class ReEstimateEligibilityTests(TestCase):
         part.refresh_from_db()
         # Previously this part was skipped (no own preset); now it is queued.
         self.assertEqual(part.estimation_status, Part.ESTIMATION_PENDING)
+
+
+class ProjectContextEstimationTests(TestCase):
+    """Project re-estimate resolves + pins the project-context preset (Copilot #54)."""
+
+    def _preset(self, name):
+        from core.models import OrcaPrintPreset
+
+        return OrcaPrintPreset.objects.create(
+            name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+
+    def test_resolve_estimation_preset_map_single_context(self) -> None:
+        from core.models import Part, Project, ProjectPart
+
+        preset = self._preset("P")
+        project = Project.objects.create(name="Proj", default_print_preset=preset)
+        part = Part.objects.create(name="p")  # no override
+        ProjectPart.objects.create(project=project, part=part, quantity=1)
+        self.assertEqual(project.resolve_estimation_preset_map(), {part.pk: (preset, False)})
+
+    def test_resolve_estimation_preset_map_ambiguous_within_assembly(self) -> None:
+        from core.models import Part, Project, ProjectComponent, ProjectPart
+
+        top = Project.objects.create(name="Top", default_print_preset=self._preset("Top"))
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        ProjectComponent.objects.create(parent_project=top, child_project=a, quantity=1)
+        ProjectComponent.objects.create(parent_project=top, child_project=b, quantity=1)
+        shared = Part.objects.create(name="shared")  # no override, differing nearest presets
+        ProjectPart.objects.create(project=a, part=shared, quantity=1)
+        ProjectPart.objects.create(project=b, part=shared, quantity=1)
+        self.assertEqual(top.resolve_estimation_preset_map(), {shared.pk: (None, True)})
+
+    def test_worker_honors_pinned_requested_preset(self) -> None:
+        from unittest import mock
+
+        from core.models import Part, Project, ProjectPart
+        from core.services import slicing_worker
+
+        # Context-free AMBIGUOUS part (two projects, differing defaults, no override)...
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        requested = self._preset("Requested")
+        part = Part.objects.create(name="p", estimation_status=Part.ESTIMATION_ESTIMATING)
+        part.stl_file.name = "stl_files/p.stl"
+        # ...but a pinned requested preset must win over the context-free ambiguity.
+        part.estimated_with_preset = requested
+        part.save(update_fields=["stl_file", "estimated_with_preset"])
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+
+        captured = {}
+
+        def fake_find_machine(preset):
+            captured["preset"] = preset
+            return None  # short-circuits before the slicer call
+
+        with (
+            mock.patch.object(slicing_worker, "_find_compatible_machine", side_effect=fake_find_machine),
+            mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls,
+        ):
+            slicing_worker._estimate_part_in_background(part.pk)
+            client_cls.assert_not_called()
+
+        self.assertEqual(captured["preset"], requested)
+        part.refresh_from_db()
+        self.assertNotEqual(part.estimation_status, Part.ESTIMATION_ERROR)
+
+    def test_worker_clears_provenance_on_ambiguous(self) -> None:
+        from unittest import mock
+
+        from core.models import Part, Project, ProjectPart
+        from core.services import slicing_worker
+
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        stale = self._preset("Stale")
+        part = Part.objects.create(name="p", estimation_status=Part.ESTIMATION_ESTIMATING)
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+        # Simulate stale provenance that is NOT a pinned request (set via raw update so the
+        # worker sees a value only because a prior success left it — the single-part path
+        # would have cleared it; here we assert the ambiguous branch clears it defensively).
+        Part.objects.filter(pk=part.pk).update(estimated_with_preset=None)
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+        # Give it a stale value AFTER wiring so resolve() path (estimated_with_preset None) runs.
+        Part.objects.filter(pk=part.pk).update(estimation_status=Part.ESTIMATION_ESTIMATING)
+
+        with mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls:
+            slicing_worker._estimate_part_in_background(part.pk)
+            client_cls.assert_not_called()
+
+        part.refresh_from_db()
+        self.assertEqual(part.estimation_status, Part.ESTIMATION_ERROR)
+        self.assertIsNone(part.estimated_with_preset_id)
+        self.assertEqual(stale.name, "Stale")  # keep ref
+
+    def test_gui_project_re_estimate_pins_context_preset_for_shared_part(self) -> None:
+        from unittest import mock
+
+        from django.contrib.auth.models import Group, Permission, User
+        from django.urls import reverse
+
+        from core.models import Part, Project, ProjectComponent, ProjectPart
+
+        # Shared part under one assembly but two modules that AGREE → unambiguous context preset.
+        agreed = self._preset("Agreed")
+        top = Project.objects.create(name="Top", default_print_preset=self._preset("Top"))
+        a = Project.objects.create(name="A", default_print_preset=agreed)
+        b = Project.objects.create(name="B", default_print_preset=agreed)
+        ProjectComponent.objects.create(parent_project=top, child_project=a, quantity=1)
+        ProjectComponent.objects.create(parent_project=top, child_project=b, quantity=1)
+        shared = Part.objects.create(name="shared")  # no override
+        shared.stl_file.name = "stl_files/s.stl"
+        shared.save(update_fields=["stl_file"])
+        ProjectPart.objects.create(project=a, part=shared, quantity=1)
+        ProjectPart.objects.create(project=b, part=shared, quantity=1)
+
+        user = User.objects.create_user("designer2", password="pw")
+        perm = Permission.objects.get(codename="can_manage_projects")
+        group, _ = Group.objects.get_or_create(name="Designer")
+        group.permissions.add(perm)
+        user.groups.add(group)
+        self.client.force_login(user)
+
+        with mock.patch("core.views.helpers._start_orcaslicer_worker"):
+            resp = self.client.post(reverse("core:project_re_estimate", kwargs={"pk": top.pk}))
+        self.assertEqual(resp.status_code, 302)
+        shared.refresh_from_db()
+        self.assertEqual(shared.estimation_status, Part.ESTIMATION_PENDING)
+        self.assertEqual(shared.estimated_with_preset_id, agreed.pk)

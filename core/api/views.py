@@ -122,9 +122,16 @@ class ProjectViewSet(viewsets.ModelViewSet):
         # composition DAG, so a part shared by several modules appears repeatedly.
         # Deduplicate by primary key so each part is reset and queued exactly once.
         parts = {p.pk: p for p, _mult in project._collect_parts_with_multiplier()}
+        # Variant B: resolve each part's preset in THIS project's context and pin it so the
+        # worker estimates a legacy/shared part with the project-context preset (mirrors
+        # core.views.projects.ProjectReEstimateView).
+        preset_map = project.resolve_estimation_preset_map()
         count = 0
         for part in parts.values():
-            if not part.is_estimable():
+            preset, ambiguous = preset_map.get(part.pk, (None, False))
+            if not part.stl_file:
+                continue
+            if preset is None and not ambiguous:
                 continue
             Part.objects.filter(pk=part.pk).update(
                 filament_used_grams=None,
@@ -132,6 +139,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 estimated_print_time=None,
                 estimation_status=Part.ESTIMATION_NONE,
                 estimation_error="",
+                estimated_with_preset=preset,
             )
             _trigger_part_estimation(part)
             count += 1
@@ -322,12 +330,15 @@ class PartViewSet(viewsets.ModelViewSet):
                 {"detail": "Part has no resolvable print preset (no override and no project default)."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # Clear the provenance too: the single-part path carries no build context, so the
+        # worker must resolve the preset itself rather than reuse a pinned one.
         Part.objects.filter(pk=part.pk).update(
             filament_used_grams=None,
             filament_used_meters=None,
             estimated_print_time=None,
             estimation_status=Part.ESTIMATION_NONE,
             estimation_error="",
+            estimated_with_preset=None,
         )
         _trigger_part_estimation(part)
         part.refresh_from_db()

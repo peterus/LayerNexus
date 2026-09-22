@@ -463,6 +463,46 @@ class Project(models.Model):
         self._resolve_presets_walk(nearest=self, multiplier=1, _path=set(), _out=results, _resolve=resolve_part_preset)
         return results
 
+    def resolve_estimation_preset_map(self) -> dict[int, tuple[Optional[OrcaPrintPreset], bool]]:
+        """Resolve each distinct part's estimation preset **in this project's context**.
+
+        Folds :meth:`resolve_part_presets` (per build path) into one ``(preset, ambiguous)``
+        result per part, so a whole-project re-estimate can estimate a legacy part with the
+        nearest-project default instead of skipping it. A part is ``ambiguous`` only when it
+        has no override and is reached, within this assembly, via paths whose nearest-project
+        presets disagree (the pathological "same part in two differently-preset modules of one
+        assembly" case) — matching :meth:`core.models.parts.Part.resolve_estimation_preset`
+        but scoped to this build context.
+
+        Returns:
+            ``{part_pk: (preset, ambiguous)}``. When ``ambiguous`` is ``True`` the preset is
+            ``None``; otherwise the preset is the override, the single agreed context preset,
+            or ``None`` (no resolvable preset on any path).
+        """
+        override: dict[int, OrcaPrintPreset] = {}
+        context_ids: dict[int, set[int]] = {}
+        preset_objs: dict[int, OrcaPrintPreset] = {}
+        for part, _count, preset in self.resolve_part_presets():
+            if part.print_preset_id is not None:
+                override[part.pk] = part.print_preset
+            elif preset is not None:
+                context_ids.setdefault(part.pk, set()).add(preset.pk)
+                preset_objs[preset.pk] = preset
+
+        out: dict[int, tuple[Optional[OrcaPrintPreset], bool]] = {}
+        for pk in set(override) | set(context_ids):
+            if pk in override:
+                out[pk] = (override[pk], False)
+                continue
+            ids = context_ids.get(pk, set())
+            if len(ids) > 1:
+                out[pk] = (None, True)
+            elif len(ids) == 1:
+                out[pk] = (preset_objs[next(iter(ids))], False)
+            else:
+                out[pk] = (None, False)
+        return out
+
     def _resolve_presets_walk(
         self,
         nearest: Project,
