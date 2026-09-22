@@ -302,3 +302,146 @@ class JobDetailEffectivePresetTests(TestCase):
         self.client.force_login(user)
         resp = self.client.get(reverse("core:printjob_detail", kwargs={"pk": job.pk}))
         self.assertEqual(resp.context["effective_print_preset"], job_preset)
+
+
+class CreateJobsPerPathPresetTests(TestDataMixin, TestCase):
+    """Project-path job creation splits a shared part across differing per-path presets."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def _preset(self, name):
+        return OrcaPrintPreset.objects.create(
+            name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+
+    def test_shared_part_split_into_two_preset_bundles(self):
+        from core.models import Project, ProjectComponent
+
+        cabin_preset = self._preset("CabinPreset")
+        frame_preset = self._preset("FramePreset")
+        top = Project.objects.create(
+            name="Truck", default_print_preset=self._preset("TruckPreset"), created_by=self.user
+        )
+        cabin = Project.objects.create(name="Cabin", default_print_preset=cabin_preset, created_by=self.user)
+        frame = Project.objects.create(name="Frame", default_print_preset=frame_preset, created_by=self.user)
+        ProjectComponent.objects.create(parent_project=top, child_project=cabin, quantity=1)
+        ProjectComponent.objects.create(parent_project=top, child_project=frame, quantity=1)
+        bolt = Part.objects.create(name="bolt", stl_file=SimpleUploadedFile("bolt.stl", b"solid"))
+        ProjectPart.objects.create(project=cabin, part=bolt, quantity=4)
+        ProjectPart.objects.create(project=frame, part=bolt, quantity=10)
+
+        resp = self.client.post(reverse("core:project_create_jobs", args=[top.pk]))
+        self.assertEqual(resp.status_code, 302)
+        jobs = PrintJob.objects.filter(created_by=self.user)
+        # Two bundles: one per distinct resolved preset — not one collapsed to the last path.
+        presets = sorted(j.print_preset.name for j in jobs)
+        self.assertEqual(presets, ["CabinPreset", "FramePreset"])
+        by_preset = {j.print_preset.name: j for j in jobs}
+        self.assertEqual(by_preset["CabinPreset"].job_parts.get(part=bolt).quantity, 4)
+        self.assertEqual(by_preset["FramePreset"].job_parts.get(part=bolt).quantity, 10)
+
+
+class AddPartToJobCompatibilityTests(TestDataMixin, TestCase):
+    """Add-to-job uses the resolved/pinned preset for compatibility and validation."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def _preset(self, name):
+        return OrcaPrintPreset.objects.create(
+            name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+
+    def _url(self, part):
+        return reverse("core:add_part_to_job", kwargs={"part_pk": part.pk})
+
+    def test_forged_preset_id_rejected(self):
+        from core.models import Project
+
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        part = Part.objects.create(name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+        before = PrintJob.objects.count()
+        # 999999 is not among the offered choices → rejected, no job.
+        resp = self.client.post(self._url(part), {"job": "", "quantity": 1, "print_preset": 999999})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(PrintJob.objects.count(), before)
+
+    def test_incompatible_with_pinned_job_rejected(self):
+        from core.models import Project
+
+        pa = self._preset("PA")
+        pb = self._preset("PB")
+        proj_a = Project.objects.create(name="A", default_print_preset=pa)
+        proj_b = Project.objects.create(name="B", default_print_preset=pb)
+        part_a = Part.objects.create(name="pa", stl_file=SimpleUploadedFile("pa.stl", b"solid"))
+        ProjectPart.objects.create(project=proj_a, part=part_a, quantity=1)
+        part_b = Part.objects.create(name="pb", stl_file=SimpleUploadedFile("pb.stl", b"solid"))
+        ProjectPart.objects.create(project=proj_b, part=part_b, quantity=1)
+
+        job = PrintJob.objects.create(name="J", status=PrintJob.STATUS_DRAFT, created_by=self.user, print_preset=pa)
+        PrintJobPart.objects.create(print_job=job, part=part_a, quantity=1)
+
+        # part_b resolves to pb, job pinned to pa → incompatible.
+        resp = self.client.post(self._url(part_b), {"job": job.pk, "quantity": 1})
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(job.job_parts.filter(part=part_b).exists())
+
+    def test_empty_draft_gets_pinned_on_add(self):
+        from core.models import Project
+
+        preset = self._preset("P")
+        proj = Project.objects.create(name="P", default_print_preset=preset)
+        part = Part.objects.create(name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
+        ProjectPart.objects.create(project=proj, part=part, quantity=1)
+        # Blank draft created via the job form (no pinned preset).
+        job = PrintJob.objects.create(name="Blank", status=PrintJob.STATUS_DRAFT, created_by=self.user)
+
+        resp = self.client.post(self._url(part), {"job": job.pk, "quantity": 1})
+        self.assertEqual(resp.status_code, 302)
+        job.refresh_from_db()
+        self.assertEqual(job.print_preset_id, preset.pk)
+        self.assertTrue(job.job_parts.filter(part=part).exists())
+
+
+class PartDetailDraftJobFilterTests(TestDataMixin, TestCase):
+    """PartDetailView only offers draft jobs whose pinned preset the part can resolve to."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def _preset(self, name):
+        return OrcaPrintPreset.objects.create(
+            name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+
+    def test_only_matching_pinned_jobs_offered(self):
+        from core.models import Project
+
+        preset = self._preset("P")
+        other = self._preset("Other")
+        proj = Project.objects.create(name="P", default_print_preset=preset)
+        part = Part.objects.create(name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
+        ProjectPart.objects.create(project=proj, part=part, quantity=1)
+
+        match = PrintJob.objects.create(
+            name="Match", status=PrintJob.STATUS_DRAFT, created_by=self.user, print_preset=preset
+        )
+        mismatch = PrintJob.objects.create(
+            name="Mismatch", status=PrintJob.STATUS_DRAFT, created_by=self.user, print_preset=other
+        )
+        # Give each a part so neither is treated as the always-compatible empty job.
+        other_part = Part.objects.create(name="x")
+        PrintJobPart.objects.create(print_job=match, part=other_part, quantity=1)
+        PrintJobPart.objects.create(print_job=mismatch, part=other_part, quantity=1)
+
+        resp = self.client.get(reverse("core:part_detail", kwargs={"pk": part.pk}))
+        offered = {j.pk for j in resp.context["draft_jobs"]}
+        self.assertIn(match.pk, offered)
+        self.assertNotIn(mismatch.pk, offered)

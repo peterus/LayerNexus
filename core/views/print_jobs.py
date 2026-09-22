@@ -15,7 +15,6 @@ from core.forms import AddPartToJobForm, PrintJobForm
 from core.mixins import RoleRequiredMixin
 from core.models import (
     OrcaMachineProfile,
-    OrcaPrintPreset,
     Part,
     PrintJob,
     PrintJobPart,
@@ -221,24 +220,32 @@ class AddPartToJobView(RoleRequiredMixin, View):
         job = form.cleaned_data.get("job")
         quantity = form.cleaned_data["quantity"]
 
-        # Resolve the preset for a *new* job (Variant B part path). An explicit dropdown
-        # choice (multi-project, ambiguous case) overrides the auto resolution.
+        # Resolve the incoming part's preset for the standalone (part-path) flow. When the
+        # part is in projects with different presets a dropdown choice is required; validate
+        # the posted id against the offered candidates so a forged/invalid id cannot bypass
+        # the resolver or raise an IntegrityError.
         auto_preset, preset_choices = part.resolve_job_preset_candidates()
-        chosen_preset_id = request.POST.get("print_preset") or None
-        if preset_choices and chosen_preset_id is None:
-            messages.error(request, "This part is in projects with different presets — choose a preset.")
-            return redirect("core:part_detail", pk=part.pk)
-        new_job_preset_id = (
-            chosen_preset_id if chosen_preset_id is not None else (auto_preset.pk if auto_preset is not None else None)
-        )
+        chosen_raw = request.POST.get("print_preset") or None
+        if preset_choices:
+            choice_ids = {str(p.pk) for p in preset_choices}
+            if chosen_raw not in choice_ids:
+                messages.error(
+                    request,
+                    "This part is used in projects with different presets — choose one of the offered presets.",
+                )
+                return redirect("core:part_detail", pk=part.pk)
+            incoming_preset_id: int | None = int(chosen_raw)
+        else:
+            # No dropdown was shown, so any posted value is ignored in favor of the resolution.
+            incoming_preset_id = auto_preset.pk if auto_preset is not None else None
 
         if not job:
-            # Create a new draft job
+            # Create a new draft job pinned to the resolved preset.
             job = PrintJob.objects.create(
                 name=f"Job with {part.name}",
                 status=PrintJob.STATUS_DRAFT,
                 created_by=request.user,
-                print_preset_id=new_job_preset_id,
+                print_preset_id=incoming_preset_id,
             )
             messages.info(request, f"New draft job '{job}' created.")
 
@@ -246,17 +253,18 @@ class AddPartToJobView(RoleRequiredMixin, View):
             messages.error(request, "Can only add parts to draft jobs.")
             return redirect("core:part_detail", pk=part.pk)
 
-        # Validate preset/filament compatibility with existing parts
+        # Validate preset/filament compatibility. The preset key is the job's *pinned*
+        # preset (Variant B) when set, else — for a legacy unpinned job — the existing
+        # parts' own presets; either way it is compared against the resolved incoming
+        # preset, not the part's bare override.
         existing_parts = job.job_parts.select_related("part").all()
         if existing_parts:
-            effective_preset_id = part.effective_print_preset_id
-            effective_filament_id = part.spoolman_filament_id
-            incompatible = any(
-                jp.part.effective_print_preset_id != effective_preset_id
-                or jp.part.spoolman_filament_id != effective_filament_id
-                for jp in existing_parts
-            )
-            if incompatible:
+            filament_conflict = any(jp.part.spoolman_filament_id != part.spoolman_filament_id for jp in existing_parts)
+            if job.print_preset_id is not None:
+                preset_conflict = job.print_preset_id != incoming_preset_id
+            else:
+                preset_conflict = any(jp.part.effective_print_preset_id != incoming_preset_id for jp in existing_parts)
+            if filament_conflict or preset_conflict:
                 messages.error(
                     request,
                     f"Part '{part.name}' has a different preset or filament "
@@ -264,6 +272,12 @@ class AddPartToJobView(RoleRequiredMixin, View):
                     f"All parts in a job must use the same preset and filament.",
                 )
                 return redirect("core:part_detail", pk=part.pk)
+
+        # Pin an unpinned draft (e.g. a blank job created via the job form) to the resolved
+        # preset on its first compatible part, so slicing uses it (Variant B).
+        if job.print_preset_id is None and incoming_preset_id is not None:
+            job.print_preset_id = incoming_preset_id
+            job.save(update_fields=["print_preset"])
 
         # Resolve the optional target assembly (per-variant print attribution).
         target_assembly = self._resolve_target_assembly(request)
@@ -329,26 +343,40 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
         """Create one draft job per preset/filament group."""
         project = get_object_or_404(Project, pk=pk)
 
-        # Resolve each part's preset in THIS project context (Variant B) and index by part pk.
-        resolved_preset_by_pk: dict[int, OrcaPrintPreset | None] = {
-            part.pk: preset for part, _mult, preset in project.resolve_part_presets()
-        }
+        # Resolve each part's preset PER build path (Variant B). A part reached via two
+        # modules with different nearest presets contributes to two bundles, so aggregate
+        # the needed count per ``(part, resolved preset)`` instead of collapsing by part id
+        # (which would assign the whole quantity to whichever path was seen last).
+        needed_by_key: dict[tuple[int, int | None], int] = defaultdict(int)
+        part_objs: dict[int, Part] = {}
+        for part, count, preset in project.resolve_part_presets():
+            if not part.stl_file:
+                continue
+            part_objs[part.pk] = part
+            needed_by_key[(part.pk, preset.pk if preset is not None else None)] += count
 
-        # Per-assembly requirements: needed (edge-authoritative) minus prints attributed
-        # to THIS project. Each row is {part, needed, printed, remaining}.
-        rows = project.variant_progress()["parts"]
-        eligible = [(row["part"], row["remaining"]) for row in rows if row["part"].stl_file and row["remaining"] > 0]
+        # Subtract prints attributed to THIS assembly, allocating each part's printed count
+        # greedily across its preset bundles so the per-part totals still match
+        # ``variant_progress()``. Group the surviving remainder by (preset, filament).
+        keys_by_part: dict[int, list[int | None]] = defaultdict(list)
+        for part_pk, preset_id in needed_by_key:
+            keys_by_part[part_pk].append(preset_id)
 
-        if not eligible:
+        groups: dict[tuple[int | None, int | None], list[tuple[Part, int]]] = defaultdict(list)
+        for part_pk, preset_ids in keys_by_part.items():
+            part = part_objs[part_pk]
+            printed = part.printed_quantity_for(project)
+            for preset_id in preset_ids:
+                needed = needed_by_key[(part_pk, preset_id)]
+                used = min(printed, needed)
+                printed -= used
+                remaining = needed - used
+                if remaining > 0:
+                    groups[(preset_id, part.spoolman_filament_id)].append((part, remaining))
+
+        if not groups:
             messages.warning(request, "No eligible parts found (all printed or missing model file).")
             return redirect("core:project_detail", pk=project.pk)
-
-        # Group by (resolved_preset_id, spoolman_filament_id) — one bundle = one preset.
-        groups: dict[tuple[int | None, int | None], list[tuple[Part, int]]] = defaultdict(list)
-        for part, remaining in eligible:
-            resolved = resolved_preset_by_pk.get(part.pk)
-            key = (resolved.pk if resolved is not None else None, part.spoolman_filament_id)
-            groups[key].append((part, remaining))
 
         jobs_created = 0
         parts_added = 0

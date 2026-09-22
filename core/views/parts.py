@@ -147,9 +147,17 @@ class PartDetailView(LoginRequiredMixin, DetailView):
             instantiation=True,
         )
 
-        # Draft jobs the user can add this part to — only those whose
-        # existing parts share the same effective preset and filament.
-        effective_preset_id = part.effective_print_preset_id
+        # Draft jobs the user can add this part to — those whose pinned preset (Variant B)
+        # is one this part can resolve to, and whose filament matches. The allowed presets
+        # are the part's own resolution candidates (override, single project, or the distinct
+        # containing-project presets offered by the dropdown).
+        auto_candidate, choice_candidates = part.resolve_job_preset_candidates()
+        if auto_candidate is not None:
+            allowed_preset_ids = {auto_candidate.pk}
+        elif choice_candidates:
+            allowed_preset_ids = {c.pk for c in choice_candidates}
+        else:
+            allowed_preset_ids = set()
         effective_filament_id = part.spoolman_filament_id
 
         draft_jobs = PrintJob.objects.filter(
@@ -160,15 +168,16 @@ class PartDetailView(LoginRequiredMixin, DetailView):
         for job in draft_jobs:
             job_parts = job.job_parts.all()
             if not job_parts:
-                # Empty job is always compatible
+                # Empty job is always compatible (it will be pinned when the part is added).
                 compatible_jobs.append(job)
                 continue
-            compatible = all(
-                jp.part.effective_print_preset_id == effective_preset_id
-                and jp.part.spoolman_filament_id == effective_filament_id
-                for jp in job_parts
-            )
-            if compatible:
+            filament_ok = all(jp.part.spoolman_filament_id == effective_filament_id for jp in job_parts)
+            if job.print_preset_id is not None:
+                preset_ok = job.print_preset_id in allowed_preset_ids
+            else:
+                # Legacy unpinned job: fall back to the existing parts' own presets.
+                preset_ok = all(jp.part.effective_print_preset_id in allowed_preset_ids for jp in job_parts)
+            if filament_ok and preset_ok:
                 compatible_jobs.append(job)
 
         context["draft_jobs"] = compatible_jobs
