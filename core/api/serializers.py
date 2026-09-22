@@ -33,7 +33,13 @@ class ProjectSerializer(serializers.ModelSerializer):
 
     Sub-project composition is managed via the ``components`` edge endpoint, not the
     legacy ``parent``/``quantity`` fields, so those are deliberately not writable here.
+    ``default_print_preset`` is required (Variant B preset resolution depends on it).
     """
+
+    default_print_preset = serializers.PrimaryKeyRelatedField(
+        queryset=OrcaPrintPreset.objects.all(),
+        required=True,
+    )
 
     class Meta:
         model = Project
