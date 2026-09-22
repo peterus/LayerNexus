@@ -874,3 +874,80 @@ class ProjectContextEstimationTests(TestCase):
         # The project-context preset is pinned in the transient request channel, not provenance.
         self.assertEqual(shared.estimation_requested_preset_id, agreed.pk)
         self.assertIsNone(shared.estimated_with_preset_id)
+
+
+class SliceLegacyJobFallbackTests(TestCase):
+    """A legacy job with no pinned preset falls back to the first part's own preset (Copilot #54 r3)."""
+
+    def test_slice_legacy_job_uses_first_part_preset(self) -> None:
+        from unittest import mock
+
+        from core.models import OrcaMachineProfile, OrcaPrintPreset, Part, PrintJob, PrintJobPart
+        from core.services import slicing_worker
+
+        part_preset = OrcaPrintPreset.objects.create(
+            name="PartPreset", orca_name="PartPreset", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        machine = OrcaMachineProfile.objects.create(
+            name="M", orca_name="M", state=OrcaMachineProfile.STATE_RESOLVED, instantiation=True
+        )
+        part = Part.objects.create(name="p", print_preset=part_preset)
+        part.stl_file.name = "stl_files/x.stl"
+        part.save(update_fields=["stl_file"])
+        # Legacy job: print_preset is NULL (created before pinning existed).
+        job = PrintJob.objects.create(name="Legacy", machine_profile=machine)
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
+
+        captured = {}
+
+        def fake_build_kwargs(machine_profile, print_preset, filament_profile):
+            captured["print_preset"] = print_preset
+            return {}
+
+        with (
+            mock.patch.object(slicing_worker, "_build_slicer_kwargs", side_effect=fake_build_kwargs),
+            mock.patch.object(slicing_worker, "create_3mf_bundle", return_value=b"3mf"),
+            mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls,
+        ):
+            client_cls.return_value.slice_bundle.return_value = mock.Mock(
+                plates=[], total_filament_grams=None, total_filament_mm=None, total_print_time_seconds=None
+            )
+            slicing_worker._slice_job_in_background(job.pk)
+
+        self.assertEqual(captured["print_preset"], part_preset)
+
+
+class PartEditClearsRequestChannelTests(TestCase):
+    """Editing part inputs drops a stale project-context request preset (Copilot #54 r3)."""
+
+    def test_part_update_clears_estimation_requested_preset(self) -> None:
+        from unittest import mock
+
+        from django.contrib.auth.models import Group, Permission, User
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from django.urls import reverse
+
+        from core.models import OrcaPrintPreset, Part
+
+        stale = OrcaPrintPreset.objects.create(
+            name="Stale", orca_name="Stale", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        part = Part.objects.create(name="p", estimation_requested_preset=stale)
+        part.stl_file = SimpleUploadedFile("p.stl", b"solid")
+        part.save()
+
+        user = User.objects.create_user("designer", password="pw")
+        perm = Permission.objects.get(codename="can_manage_projects")
+        group, _ = Group.objects.get_or_create(name="Designer")
+        group.permissions.add(perm)
+        user.groups.add(group)
+        self.client.force_login(user)
+
+        with mock.patch("core.views.helpers._start_orcaslicer_worker"):
+            resp = self.client.post(
+                reverse("core:part_update", kwargs={"pk": part.pk}),
+                {"name": "p", "stl_file": SimpleUploadedFile("p2.stl", b"solid2")},
+            )
+        self.assertIn(resp.status_code, (302, 200))
+        part.refresh_from_db()
+        self.assertIsNone(part.estimation_requested_preset_id)

@@ -238,6 +238,15 @@ class AddPartToJobView(RoleRequiredMixin, View):
         else:
             # No dropdown was shown, so any posted value is ignored in favor of the resolution.
             incoming_preset_id = auto_preset.pk if auto_preset is not None else None
+            if incoming_preset_id is None:
+                # No override and no containing-project default: the job would slice with a
+                # None preset and fail. Refuse rather than create an unsliceable job.
+                messages.error(
+                    request,
+                    f"Part '{part.name}' has no resolvable print preset "
+                    f"(no override and no project default) — set a preset before adding it to a job.",
+                )
+                return redirect("core:part_detail", pk=part.pk)
 
         if not job:
             # Create a new draft job pinned to the resolved preset.

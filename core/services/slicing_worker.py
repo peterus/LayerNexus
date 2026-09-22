@@ -477,7 +477,9 @@ def _slice_job_in_background(job_pk: int) -> None:
                 filament_profile = mapping.orca_filament_profile
 
         # The resolved preset is pinned on the job at creation (Variant B); slice with it.
-        print_preset = job.print_preset
+        # Legacy jobs created before pinning have a NULL preset — fall back to the first
+        # part's own preset so they still slice as before instead of sending None.
+        print_preset = job.print_preset or first_part.effective_print_preset
 
         slice_kwargs = _build_slicer_kwargs(
             machine_profile=machine_profile,

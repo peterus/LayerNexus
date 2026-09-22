@@ -484,3 +484,22 @@ class CreateJobsPrintedByPresetTests(TestDataMixin, TestCase):
         # Cabin bundle stays at 4 (its prints were NOT touched); Frame bundle is 10-3=7.
         self.assertEqual(jobs["CabinPreset"].job_parts.get(part=bolt).quantity, 4)
         self.assertEqual(jobs["FramePreset"].job_parts.get(part=bolt).quantity, 7)
+
+
+class AddPartToJobNoPresetRejectTests(TestDataMixin, TestCase):
+    """Adding a part with no resolvable preset is rejected, not turned into a None-preset job."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def test_orphan_part_without_preset_rejected(self):
+        # Part in NO project and no override → no resolvable preset.
+        part = Part.objects.create(name="orphan", stl_file=SimpleUploadedFile("o.stl", b"solid"))
+        before = PrintJob.objects.count()
+        resp = self.client.post(
+            reverse("core:add_part_to_job", kwargs={"part_pk": part.pk}),
+            {"job": "", "quantity": 1},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(PrintJob.objects.count(), before)  # no unsliceable job created

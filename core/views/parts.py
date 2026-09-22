@@ -335,13 +335,17 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
         response = super().form_valid(form)
 
         if needs_re_estimate:
-            # Clear old estimates so new ones are written
+            # Clear old estimates so new ones are written. Also drop any stale project-context
+            # request preset: the inputs changed, so the worker must resolve fresh (else a
+            # request queued before this edit would estimate with the wrong preset).
             Part.objects.filter(pk=self.object.pk).update(
                 filament_used_grams=None,
                 filament_used_meters=None,
                 estimated_print_time=None,
                 estimation_status=Part.ESTIMATION_NONE,
                 estimation_error="",
+                estimated_with_preset=None,
+                estimation_requested_preset=None,
             )
             _trigger_part_estimation(self.object)
 

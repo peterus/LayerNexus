@@ -388,6 +388,9 @@ class PartViewSet(viewsets.ModelViewSet):
 
         part.stl_file = uploaded
         part.save()
+        # The model file changed, so any project-context preset queued before this upload is
+        # stale — clear it (and provenance) so the worker resolves fresh for this part.
+        Part.objects.filter(pk=part.pk).update(estimated_with_preset=None, estimation_requested_preset=None)
         _trigger_part_estimation(part)
         serializer = PartSerializer(part, context=self.get_serializer_context())
         return Response(serializer.data, status=status.HTTP_200_OK)
