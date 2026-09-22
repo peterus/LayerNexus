@@ -308,11 +308,15 @@ def _estimate_part_in_background(part_pk: int) -> None:
 
         # Consume the transient queue-time preset channel on claim: a whole-project
         # re-estimate pins the project-context preset in ``estimation_requested_preset``.
-        # Clearing it now (exactly once) keeps it from being mistaken for a later request
-        # and stops a part edit that clears estimates from leaving a stale value behind.
+        # Clear it *conditionally* on the exact value we read, so a newer re-estimate that
+        # wrote a different preset between the SELECT and here is not lost (its request
+        # survives and is picked up on the next run); it also stops a part edit that clears
+        # estimates from leaving a stale value behind.
         requested_preset = part.estimation_requested_preset if part.estimation_requested_preset_id else None
         if requested_preset is not None:
-            Part.objects.filter(pk=part_pk).update(estimation_requested_preset=None)
+            Part.objects.filter(pk=part_pk, estimation_requested_preset_id=part.estimation_requested_preset_id).update(
+                estimation_requested_preset=None
+            )
 
         if not part.stl_file:
             logger.debug("estimate_part(%s): no model file, skipping", part_pk)

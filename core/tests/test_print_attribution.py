@@ -4,7 +4,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate, Project, ProjectPart
+from core.models import OrcaPrintPreset, Part, PrintJob, PrintJobPart, PrintJobPlate, Project, ProjectPart
 from core.tests.mixins import TestDataMixin
 
 
@@ -169,6 +169,11 @@ class AddPartToJobTargetAssemblyTests(TestDataMixin, TestCase):
         super().setUp()
         self.client.login(username="testuser", password="testpass123")
         self.part.stl_file = SimpleUploadedFile("part.stl", b"solid part")
+        # Give the part a preset override so add-to-job resolves a preset (a part with no
+        # override and no containing project would now be rejected as unsliceable).
+        self.part.print_preset = OrcaPrintPreset.objects.create(
+            name="P", orca_name="P", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
         self.part.save()
 
     def test_add_part_to_job_sets_target_assembly(self):

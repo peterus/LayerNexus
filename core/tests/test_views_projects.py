@@ -135,7 +135,7 @@ class ProjectViewTests(TestDataMixin, TestCase):
         parent = Project.objects.create(name="Assembly", created_by=self.user)
         resp = self.client.post(
             reverse("core:subproject_create", args=[parent.pk]),
-            {"name": "New Module", "description": "", "quantity": "3"},
+            {"name": "New Module", "description": "", "quantity": "3", "default_print_preset": self.preset.pk},
         )
         self.assertEqual(resp.status_code, 302)
         child = Project.objects.get(name="New Module")
