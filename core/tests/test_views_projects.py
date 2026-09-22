@@ -96,50 +96,48 @@ class ProjectViewTests(TestDataMixin, TestCase):
         resp = self.client.post(reverse("core:project_delete", args=[self.other_project.pk]))
         self.assertEqual(resp.status_code, 302)
 
-    def test_project_reparent_via_update(self):
-        """An existing project can be turned into a sub-project via the edit form."""
-        parent = Project.objects.create(name="New Parent", created_by=self.user)
+    def test_project_update_does_not_touch_component_edges(self):
+        """Editing a module via the project edit form must not disturb its composition edges.
+
+        The edit form no longer exposes the legacy ``parent``/``quantity`` re-parent
+        control (composition is edited through the edge UI), so a plain edit of an
+        edge-based module must leave its ``parent_links`` untouched — the regression
+        this whole change targets, guarded at the view layer.
+        """
+        truck = Project.objects.create(name="Truck", created_by=self.user)
+        ProjectComponent.objects.create(parent_project=truck, child_project=self.project, quantity=2)
+
         resp = self.client.post(
             reverse("core:project_update", args=[self.project.pk]),
-            {
-                "name": self.project.name,
-                "description": "",
-                "parent": parent.pk,
-                "quantity": "2",
-            },
+            {"name": "Renamed Module", "description": ""},
         )
         self.assertEqual(resp.status_code, 302)
         self.project.refresh_from_db()
-        self.assertEqual(self.project.parent, parent)
-        self.assertEqual(self.project.quantity, 2)
+        self.assertEqual(self.project.name, "Renamed Module")
+        self.assertEqual(self.project.parent_links.count(), 1)
+        edge = self.project.parent_links.get()
+        self.assertEqual(edge.parent_project_id, truck.pk)
+        self.assertEqual(edge.quantity, 2)
 
-    def test_project_remove_parent_via_update(self):
-        """A sub-project can be turned back into a top-level project."""
-        parent = Project.objects.create(name="Parent", created_by=self.user)
-        self.project.parent = parent
-        self.project.quantity = 3
-        self.project.save()
-        resp = self.client.post(
-            reverse("core:project_update", args=[self.project.pk]),
-            {
-                "name": self.project.name,
-                "description": "",
-                "quantity": "1",
-            },
-        )
-        self.assertEqual(resp.status_code, 302)
-        self.project.refresh_from_db()
-        self.assertIsNone(self.project.parent)
-        self.assertEqual(self.project.quantity, 1)
-
-    def test_project_update_excludes_self_and_descendants_from_parent(self):
-        """The parent dropdown should not include the project itself or its descendants."""
-        child = Project.objects.create(name="Child", parent=self.project, created_by=self.user)
+    def test_project_edit_form_has_no_parent_field(self):
+        """The edit form no longer exposes the legacy parent/quantity re-parent control."""
         resp = self.client.get(reverse("core:project_update", args=[self.project.pk]))
         form = resp.context["form"]
-        parent_qs = form.fields["parent"].queryset
-        self.assertNotIn(self.project, parent_qs)
-        self.assertNotIn(child, parent_qs)
+        self.assertNotIn("parent", form.fields)
+        self.assertNotIn("quantity", form.fields)
+
+    def test_subproject_create_makes_component_edge(self):
+        """Creating a sub-project links it to the parent via a ProjectComponent edge."""
+        parent = Project.objects.create(name="Assembly", created_by=self.user)
+        resp = self.client.post(
+            reverse("core:subproject_create", args=[parent.pk]),
+            {"name": "New Module", "description": "", "quantity": "3"},
+        )
+        self.assertEqual(resp.status_code, 302)
+        child = Project.objects.get(name="New Module")
+        edge = ProjectComponent.objects.get(parent_project=parent, child_project=child)
+        self.assertEqual(edge.quantity, 3)
+        self.assertEqual(child.created_by_id, self.user.pk)
 
     def test_detail_shows_used_in_for_shared_module(self):
         from core.models import ProjectComponent
@@ -303,6 +301,22 @@ class AssemblyEditorViewTests(TestDataMixin, TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertFalse(ProjectComponent.objects.filter(pk=edge.pk).exists())
         self.assertTrue(Project.objects.filter(pk=cabin.pk).exists())  # node survives
+
+    def test_remove_component_clears_stale_legacy_parent_fk(self):
+        # A legacy sub-project (parent FK set, edge seeded on insert) that is detached
+        # through the edge UI must have its stale parent FK cleared, so the former
+        # parent is deletable (parent uses on_delete=PROTECT) and preset inheritance
+        # no longer leaks from the ex-parent.
+        parent = Project.objects.create(name="Assembly", created_by=self.user)
+        child = Project.objects.create(name="Module", parent=parent, quantity=2, created_by=self.user)
+        edge = child.parent_links.get()  # seeded on insert by Project.save()
+
+        resp = self.client.post(reverse("core:project_component_remove", kwargs={"pk": edge.pk}))
+        self.assertEqual(resp.status_code, 302)
+
+        child.refresh_from_db()
+        self.assertIsNone(child.parent_id)
+        self.assertEqual(parent.subprojects.count(), 0)
 
     def test_update_component_quantity(self):
         from core.models import ProjectComponent

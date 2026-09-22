@@ -37,34 +37,23 @@ class SubProjectForm(forms.ModelForm):
 
 
 class ProjectEditForm(forms.ModelForm):
-    """Form for editing projects with optional parent (re-parenting support).
+    """Form for editing a project's own attributes.
 
-    Includes the ``parent`` field so that an existing top-level project can
-    be turned into a sub-project and vice-versa.  The ``quantity`` field is
-    shown so it can be adjusted when a parent is set.
+    Composition (which assemblies contain this project, and in what quantity)
+    is edited exclusively through the ``ProjectComponent`` edge UI on the project
+    detail page (add/remove module, edit edge quantity), never here. The legacy
+    ``parent``/``quantity`` model fields are therefore deliberately **not**
+    exposed: a single ``parent`` field cannot represent a module shared by
+    several assemblies, and editing an edge-based module through it used to wipe
+    that module's composition edges.
     """
 
     class Meta:
         model = Project
-        fields = ["name", "description", "image", "parent", "quantity", "default_print_preset"]
+        fields = ["name", "description", "image", "default_print_preset"]
         widgets = {
             "description": forms.Textarea(attrs={"rows": 4}),
         }
-
-    def clean(self) -> dict:
-        """Normalise quantity for top-level projects.
-
-        Cyclic re-parenting (``parent`` == self or a descendant) is rejected by
-        :meth:`Project.clean`, which ``ModelForm._post_clean`` runs via
-        ``instance.full_clean()`` — the resulting ``ValidationError`` is already
-        attached to the ``parent`` field, so no separate descendant walk is
-        needed here (that only added a query per validation).
-        """
-        cleaned_data = super().clean()
-        parent = cleaned_data.get("parent")
-        if not parent:
-            cleaned_data["quantity"] = 1
-        return cleaned_data
 
 
 class AddComponentForm(forms.ModelForm):

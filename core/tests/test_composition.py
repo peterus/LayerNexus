@@ -116,3 +116,106 @@ class ProjectComponentCycleTests(TestCase):
         ProjectComponent.objects.create(parent_project=a, child_project=b)
         # Adding/keeping the already-present a -> b edge is not a cycle.
         self.assertFalse(component_would_create_cycle(a.pk, b.pk))
+
+
+class ProjectSaveDoesNotTouchEdgesTests(TestCase):
+    """Regression: ``Project.save()`` must never *delete* ``ProjectComponent`` edges.
+
+    A leftover Phase-6 dual-write shim in :meth:`Project.save` deleted the parent
+    edges of any project whose legacy ``parent`` FK was ``None`` (always the case for
+    edge-based projects), so a plain GUI/API edit silently wiped composition edges and
+    corrupted assemblies. Edge reconciliation on save is now additive only (upsert when
+    the legacy ``parent`` FK is set); saving an edge-based project must leave its
+    composition edges untouched.
+    """
+
+    def test_save_keeps_incoming_component_edges(self):
+        truck = Project.objects.create(name="Truck")
+        cabin = Project.objects.create(name="Cabin")
+        ProjectComponent.objects.create(parent_project=truck, child_project=cabin, quantity=2)
+
+        # A plain edit + save of the child (its legacy parent FK is None).
+        cabin.name = "Cabin v2"
+        cabin.save()
+
+        self.assertEqual(cabin.parent_links.count(), 1)
+        edge = cabin.parent_links.get()
+        self.assertEqual(edge.parent_project_id, truck.pk)
+        self.assertEqual(edge.quantity, 2)
+
+    def test_save_keeps_outgoing_component_edges(self):
+        truck = Project.objects.create(name="Truck")
+        cabin = Project.objects.create(name="Cabin")
+        ProjectComponent.objects.create(parent_project=truck, child_project=cabin, quantity=3)
+
+        # Saving the assembly must not disturb the edges it owns either.
+        truck.name = "Truck v2"
+        truck.save()
+
+        self.assertEqual(truck.child_links.count(), 1)
+        self.assertEqual(truck.child_links.get().child_project_id, cabin.pk)
+
+    def test_save_does_not_clobber_edge_quantity_of_legacy_parent(self):
+        # A project with a legacy parent FK gets its mirror edge seeded once; if the
+        # edge quantity is later changed through the edge UI, a subsequent scalar save
+        # of the project must NOT revert it to the stale legacy Project.quantity.
+        parent = Project.objects.create(name="Assembly")
+        child = Project.objects.create(name="Module", parent=parent, quantity=1)
+        edge = child.parent_links.get()
+        self.assertEqual(edge.quantity, 1)
+
+        # Edge UI changes only the edge quantity (not the legacy Project.quantity).
+        edge.quantity = 7
+        edge.save()
+
+        # An ordinary scalar edit of the child must leave the edge quantity intact.
+        child.name = "Module v2"
+        child.save()
+
+        edge.refresh_from_db()
+        self.assertEqual(edge.quantity, 7)
+        self.assertEqual(child.parent_links.count(), 1)
+
+    def test_bulk_edge_delete_clears_legacy_parent_fk(self):
+        # Detach durability must hold on the bulk QuerySet.delete() path too (which
+        # bypasses Model.delete()); the post_delete signal covers it.
+        parent = Project.objects.create(name="Assembly")
+        child = Project.objects.create(name="Module", parent=parent, quantity=2)
+        self.assertEqual(child.parent_links.count(), 1)
+
+        child.parent_links.all().delete()  # bulk delete, not instance.delete()
+
+        child.refresh_from_db()
+        self.assertIsNone(child.parent_id)
+        self.assertEqual(parent.subprojects.count(), 0)
+
+    def test_save_does_not_recreate_a_detached_legacy_edge(self):
+        # A project with a legacy parent FK seeds its mirror edge on create. Detaching
+        # (deleting the edge) fires the post_delete signal that also clears the mirror
+        # FK, so a later reload + scalar save (as a separate request would do) resurrects
+        # neither the edge (the mirror is insert-only) nor the FK.
+        parent = Project.objects.create(name="Assembly")
+        child = Project.objects.create(name="Module", parent=parent, quantity=1)
+        self.assertEqual(child.parent_links.count(), 1)
+
+        child.parent_links.all().delete()  # detach → signal clears the DB parent_id too
+
+        child = Project.objects.get(pk=child.pk)  # reload, as a separate request would
+        child.name = "Module v2"
+        child.save()
+
+        self.assertEqual(child.parent_links.count(), 0)
+        self.assertIsNone(child.parent_id)
+
+    def test_save_keeps_edges_across_shared_module(self):
+        # A module shared by two assemblies: saving it must keep BOTH parent edges.
+        truck_a = Project.objects.create(name="Truck A")
+        truck_b = Project.objects.create(name="Truck B")
+        cabin = Project.objects.create(name="Cabin")
+        ProjectComponent.objects.create(parent_project=truck_a, child_project=cabin)
+        ProjectComponent.objects.create(parent_project=truck_b, child_project=cabin)
+
+        cabin.description = "shared module"
+        cabin.save()
+
+        self.assertEqual(cabin.parent_links.count(), 2)

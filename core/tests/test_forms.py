@@ -38,60 +38,46 @@ class ProjectFormTests(TestCase):
 
 
 class ProjectEditFormTests(TestCase):
-    """Tests for the ProjectEditForm (re-parenting support)."""
+    """Tests for the ProjectEditForm.
 
-    def test_valid_form_no_parent(self):
-        """A project without parent should be valid with quantity defaulting to 1."""
-        form = ProjectEditForm(data={"name": "Top Level", "description": "", "quantity": "1"})
+    Composition is edited through the ``ProjectComponent`` edge UI, so the edit
+    form intentionally exposes only the project's own attributes — no legacy
+    ``parent``/``quantity`` re-parent control.
+    """
+
+    def test_valid_form(self):
+        """Editing a project's own attributes is valid."""
+        form = ProjectEditForm(data={"name": "Top Level", "description": ""})
         self.assertTrue(form.is_valid())
 
-    def test_valid_form_with_parent(self):
-        """A project can be set as sub-project of another project."""
+    def test_form_has_no_parent_or_quantity_fields(self):
+        """The legacy re-parent control is gone (it used to wipe composition edges)."""
+        form = ProjectEditForm()
+        self.assertNotIn("parent", form.fields)
+        self.assertNotIn("quantity", form.fields)
+
+    def test_extra_parent_quantity_data_is_ignored(self):
+        """Stray parent/quantity POST data does not re-parent or set a quantity."""
         parent = Project.objects.create(name="Parent Project")
-        form = ProjectEditForm(
-            data={
-                "name": "Child",
-                "description": "",
-                "parent": parent.pk,
-                "quantity": "3",
-            }
-        )
+        form = ProjectEditForm(data={"name": "Child", "description": "", "parent": parent.pk, "quantity": "3"})
         self.assertTrue(form.is_valid())
-        self.assertEqual(form.cleaned_data["parent"], parent)
-        self.assertEqual(form.cleaned_data["quantity"], 3)
+        self.assertNotIn("parent", form.cleaned_data)
+        self.assertNotIn("quantity", form.cleaned_data)
 
-    def test_quantity_reset_without_parent(self):
-        """Quantity should be reset to 1 when no parent is set."""
-        form = ProjectEditForm(
-            data={
-                "name": "Top Level",
-                "description": "",
-                "quantity": "5",
-            }
-        )
-        self.assertTrue(form.is_valid())
-        self.assertEqual(form.cleaned_data["quantity"], 1)
 
-    def test_cannot_set_self_as_parent(self):
-        """A project cannot be its own parent — now enforced by the form itself.
+class ProjectAdminTests(TestCase):
+    """The Django admin must not expose the legacy parent/quantity write path."""
 
-        Previously the form accepted this and relied solely on the edit view's
-        filtered ``parent`` queryset. ``ProjectEditForm.clean`` now rejects
-        cyclic re-parenting directly (see ``Project.clean``), so a stray self
-        reference is caught on every code path.
-        """
-        project = Project.objects.create(name="Self Ref")
-        form = ProjectEditForm(
-            data={
-                "name": "Self Ref",
-                "description": "",
-                "parent": project.pk,
-                "quantity": "1",
-            },
-            instance=project,
-        )
-        self.assertFalse(form.is_valid())
-        self.assertIn("parent", form.errors)
+    def test_admin_form_excludes_legacy_parent_and_quantity(self):
+        """Composition is edge-authoritative; the admin change form omits the dead FK fields."""
+        from django.contrib.admin.sites import AdminSite
+
+        from core.admin import ProjectAdmin
+
+        admin_instance = ProjectAdmin(Project, AdminSite())
+        form_class = admin_instance.get_form(request=None)
+        self.assertNotIn("parent", form_class.base_fields)
+        self.assertNotIn("quantity", form_class.base_fields)
 
 
 class PartFormTests(TestCase):

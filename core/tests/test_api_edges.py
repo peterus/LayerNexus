@@ -88,6 +88,44 @@ class ApiComponentEdgeTests(APITestCase):
         self.assertEqual(resp.status_code, 204)
         self.assertFalse(ProjectComponent.objects.filter(pk=edge.pk).exists())
 
+    def test_delete_component_clears_stale_legacy_parent_fk(self) -> None:
+        """Deleting an edge via the API clears the child's stale legacy parent FK too.
+
+        The detach durability (clearing the mirror FK so the former parent stays
+        deletable under ``on_delete=PROTECT``) lives in the ``post_delete`` receiver
+        ``_clear_legacy_parent_on_component_delete`` (core/models/composition.py), so it
+        applies to the DRF path as well as the HTML view.
+        """
+        child = Project.objects.create(name="LegacyModule", parent=self.parent, quantity=2)
+        edge = child.parent_links.get()  # seeded on insert by Project.save()
+
+        resp = self.client.delete(f"/api/v1/projects/{self.parent.pk}/components/{edge.pk}/")
+        self.assertEqual(resp.status_code, 204)
+
+        child.refresh_from_db()
+        self.assertIsNone(child.parent_id)
+        self.assertEqual(self.parent.subprojects.count(), 0)
+
+    def test_patch_cannot_reassign_edge_child(self) -> None:
+        """child_project is read-only on update — an edge's endpoints are its identity.
+
+        Reassigning the child via PATCH would silently orphan the old child's legacy
+        parent FK (cleaned up only on delete), so the serializer ignores it; composition
+        is changed by deleting and recreating edges.
+        """
+        edge = self.parent.child_links.create(child_project=self.child, quantity=1)
+        other = Project.objects.create(name="OtherModule")
+
+        resp = self.client.patch(
+            f"/api/v1/projects/{self.parent.pk}/components/{edge.pk}/",
+            {"child_project": other.pk, "quantity": 3},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        edge.refresh_from_db()
+        self.assertEqual(edge.child_project_id, self.child.pk)  # unchanged
+        self.assertEqual(edge.quantity, 3)  # quantity still mutable
+
 
 class ApiPartEdgeTests(APITestCase):
     """Project↔part composition edges under ``/projects/{id}/parts/``."""

@@ -55,8 +55,8 @@
           <div class="d-flex gap-2">
             <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i>{% if form.instance.pk %}Update{% else %}Create{% endif %}</button>
             {% if not form.instance.pk %}<button type="submit" name="_save_and_add_another" class="btn btn-outline-primary"><i class="bi bi-plus-circle me-1"></i>Save &amp; Add Another</button>{% endif %}
-            {% if form.instance.pk and form.instance.is_subproject %}
-            <a href="{% url 'core:project_detail' form.instance.parent.pk %}" class="btn btn-outline-secondary">Cancel</a>
+            {% if used_in %}
+            <a href="{% url 'core:project_detail' used_in.0.pk %}" class="btn btn-outline-secondary">Cancel</a>
             {% else %}
             <a href="{% url 'core:project_list' %}" class="btn btn-outline-secondary">Cancel</a>
             {% endif %}
