@@ -57,6 +57,14 @@ class PrintJob(models.Model):
         related_name="print_jobs",
         help_text="Machine profile used for slicing (determines compatible printers)",
     )
+    print_preset = models.ForeignKey(
+        "OrcaPrintPreset",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="print_jobs",
+        help_text="Print preset resolved for this job at creation (one preset per job).",
+    )
     printer = models.ForeignKey(
         "core.PrinterProfile",
         on_delete=models.SET_NULL,

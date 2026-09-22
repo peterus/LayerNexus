@@ -496,3 +496,21 @@ class ProjectHardwareModelTests(TestDataMixin, TestCase):
         ProjectHardware.objects.create(project=self.project, hardware_part=hp, quantity=2)
         ProjectHardware.objects.create(project=self.other_project, hardware_part=hp, quantity=4)
         self.assertEqual(hp.project_assignments.count(), 2)
+
+
+class PrintJobPresetFieldTests(TestCase):
+    def test_print_job_stores_resolved_preset(self) -> None:
+        from core.models import OrcaPrintPreset, PrintJob
+
+        preset = OrcaPrintPreset.objects.create(
+            name="P", orca_name="P", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        job = PrintJob.objects.create(name="J", print_preset=preset)
+        job.refresh_from_db()
+        self.assertEqual(job.print_preset_id, preset.pk)
+
+    def test_print_job_preset_defaults_to_none(self) -> None:
+        from core.models import PrintJob
+
+        job = PrintJob.objects.create(name="J")
+        self.assertIsNone(job.print_preset_id)
