@@ -5,7 +5,6 @@ import logging
 from django import forms as django_forms
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -235,27 +234,20 @@ class SubProjectCreateView(ProjectManageMixin, CreateView):
         return form
 
     def form_valid(self, form: SubProjectForm) -> HttpResponse:
-        """Create the sub-project node and link it to the parent via a composition edge.
+        """Create the sub-project under the parent assembly.
 
-        The new project is a normal node; its membership in the parent assembly is
-        expressed as a ``ProjectComponent`` edge (the authoritative composition
-        model), not via the legacy ``parent`` FK. The form's ``quantity`` is the
-        edge quantity (how many of this module the assembly needs).
-
-        The project row and its composition edge are created inside one
-        :func:`~django.db.transaction.atomic` block, so a failure creating the edge
-        rolls back the project too — no orphan node without its assembly link.
+        The legacy ``parent`` FK is set so the child still participates in
+        ``Project.effective_default_print_preset`` inheritance (which walks the
+        ``parent`` chain until that traversal is migrated onto composition edges).
+        :meth:`Project.save` mirrors that FK into the authoritative
+        ``ProjectComponent`` edge on insert — inside its own atomic block — so the
+        node and its assembly edge are created together; the form's ``quantity``
+        becomes the edge quantity.
         """
+        form.instance.parent = self.get_parent()
         form.instance.created_by = self.request.user
-        with transaction.atomic():
-            response = super().form_valid(form)
-            ProjectComponent.objects.create(
-                parent_project=self.get_parent(),
-                child_project=self.object,
-                quantity=form.cleaned_data.get("quantity", 1),
-            )
         messages.success(self.request, "Sub-project created successfully.")
-        return response
+        return super().form_valid(form)
 
     def get_success_url(self) -> str:
         """Redirect to the parent project detail page after creation."""
@@ -481,6 +473,21 @@ class ProjectComponentDeleteView(ProjectManageMixin, DeleteView):
 
     model = ProjectComponent
     http_method_names = ["post"]
+
+    def form_valid(self, form: django_forms.Form) -> HttpResponse:
+        """Delete the edge and clear the child's stale legacy ``parent`` FK if it matches.
+
+        The composition graph is authoritative, so detaching a module must be durable.
+        If the removed edge was the child's legacy ``parent`` mirror, clear that FK
+        (via a queryset update, to avoid re-seeding the edge through
+        :meth:`Project.save`) so the stale ``on_delete=PROTECT`` reference no longer
+        blocks deletion of the former parent and no longer leaks preset inheritance.
+        """
+        child_id = self.object.child_project_id
+        parent_id = self.object.parent_project_id
+        response = super().form_valid(form)
+        Project.objects.filter(pk=child_id, parent_id=parent_id).update(parent=None, quantity=1)
+        return response
 
     def get_success_url(self) -> str:
         """Redirect back to the parent assembly detail page."""

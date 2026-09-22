@@ -302,6 +302,22 @@ class AssemblyEditorViewTests(TestDataMixin, TestCase):
         self.assertFalse(ProjectComponent.objects.filter(pk=edge.pk).exists())
         self.assertTrue(Project.objects.filter(pk=cabin.pk).exists())  # node survives
 
+    def test_remove_component_clears_stale_legacy_parent_fk(self):
+        # A legacy sub-project (parent FK set, edge seeded on insert) that is detached
+        # through the edge UI must have its stale parent FK cleared, so the former
+        # parent is deletable (parent uses on_delete=PROTECT) and preset inheritance
+        # no longer leaks from the ex-parent.
+        parent = Project.objects.create(name="Assembly", created_by=self.user)
+        child = Project.objects.create(name="Module", parent=parent, quantity=2, created_by=self.user)
+        edge = child.parent_links.get()  # seeded on insert by Project.save()
+
+        resp = self.client.post(reverse("core:project_component_remove", kwargs={"pk": edge.pk}))
+        self.assertEqual(resp.status_code, 302)
+
+        child.refresh_from_db()
+        self.assertIsNone(child.parent_id)
+        self.assertEqual(parent.subprojects.count(), 0)
+
     def test_update_component_quantity(self):
         from core.models import ProjectComponent
 
