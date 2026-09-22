@@ -5,6 +5,7 @@ from collections import defaultdict
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.db import transaction
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
@@ -37,6 +38,14 @@ __all__ = [
     "PrintJobSliceView",
     "SliceJobStatusView",
 ]
+
+
+class _IncompatiblePartError(Exception):
+    """Internal signal: a part cannot be added to a job (preset/filament conflict).
+
+    Raised inside the ``AddPartToJobView`` transaction so a conflict rolls back any
+    in-transaction pin/insert; caught by the view to show the user-facing message.
+    """
 
 
 class PrintJobListView(LoginRequiredMixin, ListView):
@@ -262,54 +271,65 @@ class AddPartToJobView(RoleRequiredMixin, View):
             messages.error(request, "Can only add parts to draft jobs.")
             return redirect("core:part_detail", pk=part.pk)
 
-        # Validate preset/filament compatibility. The preset key is the job's *pinned*
-        # preset (Variant B) when set, else — for a legacy unpinned job — the existing
-        # parts' own presets; either way it is compared against the resolved incoming
-        # preset, not the part's bare override.
-        existing_parts = job.job_parts.select_related("part").all()
-        if existing_parts:
-            filament_conflict = any(jp.part.spoolman_filament_id != part.spoolman_filament_id for jp in existing_parts)
-            if job.print_preset_id is not None:
-                preset_conflict = job.print_preset_id != incoming_preset_id
-            else:
-                preset_conflict = any(jp.part.effective_print_preset_id != incoming_preset_id for jp in existing_parts)
-            if filament_conflict or preset_conflict:
-                messages.error(
-                    request,
-                    f"Part '{part.name}' has a different preset or filament "
-                    f"than the existing parts in '{job}'. "
-                    f"All parts in a job must use the same preset and filament.",
-                )
-                return redirect("core:part_detail", pk=part.pk)
-
-        # Pin an unpinned draft (e.g. a blank job created via the job form) to the resolved
-        # preset on its first compatible part, so slicing uses it (Variant B).
-        if job.print_preset_id is None and incoming_preset_id is not None:
-            job.print_preset_id = incoming_preset_id
-            job.save(update_fields=["print_preset"])
-
         # Resolve the optional target assembly (per-variant print attribution).
         target_assembly = self._resolve_target_assembly(request)
 
-        # Add or update the part in the job
-        job_part, created = PrintJobPart.objects.get_or_create(
-            print_job=job,
-            part=part,
-            defaults={"quantity": quantity, "target_assembly": target_assembly},
-        )
-        if not created:
-            job_part.quantity += quantity
-            update_fields = ["quantity"]
-            if target_assembly is not None:
-                job_part.target_assembly = target_assembly
-                update_fields.append("target_assembly")
-            job_part.save(update_fields=update_fields)
-            messages.success(
+        # Do the compatibility check, the empty-draft pin, and the part insert in one
+        # transaction so concurrent adds can't interleave (Variant B "one preset per job").
+        try:
+            with transaction.atomic():
+                existing_parts = list(job.job_parts.select_related("part").all())
+                if existing_parts:
+                    # Compare the resolved incoming preset against the job's pinned preset
+                    # (Variant B), or — for a legacy unpinned job — the existing parts' presets.
+                    filament_conflict = any(
+                        jp.part.spoolman_filament_id != part.spoolman_filament_id for jp in existing_parts
+                    )
+                    if job.print_preset_id is not None:
+                        preset_conflict = job.print_preset_id != incoming_preset_id
+                    else:
+                        preset_conflict = any(
+                            jp.part.effective_print_preset_id != incoming_preset_id for jp in existing_parts
+                        )
+                    if filament_conflict or preset_conflict:
+                        raise _IncompatiblePartError
+                else:
+                    # Empty draft: atomically pin it to the resolved preset. Only one
+                    # concurrent request's conditional update wins; a loser re-reads the
+                    # pinned value and, if it differs, is rejected (so two parts can't land
+                    # in one job with mismatched presets).
+                    PrintJob.objects.filter(pk=job.pk, print_preset__isnull=True).update(
+                        print_preset_id=incoming_preset_id
+                    )
+                    job.refresh_from_db(fields=["print_preset"])
+                    if job.print_preset_id != incoming_preset_id:
+                        raise _IncompatiblePartError
+
+                job_part, created = PrintJobPart.objects.get_or_create(
+                    print_job=job,
+                    part=part,
+                    defaults={"quantity": quantity, "target_assembly": target_assembly},
+                )
+                if not created:
+                    job_part.quantity += quantity
+                    update_fields = ["quantity"]
+                    if target_assembly is not None:
+                        job_part.target_assembly = target_assembly
+                        update_fields.append("target_assembly")
+                    job_part.save(update_fields=update_fields)
+        except _IncompatiblePartError:
+            messages.error(
                 request,
-                f"Updated '{part.name}' quantity to {job_part.quantity} in '{job}'.",
+                f"Part '{part.name}' has a different preset or filament "
+                f"than the existing parts in '{job}'. "
+                f"All parts in a job must use the same preset and filament.",
             )
-        else:
+            return redirect("core:part_detail", pk=part.pk)
+
+        if created:
             messages.success(request, f"Added {quantity}× '{part.name}' to '{job}'.")
+        else:
+            messages.success(request, f"Updated '{part.name}' quantity to {job_part.quantity} in '{job}'.")
 
         return redirect("core:printjob_detail", pk=job.pk)
 
@@ -356,13 +376,19 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
         # modules with different nearest presets contributes to two bundles, so aggregate
         # the needed count per ``(part, resolved preset)`` instead of collapsing by part id
         # (which would assign the whole quantity to whichever path was seen last).
-        needed_by_key: dict[tuple[int, int | None], int] = defaultdict(int)
+        needed_by_key: dict[tuple[int, int], int] = defaultdict(int)
         part_objs: dict[int, Part] = {}
+        skipped_no_preset = 0
         for part, count, preset in project.resolve_part_presets():
             if not part.stl_file:
                 continue
+            if preset is None:
+                # No resolvable preset on this path (no override, project default is NULL).
+                # Skip rather than create a job that would slice with None.
+                skipped_no_preset += 1
+                continue
             part_objs[part.pk] = part
-            needed_by_key[(part.pk, preset.pk if preset is not None else None)] += count
+            needed_by_key[(part.pk, preset.pk)] += count
 
         # Subtract prints attributed to THIS assembly. Prints from a job pinned to a given
         # preset reduce that preset's bundle; prints from legacy unpinned jobs (preset
@@ -394,8 +420,15 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
                 if remaining > 0:
                     groups[(preset_id, part.spoolman_filament_id)].append((part, remaining))
 
+        if skipped_no_preset:
+            messages.warning(
+                request,
+                f"Skipped {skipped_no_preset} part path(s) with no resolvable print preset "
+                f"(no override and no project default) — set a preset to include them.",
+            )
+
         if not groups:
-            messages.warning(request, "No eligible parts found (all printed or missing model file).")
+            messages.warning(request, "No eligible parts found (all printed, missing model file, or no preset).")
             return redirect("core:project_detail", pk=project.pk)
 
         jobs_created = 0

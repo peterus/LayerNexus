@@ -951,3 +951,43 @@ class PartEditClearsRequestChannelTests(TestCase):
         self.assertIn(resp.status_code, (302, 200))
         part.refresh_from_db()
         self.assertIsNone(part.estimation_requested_preset_id)
+
+
+class WorkerConditionalCompletionTests(TestCase):
+    """An in-flight estimate result is discarded if the part was re-queued meanwhile (Copilot #54 r4)."""
+
+    def test_result_discarded_when_part_no_longer_estimating(self) -> None:
+        from unittest import mock
+
+        from core.models import OrcaMachineProfile, OrcaPrintPreset, Part
+        from core.services import slicing_worker
+
+        preset = OrcaPrintPreset.objects.create(
+            name="P", orca_name="P", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        OrcaMachineProfile.objects.create(
+            name="M", orca_name="M", state=OrcaMachineProfile.STATE_RESOLVED, instantiation=True
+        )
+        # Part carries an override so resolution succeeds, but status is PENDING (NOT the
+        # ESTIMATING we claim) — simulating a re-queue that happened while slicing was in flight.
+        part = Part.objects.create(name="p", print_preset=preset, estimation_status=Part.ESTIMATION_PENDING)
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+
+        with (
+            mock.patch.object(
+                slicing_worker, "_find_compatible_machine", return_value=OrcaMachineProfile.objects.first()
+            ),
+            mock.patch.object(slicing_worker, "_build_slicer_kwargs", return_value={}),
+            mock.patch.object(slicing_worker, "create_3mf_bundle", return_value=b"3mf"),
+            mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls,
+        ):
+            client_cls.return_value.slice_bundle.return_value = mock.Mock(
+                plates=[], total_filament_grams=12.0, total_filament_mm=3400.0, total_print_time_seconds=60
+            )
+            slicing_worker._estimate_part_in_background(part.pk)
+
+        part.refresh_from_db()
+        # The completion must NOT have written a SUCCESS result over the PENDING re-queue.
+        self.assertNotEqual(part.estimation_status, Part.ESTIMATION_SUCCESS)
+        self.assertIsNone(part.filament_used_grams)

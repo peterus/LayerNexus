@@ -381,46 +381,43 @@ def _estimate_part_in_background(part_pk: int) -> None:
         slicer = OrcaSlicerAPIClient(settings.ORCASLICER_API_URL)
         result = slicer.slice_bundle(threemf_content, **slice_kwargs)
 
-        # Re-fetch part to avoid stale state
-        part = Part.objects.get(pk=part_pk)
-
-        updated: list[str] = []
         total_g = result.total_filament_grams
         total_mm = result.total_filament_mm
         total_time = result.total_print_time_seconds
 
+        fields: dict = {}
         if total_g is not None:
-            part.filament_used_grams = round(total_g, 2)
-            updated.append("filament_used_grams")
+            fields["filament_used_grams"] = round(total_g, 2)
         if total_mm is not None:
-            part.filament_used_meters = round(total_mm / 1000.0, 4)
-            updated.append("filament_used_meters")
+            fields["filament_used_meters"] = round(total_mm / 1000.0, 4)
         if total_time is not None:
-            part.estimated_print_time = timedelta(seconds=total_time)
-            updated.append("estimated_print_time")
+            fields["estimated_print_time"] = timedelta(seconds=total_time)
 
-        if updated:
-            part.estimation_status = Part.ESTIMATION_SUCCESS
-            part.estimation_error = ""
-            part.estimated_with_preset = print_preset
-            updated.extend(["estimation_status", "estimation_error", "estimated_with_preset"])
-            part.save(update_fields=updated)
-            logger.info(
-                "estimate_part(%s): saved estimates — %sg, %sm, %ss",
-                part_pk,
-                part.filament_used_grams,
-                part.filament_used_meters,
-                total_time,
+        if fields:
+            fields.update(
+                estimation_status=Part.ESTIMATION_SUCCESS,
+                estimation_error="",
+                estimated_with_preset=print_preset,
             )
+            # Conditional completion: only write if the part is STILL the one we claimed
+            # (status ESTIMATING). If it was edited/re-queued while this slice was in flight
+            # it is now PENDING/NONE — discard this stale result so the newer request wins.
+            written = Part.objects.filter(pk=part_pk, estimation_status=Part.ESTIMATION_ESTIMATING).update(**fields)
+            if written:
+                logger.info(
+                    "estimate_part(%s): saved estimates — %sg, %sm, %ss", part_pk, total_g, total_mm, total_time
+                )
+            else:
+                logger.info("estimate_part(%s): superseded by a newer re-estimation, result discarded", part_pk)
         else:
-            Part.objects.filter(pk=part_pk).update(
+            Part.objects.filter(pk=part_pk, estimation_status=Part.ESTIMATION_ESTIMATING).update(
                 estimation_status=Part.ESTIMATION_ERROR,
                 estimation_error="Slicing returned no filament or time estimates.",
             )
             logger.warning("estimate_part(%s): slicing returned no estimates", part_pk)
 
     except (OrcaSlicerError, FileNotFoundError) as exc:
-        Part.objects.filter(pk=part_pk).update(
+        Part.objects.filter(pk=part_pk, estimation_status=Part.ESTIMATION_ESTIMATING).update(
             estimation_status=Part.ESTIMATION_ERROR,
             estimation_error=str(exc),
         )
@@ -428,7 +425,7 @@ def _estimate_part_in_background(part_pk: int) -> None:
     except Part.DoesNotExist:
         logger.debug("estimate_part(%s): part no longer exists", part_pk)
     except Exception as exc:
-        Part.objects.filter(pk=part_pk).update(
+        Part.objects.filter(pk=part_pk, estimation_status=Part.ESTIMATION_ESTIMATING).update(
             estimation_status=Part.ESTIMATION_ERROR,
             estimation_error=f"Unexpected error: {exc}",
         )

@@ -503,3 +503,58 @@ class AddPartToJobNoPresetRejectTests(TestDataMixin, TestCase):
         )
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(PrintJob.objects.count(), before)  # no unsliceable job created
+
+
+class CreateJobsSkipNoPresetTests(TestDataMixin, TestCase):
+    """Project-path job creation skips parts with no resolvable preset (Copilot #54 r4)."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def test_none_preset_part_is_skipped_not_bundled(self):
+        from core.models import Project
+
+        # Project with NO default preset (legacy/nullable) and a part with no override.
+        project = Project.objects.create(name="Legacy", created_by=self.user)  # default_print_preset NULL
+        part = Part.objects.create(name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
+        ProjectPart.objects.create(project=project, part=part, quantity=1)
+
+        before = PrintJob.objects.count()
+        resp = self.client.post(reverse("core:project_create_jobs", args=[project.pk]))
+        self.assertEqual(resp.status_code, 302)
+        # No None-preset job created.
+        self.assertEqual(PrintJob.objects.count(), before)
+
+
+class AddPartToJobAtomicPinTests(TestDataMixin, TestCase):
+    """An empty draft already pinned to a different preset rejects a mismatched part (Copilot #54 r4)."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def _preset(self, name):
+        return OrcaPrintPreset.objects.create(
+            name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+
+    def test_empty_but_pinned_draft_rejects_mismatched_part(self):
+        from core.models import Project
+
+        pa = self._preset("PA")
+        pb = self._preset("PB")
+        proj = Project.objects.create(name="B", default_print_preset=pb)
+        part = Part.objects.create(name="pb", stl_file=SimpleUploadedFile("pb.stl", b"solid"))
+        ProjectPart.objects.create(project=proj, part=part, quantity=1)
+        # Empty draft already pinned to PA (no parts yet).
+        job = PrintJob.objects.create(
+            name="Pinned", status=PrintJob.STATUS_DRAFT, created_by=self.user, print_preset=pa
+        )
+
+        resp = self.client.post(
+            reverse("core:add_part_to_job", kwargs={"part_pk": part.pk}),
+            {"job": job.pk, "quantity": 1},
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(job.job_parts.filter(part=part).exists())  # rejected, not added
