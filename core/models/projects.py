@@ -93,10 +93,13 @@ class Project(models.Model):
         or import raises :class:`ValidationError` instead of persisting a graph
         that would later blow up the recursive aggregate properties.
 
-        Edge reconciliation is **additive only**: when the legacy ``parent`` FK is
-        set, one matching ``ProjectComponent`` edge is upserted so a project created
-        via ``Project(parent=…)`` still appears under its assembly. A ``save()``
-        **never deletes** composition edges.
+        Edge reconciliation is **seed-only**: when the legacy ``parent`` FK is set,
+        one matching ``ProjectComponent`` edge is created *if missing* so a project
+        created via ``Project(parent=…)`` still appears under its assembly. A ``save()``
+        **never deletes** edges and **never overwrites** an existing edge's
+        ``quantity`` — the edge is authoritative once it exists, so edits made through
+        the edge UI (which changes ``ProjectComponent.quantity`` without touching the
+        legacy ``Project.quantity``) are not silently reverted by a later scalar save.
 
         This is the fix for a production data corruptor: the previous shim ran
         ``ProjectComponent.objects.filter(child_project=self).delete()`` on *every*
@@ -118,7 +121,7 @@ class Project(models.Model):
             if self.parent_id is not None:
                 from core.models.composition import ProjectComponent
 
-                ProjectComponent.objects.update_or_create(
+                ProjectComponent.objects.get_or_create(
                     parent_project_id=self.parent_id,
                     child_project=self,
                     defaults={"quantity": self.quantity},

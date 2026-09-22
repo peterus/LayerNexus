@@ -5,6 +5,7 @@ import logging
 from django import forms as django_forms
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -240,14 +241,19 @@ class SubProjectCreateView(ProjectManageMixin, CreateView):
         expressed as a ``ProjectComponent`` edge (the authoritative composition
         model), not via the legacy ``parent`` FK. The form's ``quantity`` is the
         edge quantity (how many of this module the assembly needs).
+
+        The project row and its composition edge are created inside one
+        :func:`~django.db.transaction.atomic` block, so a failure creating the edge
+        rolls back the project too — no orphan node without its assembly link.
         """
         form.instance.created_by = self.request.user
-        response = super().form_valid(form)
-        ProjectComponent.objects.create(
-            parent_project=self.get_parent(),
-            child_project=self.object,
-            quantity=form.cleaned_data.get("quantity", 1),
-        )
+        with transaction.atomic():
+            response = super().form_valid(form)
+            ProjectComponent.objects.create(
+                parent_project=self.get_parent(),
+                child_project=self.object,
+                quantity=form.cleaned_data.get("quantity", 1),
+            )
         messages.success(self.request, "Sub-project created successfully.")
         return response
 

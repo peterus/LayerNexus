@@ -155,6 +155,27 @@ class ProjectSaveDoesNotTouchEdgesTests(TestCase):
         self.assertEqual(truck.child_links.count(), 1)
         self.assertEqual(truck.child_links.get().child_project_id, cabin.pk)
 
+    def test_save_does_not_clobber_edge_quantity_of_legacy_parent(self):
+        # A project with a legacy parent FK gets its mirror edge seeded once; if the
+        # edge quantity is later changed through the edge UI, a subsequent scalar save
+        # of the project must NOT revert it to the stale legacy Project.quantity.
+        parent = Project.objects.create(name="Assembly")
+        child = Project.objects.create(name="Module", parent=parent, quantity=1)
+        edge = child.parent_links.get()
+        self.assertEqual(edge.quantity, 1)
+
+        # Edge UI changes only the edge quantity (not the legacy Project.quantity).
+        edge.quantity = 7
+        edge.save()
+
+        # An ordinary scalar edit of the child must leave the edge quantity intact.
+        child.name = "Module v2"
+        child.save()
+
+        edge.refresh_from_db()
+        self.assertEqual(edge.quantity, 7)
+        self.assertEqual(child.parent_links.count(), 1)
+
     def test_save_keeps_edges_across_shared_module(self):
         # A module shared by two assemblies: saving it must keep BOTH parent edges.
         truck_a = Project.objects.create(name="Truck A")
