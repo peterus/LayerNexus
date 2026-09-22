@@ -199,6 +199,9 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
 
         self.part.stl_file = SimpleUploadedFile("test.stl", b"solid test")
         self.part.print_preset = self.preset
+        # The worker loop claims a part (PENDING → ESTIMATING) before invoking the slice;
+        # the completion write is guarded on that status, so mirror the claim here.
+        self.part.estimation_status = Part.ESTIMATION_ESTIMATING
         self.part.save()
 
         fake_result = MagicMock(
@@ -241,6 +244,8 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
         raw_3mf = b"PK\x03\x04fake-3mf-bytes"
         self.part.stl_file = SimpleUploadedFile("model.3mf", raw_3mf)
         self.part.print_preset = self.preset
+        # Mirror the worker's PENDING → ESTIMATING claim (completion is guarded on it).
+        self.part.estimation_status = Part.ESTIMATION_ESTIMATING
         self.part.save()
 
         fake_result = MagicMock(

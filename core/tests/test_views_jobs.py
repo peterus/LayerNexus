@@ -54,6 +54,12 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
     def setUp(self):
         super().setUp()
         self.client.login(username="testuser", password="testpass123")
+        # The project needs a default preset (now mandatory) so its parts resolve to a
+        # preset and are not skipped as unsliceable.
+        self.project.default_print_preset = OrcaPrintPreset.objects.create(
+            name="Proj", orca_name="Proj", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        self.project.save(update_fields=["default_print_preset"])
         # Give the base part an STL file so it is eligible
         self.part.stl_file = SimpleUploadedFile("part1.stl", b"solid part1")
         self.part.save()
