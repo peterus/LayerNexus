@@ -3,8 +3,15 @@
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from core.models import PrinterProfile, Project
+from core.models import OrcaPrintPreset, PrinterProfile, Project
 from core.tests.mixins import _RBACTestBase
+
+
+def _make_preset() -> OrcaPrintPreset:
+    """Create a minimal resolved preset for the now-mandatory ``default_print_preset``."""
+    return OrcaPrintPreset.objects.create(
+        name="P", orca_name="P", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+    )
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -13,9 +20,10 @@ class DesignerPermissionTests(_RBACTestBase):
 
     def test_designer_can_create_project(self):
         self.client.login(username="designer_user", password="testpass123")
+        preset = _make_preset()
         resp = self.client.post(
             reverse("core:project_create"),
-            {"name": "Designer Project", "description": ""},
+            {"name": "Designer Project", "description": "", "default_print_preset": preset.pk},
         )
         self.assertEqual(resp.status_code, 302)
         self.assertTrue(Project.objects.filter(name="Designer Project").exists())
@@ -84,9 +92,10 @@ class AdminPermissionTests(_RBACTestBase):
 
     def test_admin_can_create_project(self):
         self.client.login(username="admin_user", password="testpass123")
+        preset = _make_preset()
         resp = self.client.post(
             reverse("core:project_create"),
-            {"name": "Admin Project", "description": ""},
+            {"name": "Admin Project", "description": "", "default_print_preset": preset.pk},
         )
         self.assertEqual(resp.status_code, 302)
 
