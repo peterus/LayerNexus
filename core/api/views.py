@@ -91,7 +91,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
         description=(
             "Collects every distinct part in the composition DAG, clears its prior "
             "estimation results and re-queues it for the background worker. Parts "
-            "without an STL file or a print preset are silently skipped. "
+            "without an STL file, or with no resolvable preset (no override and no "
+            "project default), are silently skipped. "
             "Write action — requires the `can_manage_projects` permission."
         ),
         request=None,
@@ -108,9 +109,10 @@ class ProjectViewSet(viewsets.ModelViewSet):
 
         Mirrors :class:`~core.views.projects.ProjectReEstimateView`: collects all
         distinct parts via the edge-based DAG, clears their existing estimation data,
-        and re-queues them.  Parts without an STL file or a print preset are silently
-        skipped. This is a write action so ``ReadOrProjectManage`` requires the
-        ``core.can_manage_projects`` permission.
+        and re-queues them.  Parts without an STL file or with no resolvable preset
+        (no override and no project default) are silently skipped. This is a write
+        action so ``ReadOrProjectManage`` requires the ``core.can_manage_projects``
+        permission.
 
         Returns:
             202 response with ``{"queued": <count>}``.
@@ -120,18 +122,27 @@ class ProjectViewSet(viewsets.ModelViewSet):
         # composition DAG, so a part shared by several modules appears repeatedly.
         # Deduplicate by primary key so each part is reset and queued exactly once.
         parts = {p.pk: p for p, _mult in project._collect_parts_with_multiplier()}
+        # Variant B: resolve each part's preset in THIS project's context and pin it so the
+        # worker estimates a legacy/shared part with the project-context preset (mirrors
+        # core.views.projects.ProjectReEstimateView).
+        preset_map = project.resolve_estimation_preset_map()
         count = 0
         for part in parts.values():
+            preset, ambiguous = preset_map.get(part.pk, (None, False))
             if not part.stl_file:
                 continue
-            if not part.effective_print_preset:
+            if preset is None and not ambiguous:
                 continue
+            # Pin the project-context preset in the transient request channel (not the
+            # provenance field) so the worker estimates with it; clear stale provenance.
             Part.objects.filter(pk=part.pk).update(
                 filament_used_grams=None,
                 filament_used_meters=None,
                 estimated_print_time=None,
                 estimation_status=Part.ESTIMATION_NONE,
                 estimation_error="",
+                estimated_with_preset=None,
+                estimation_requested_preset=preset,
             )
             _trigger_part_estimation(part)
             count += 1
@@ -284,13 +295,14 @@ class PartViewSet(viewsets.ModelViewSet):
     @extend_schema(
         summary="Re-queue estimation for this part",
         description=(
-            "Validates prerequisites (STL file + print preset present), clears any "
-            "prior estimation results and triggers the background worker. "
-            "Returns 400 if prerequisites are missing (prior results are preserved). "
+            "Validates prerequisites (STL file present and a resolvable — or ambiguous — "
+            "preset), clears any prior estimation results and triggers the background "
+            "worker. Returns 400 only if there is no STL file or no resolvable preset "
+            "(prior results are preserved). "
             "Write action — requires the `can_manage_projects` permission."
         ),
         request=None,
-        responses={202: PartSerializer, 400: OpenApiResponse(description="Missing STL file or print preset.")},
+        responses={202: PartSerializer, 400: OpenApiResponse(description="Missing STL file or resolvable preset.")},
     )
     @action(detail=True, methods=["post"], url_path="estimate")
     def estimate(self, request: Request, pk: str | None = None) -> Response:
@@ -315,17 +327,22 @@ class PartViewSet(viewsets.ModelViewSet):
                 {"detail": "Part has no STL file to estimate."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if not part.effective_print_preset:
+        preset, ambiguous = part.resolve_estimation_preset()
+        if preset is None and not ambiguous:
             return Response(
-                {"detail": "Part has no print preset configured."},
+                {"detail": "Part has no resolvable print preset (no override and no project default)."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # Clear provenance AND any stale request channel: the single-part path carries no
+        # build context, so the worker must resolve the preset itself.
         Part.objects.filter(pk=part.pk).update(
             filament_used_grams=None,
             filament_used_meters=None,
             estimated_print_time=None,
             estimation_status=Part.ESTIMATION_NONE,
             estimation_error="",
+            estimated_with_preset=None,
+            estimation_requested_preset=None,
         )
         _trigger_part_estimation(part)
         part.refresh_from_db()
@@ -371,6 +388,9 @@ class PartViewSet(viewsets.ModelViewSet):
 
         part.stl_file = uploaded
         part.save()
+        # The model file changed, so any project-context preset queued before this upload is
+        # stale — clear it (and provenance) so the worker resolves fresh for this part.
+        Part.objects.filter(pk=part.pk).update(estimated_with_preset=None, estimation_requested_preset=None)
         _trigger_part_estimation(part)
         serializer = PartSerializer(part, context=self.get_serializer_context())
         return Response(serializer.data, status=status.HTTP_200_OK)

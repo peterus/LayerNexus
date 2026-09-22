@@ -38,11 +38,18 @@ class ApiAuthTests(APITestCase):
 
     def test_write_allowed_with_manage_perm(self) -> None:
         """A user holding ``can_manage_projects`` can create (201)."""
+        from core.models import OrcaPrintPreset
+
         user = User.objects.create_user("designer", password="x")
         grant_manage(user)
         token = Token.objects.create(user=user)
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
-        resp = self.client.post("/api/v1/projects/", {"name": "Robot"}, format="json")
+        preset = OrcaPrintPreset.objects.create(
+            name="P", orca_name="P", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        resp = self.client.post(
+            "/api/v1/projects/", {"name": "Robot", "default_print_preset": preset.pk}, format="json"
+        )
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.data["name"], "Robot")
 

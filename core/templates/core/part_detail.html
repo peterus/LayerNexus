@@ -229,6 +229,18 @@
             <label for="id_qty" class="form-label form-label-sm">Quantity</label>
             <input type="number" name="quantity" id="id_qty" value="1" min="1" class="form-control form-control-sm" style="max-width: 120px;">
           </div>
+          {% if job_preset_choices %}
+          <div class="mb-2">
+            <label for="id_print_preset" class="form-label form-label-sm">Print preset</label>
+            <select name="print_preset" id="id_print_preset" class="form-select form-select-sm" required>
+              <option value="">— Choose a preset —</option>
+              {% for preset in job_preset_choices %}
+              <option value="{{ preset.pk }}">{{ preset.name }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">This part is used in projects with different presets — pick one.</div>
+          </div>
+          {% endif %}
           {% if candidate_assemblies %}
           <div class="mb-2">
             <label for="id_target_assembly" class="form-label form-label-sm">Build target <span class="text-muted">(optional)</span></label>

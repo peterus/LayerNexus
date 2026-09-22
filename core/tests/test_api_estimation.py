@@ -184,3 +184,54 @@ class ProjectReEstimateActionTests(APITestCase):
         self.assertEqual(resp.data["queued"], 1)
         triggered.assert_called_once()
         self.assertEqual(triggered.call_args[0][0].pk, self.part_with_stl.pk)
+
+
+class ReEstimateResolverEligibilityTests(APITestCase):
+    """Variant B: legacy parts with a project default become estimable via the API."""
+
+    def setUp(self) -> None:
+        """Create a manage-capable user."""
+        self.user = User.objects.create_user("designer", password="x")
+        self.user.user_permissions.add(Permission.objects.get(codename="can_manage_projects"))
+        token = Token.objects.create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_estimate_legacy_part_with_project_default_returns_202(self) -> None:
+        """A part with no override but a containing project's default is now estimable."""
+        project = Project.objects.create(name="Proj", default_print_preset=_make_preset())
+        part = Part.objects.create(name="Legacy")  # no override
+        part.stl_file.save("legacy.stl", _stl_file(), save=True)
+        ProjectPart.objects.create(project=project, part=part, quantity=1)
+
+        with mock.patch("core.api.views._trigger_part_estimation") as triggered:
+            resp = self.client.post(f"/api/v1/parts/{part.pk}/estimate/")
+        self.assertEqual(resp.status_code, 202, resp.data)
+        triggered.assert_called_once()
+
+    def test_estimate_ambiguous_part_returns_202(self) -> None:
+        """An ambiguous part is queued (202) so the worker records the ambiguity."""
+        a = Project.objects.create(name="A", default_print_preset=_make_preset())
+        b_preset = OrcaPrintPreset.objects.create(name="Slow", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True)
+        b = Project.objects.create(name="B", default_print_preset=b_preset)
+        part = Part.objects.create(name="Shared")  # no override, two differing defaults
+        part.stl_file.save("shared.stl", _stl_file(), save=True)
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+
+        with mock.patch("core.api.views._trigger_part_estimation") as triggered:
+            resp = self.client.post(f"/api/v1/parts/{part.pk}/estimate/")
+        self.assertEqual(resp.status_code, 202, resp.data)
+        triggered.assert_called_once()
+
+    def test_project_re_estimate_queues_legacy_part(self) -> None:
+        """Project re-estimate queues a legacy part via the project's default preset."""
+        project = Project.objects.create(name="Proj", default_print_preset=_make_preset())
+        part = Part.objects.create(name="Legacy")  # no override
+        part.stl_file.save("legacy.stl", _stl_file(), save=True)
+        ProjectPart.objects.create(project=project, part=part, quantity=1)
+
+        with mock.patch("core.api.views._trigger_part_estimation") as triggered:
+            resp = self.client.post(f"/api/v1/projects/{project.pk}/re-estimate/")
+        self.assertEqual(resp.status_code, 202, resp.data)
+        self.assertEqual(resp.data["queued"], 1)
+        triggered.assert_called_once()

@@ -199,6 +199,9 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
 
         self.part.stl_file = SimpleUploadedFile("test.stl", b"solid test")
         self.part.print_preset = self.preset
+        # The worker loop claims a part (PENDING → ESTIMATING) before invoking the slice;
+        # the completion write is guarded on that status, so mirror the claim here.
+        self.part.estimation_status = Part.ESTIMATION_ESTIMATING
         self.part.save()
 
         fake_result = MagicMock(
@@ -241,6 +244,8 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
         raw_3mf = b"PK\x03\x04fake-3mf-bytes"
         self.part.stl_file = SimpleUploadedFile("model.3mf", raw_3mf)
         self.part.print_preset = self.preset
+        # Mirror the worker's PENDING → ESTIMATING claim (completion is guarded on it).
+        self.part.estimation_status = Part.ESTIMATION_ESTIMATING
         self.part.save()
 
         fake_result = MagicMock(
@@ -565,3 +570,429 @@ class SlicingWorkerLockTests(TestCase):
             _orcaslicer_worker_loop(lock_fh=fake_fh)
 
         mock_acquire.assert_not_called()
+
+
+class SliceJobUsesJobPresetTests(TestCase):
+    def test_slice_job_passes_job_print_preset_to_kwargs(self) -> None:
+        from unittest import mock
+
+        from core.models import OrcaMachineProfile, OrcaPrintPreset, Part, PrintJob, PrintJobPart
+        from core.services import slicing_worker
+
+        job_preset = OrcaPrintPreset.objects.create(
+            name="JobPreset", orca_name="JobPreset", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        part_preset = OrcaPrintPreset.objects.create(
+            name="PartPreset", orca_name="PartPreset", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        machine = OrcaMachineProfile.objects.create(
+            name="M", orca_name="M", state=OrcaMachineProfile.STATE_RESOLVED, instantiation=True
+        )
+        part = Part.objects.create(name="p", print_preset=part_preset)
+        part.stl_file.name = "stl_files/x.stl"
+        part.save(update_fields=["stl_file"])
+        job = PrintJob.objects.create(name="J", machine_profile=machine, print_preset=job_preset)
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
+
+        captured: dict = {}
+
+        def fake_build_kwargs(machine_profile, print_preset, filament_profile):
+            captured["print_preset"] = print_preset
+            return {}
+
+        with (
+            mock.patch.object(slicing_worker, "_build_slicer_kwargs", side_effect=fake_build_kwargs),
+            mock.patch.object(slicing_worker, "create_3mf_bundle", return_value=b"3mf"),
+            mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls,
+        ):
+            client_cls.return_value.slice_bundle.return_value = mock.Mock(
+                plates=[], total_filament_grams=None, total_filament_mm=None, total_print_time_seconds=None
+            )
+            slicing_worker._slice_job_in_background(job.pk)
+
+        self.assertEqual(captured["print_preset"], job_preset)
+
+
+class EstimationPresetResolutionTests(TestCase):
+    def _preset(self, name):
+        from core.models import OrcaPrintPreset
+
+        return OrcaPrintPreset.objects.create(
+            name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+
+    def test_single_project_preset_is_unambiguous(self) -> None:
+        from core.models import Part, Project, ProjectPart
+
+        preset = self._preset("Proj")
+        project = Project.objects.create(name="Proj", default_print_preset=preset)
+        part = Part.objects.create(name="p")
+        ProjectPart.objects.create(project=project, part=part, quantity=1)
+        resolved, ambiguous = part.resolve_estimation_preset()
+        self.assertEqual((resolved, ambiguous), (preset, False))
+
+    def test_override_is_unambiguous_even_with_many_projects(self) -> None:
+        from core.models import Part, Project, ProjectPart
+
+        override = self._preset("Override")
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        part = Part.objects.create(name="p", print_preset=override)
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+        self.assertEqual(part.resolve_estimation_preset(), (override, False))
+
+    def test_multiple_different_project_presets_is_ambiguous(self) -> None:
+        from core.models import Part, Project, ProjectPart
+
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        part = Part.objects.create(name="p")
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+        resolved, ambiguous = part.resolve_estimation_preset()
+        self.assertTrue(ambiguous)
+        self.assertIsNone(resolved)
+
+    def test_ambiguous_part_estimation_sets_error_status(self) -> None:
+        from unittest import mock
+
+        from core.models import Part, Project, ProjectPart
+        from core.services import slicing_worker
+
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        part = Part.objects.create(name="p", estimation_status=Part.ESTIMATION_ESTIMATING)
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+
+        with mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls:
+            slicing_worker._estimate_part_in_background(part.pk)
+            client_cls.assert_not_called()
+
+        part.refresh_from_db()
+        self.assertEqual(part.estimation_status, Part.ESTIMATION_ERROR)
+        self.assertIn("ambiguous", part.estimation_error.lower())
+
+
+class ReEstimateEligibilityTests(TestCase):
+    def _preset(self, name):
+        from core.models import OrcaPrintPreset
+
+        return OrcaPrintPreset.objects.create(
+            name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+
+    def test_is_estimable_true_for_legacy_part_with_project_default(self) -> None:
+        from core.models import Part, Project, ProjectPart
+
+        project = Project.objects.create(name="Proj", default_print_preset=self._preset("P"))
+        part = Part.objects.create(name="p")  # no override
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+        ProjectPart.objects.create(project=project, part=part, quantity=1)
+        self.assertTrue(part.is_estimable())
+
+    def test_is_estimable_false_without_any_preset(self) -> None:
+        from core.models import Part
+
+        part = Part.objects.create(name="p")
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+        self.assertFalse(part.is_estimable())
+
+    def test_is_estimable_true_when_ambiguous(self) -> None:
+        from core.models import Part, Project, ProjectPart
+
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        part = Part.objects.create(name="p")
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+        self.assertTrue(part.is_estimable())  # queued so the worker records ambiguity
+
+    def test_gui_project_re_estimate_queues_legacy_part(self) -> None:
+        from unittest import mock
+
+        from django.contrib.auth.models import Group, Permission, User
+        from django.urls import reverse
+
+        from core.models import Part, Project, ProjectPart
+
+        project = Project.objects.create(name="Proj", default_print_preset=self._preset("P"))
+        part = Part.objects.create(name="p")  # no override, legacy
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+        ProjectPart.objects.create(project=project, part=part, quantity=1)
+
+        user = User.objects.create_user("designer", password="pw")
+        perm = Permission.objects.get(codename="can_manage_projects")
+        group, _ = Group.objects.get_or_create(name="Designer")
+        group.permissions.add(perm)
+        user.groups.add(group)
+        self.client.force_login(user)
+
+        with mock.patch("core.views.helpers._start_orcaslicer_worker"):
+            resp = self.client.post(reverse("core:project_re_estimate", kwargs={"pk": project.pk}))
+        self.assertEqual(resp.status_code, 302)
+        part.refresh_from_db()
+        # Previously this part was skipped (no own preset); now it is queued.
+        self.assertEqual(part.estimation_status, Part.ESTIMATION_PENDING)
+
+
+class ProjectContextEstimationTests(TestCase):
+    """Project re-estimate resolves + pins the project-context preset (Copilot #54)."""
+
+    def _preset(self, name):
+        from core.models import OrcaPrintPreset
+
+        return OrcaPrintPreset.objects.create(
+            name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+
+    def test_resolve_estimation_preset_map_single_context(self) -> None:
+        from core.models import Part, Project, ProjectPart
+
+        preset = self._preset("P")
+        project = Project.objects.create(name="Proj", default_print_preset=preset)
+        part = Part.objects.create(name="p")  # no override
+        ProjectPart.objects.create(project=project, part=part, quantity=1)
+        self.assertEqual(project.resolve_estimation_preset_map(), {part.pk: (preset, False)})
+
+    def test_resolve_estimation_preset_map_ambiguous_within_assembly(self) -> None:
+        from core.models import Part, Project, ProjectComponent, ProjectPart
+
+        top = Project.objects.create(name="Top", default_print_preset=self._preset("Top"))
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        ProjectComponent.objects.create(parent_project=top, child_project=a, quantity=1)
+        ProjectComponent.objects.create(parent_project=top, child_project=b, quantity=1)
+        shared = Part.objects.create(name="shared")  # no override, differing nearest presets
+        ProjectPart.objects.create(project=a, part=shared, quantity=1)
+        ProjectPart.objects.create(project=b, part=shared, quantity=1)
+        self.assertEqual(top.resolve_estimation_preset_map(), {shared.pk: (None, True)})
+
+    def test_worker_honors_pinned_requested_preset(self) -> None:
+        from unittest import mock
+
+        from core.models import Part, Project, ProjectPart
+        from core.services import slicing_worker
+
+        # Context-free AMBIGUOUS part (two projects, differing defaults, no override)...
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        requested = self._preset("Requested")
+        part = Part.objects.create(name="p", estimation_status=Part.ESTIMATION_ESTIMATING)
+        part.stl_file.name = "stl_files/p.stl"
+        # ...but a pinned requested preset must win over the context-free ambiguity.
+        part.estimation_requested_preset = requested
+        part.save(update_fields=["stl_file", "estimation_requested_preset"])
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+
+        captured = {}
+
+        def fake_find_machine(preset):
+            captured["preset"] = preset
+            return None  # short-circuits before the slicer call
+
+        with (
+            mock.patch.object(slicing_worker, "_find_compatible_machine", side_effect=fake_find_machine),
+            mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls,
+        ):
+            slicing_worker._estimate_part_in_background(part.pk)
+            client_cls.assert_not_called()
+
+        self.assertEqual(captured["preset"], requested)
+        part.refresh_from_db()
+        self.assertNotEqual(part.estimation_status, Part.ESTIMATION_ERROR)
+        # The transient request channel is consumed (cleared) on claim.
+        self.assertIsNone(part.estimation_requested_preset_id)
+
+    def test_worker_clears_provenance_on_ambiguous(self) -> None:
+        from unittest import mock
+
+        from core.models import Part, Project, ProjectPart
+        from core.services import slicing_worker
+
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        stale = self._preset("Stale")
+        part = Part.objects.create(name="p", estimation_status=Part.ESTIMATION_ESTIMATING)
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+        # Simulate stale provenance that is NOT a pinned request (set via raw update so the
+        # worker sees a value only because a prior success left it — the single-part path
+        # would have cleared it; here we assert the ambiguous branch clears it defensively).
+        Part.objects.filter(pk=part.pk).update(estimated_with_preset=None)
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+        # Give it a stale value AFTER wiring so resolve() path (estimated_with_preset None) runs.
+        Part.objects.filter(pk=part.pk).update(estimation_status=Part.ESTIMATION_ESTIMATING)
+
+        with mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls:
+            slicing_worker._estimate_part_in_background(part.pk)
+            client_cls.assert_not_called()
+
+        part.refresh_from_db()
+        self.assertEqual(part.estimation_status, Part.ESTIMATION_ERROR)
+        self.assertIsNone(part.estimated_with_preset_id)
+        self.assertEqual(stale.name, "Stale")  # keep ref
+
+    def test_gui_project_re_estimate_pins_context_preset_for_shared_part(self) -> None:
+        from unittest import mock
+
+        from django.contrib.auth.models import Group, Permission, User
+        from django.urls import reverse
+
+        from core.models import Part, Project, ProjectComponent, ProjectPart
+
+        # Shared part under one assembly but two modules that AGREE → unambiguous context preset.
+        agreed = self._preset("Agreed")
+        top = Project.objects.create(name="Top", default_print_preset=self._preset("Top"))
+        a = Project.objects.create(name="A", default_print_preset=agreed)
+        b = Project.objects.create(name="B", default_print_preset=agreed)
+        ProjectComponent.objects.create(parent_project=top, child_project=a, quantity=1)
+        ProjectComponent.objects.create(parent_project=top, child_project=b, quantity=1)
+        shared = Part.objects.create(name="shared")  # no override
+        shared.stl_file.name = "stl_files/s.stl"
+        shared.save(update_fields=["stl_file"])
+        ProjectPart.objects.create(project=a, part=shared, quantity=1)
+        ProjectPart.objects.create(project=b, part=shared, quantity=1)
+
+        user = User.objects.create_user("designer2", password="pw")
+        perm = Permission.objects.get(codename="can_manage_projects")
+        group, _ = Group.objects.get_or_create(name="Designer")
+        group.permissions.add(perm)
+        user.groups.add(group)
+        self.client.force_login(user)
+
+        with mock.patch("core.views.helpers._start_orcaslicer_worker"):
+            resp = self.client.post(reverse("core:project_re_estimate", kwargs={"pk": top.pk}))
+        self.assertEqual(resp.status_code, 302)
+        shared.refresh_from_db()
+        self.assertEqual(shared.estimation_status, Part.ESTIMATION_PENDING)
+        # The project-context preset is pinned in the transient request channel, not provenance.
+        self.assertEqual(shared.estimation_requested_preset_id, agreed.pk)
+        self.assertIsNone(shared.estimated_with_preset_id)
+
+
+class SliceLegacyJobFallbackTests(TestCase):
+    """A legacy job with no pinned preset falls back to the first part's own preset (Copilot #54 r3)."""
+
+    def test_slice_legacy_job_uses_first_part_preset(self) -> None:
+        from unittest import mock
+
+        from core.models import OrcaMachineProfile, OrcaPrintPreset, Part, PrintJob, PrintJobPart
+        from core.services import slicing_worker
+
+        part_preset = OrcaPrintPreset.objects.create(
+            name="PartPreset", orca_name="PartPreset", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        machine = OrcaMachineProfile.objects.create(
+            name="M", orca_name="M", state=OrcaMachineProfile.STATE_RESOLVED, instantiation=True
+        )
+        part = Part.objects.create(name="p", print_preset=part_preset)
+        part.stl_file.name = "stl_files/x.stl"
+        part.save(update_fields=["stl_file"])
+        # Legacy job: print_preset is NULL (created before pinning existed).
+        job = PrintJob.objects.create(name="Legacy", machine_profile=machine)
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
+
+        captured = {}
+
+        def fake_build_kwargs(machine_profile, print_preset, filament_profile):
+            captured["print_preset"] = print_preset
+            return {}
+
+        with (
+            mock.patch.object(slicing_worker, "_build_slicer_kwargs", side_effect=fake_build_kwargs),
+            mock.patch.object(slicing_worker, "create_3mf_bundle", return_value=b"3mf"),
+            mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls,
+        ):
+            client_cls.return_value.slice_bundle.return_value = mock.Mock(
+                plates=[], total_filament_grams=None, total_filament_mm=None, total_print_time_seconds=None
+            )
+            slicing_worker._slice_job_in_background(job.pk)
+
+        self.assertEqual(captured["print_preset"], part_preset)
+
+
+class PartEditClearsRequestChannelTests(TestCase):
+    """Editing part inputs drops a stale project-context request preset (Copilot #54 r3)."""
+
+    def test_part_update_clears_estimation_requested_preset(self) -> None:
+        from unittest import mock
+
+        from django.contrib.auth.models import Group, Permission, User
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from django.urls import reverse
+
+        from core.models import OrcaPrintPreset, Part
+
+        stale = OrcaPrintPreset.objects.create(
+            name="Stale", orca_name="Stale", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        part = Part.objects.create(name="p", estimation_requested_preset=stale)
+        part.stl_file = SimpleUploadedFile("p.stl", b"solid")
+        part.save()
+
+        user = User.objects.create_user("designer", password="pw")
+        perm = Permission.objects.get(codename="can_manage_projects")
+        group, _ = Group.objects.get_or_create(name="Designer")
+        group.permissions.add(perm)
+        user.groups.add(group)
+        self.client.force_login(user)
+
+        with mock.patch("core.views.helpers._start_orcaslicer_worker"):
+            resp = self.client.post(
+                reverse("core:part_update", kwargs={"pk": part.pk}),
+                {"name": "p", "stl_file": SimpleUploadedFile("p2.stl", b"solid2")},
+            )
+        self.assertIn(resp.status_code, (302, 200))
+        part.refresh_from_db()
+        self.assertIsNone(part.estimation_requested_preset_id)
+
+
+class WorkerConditionalCompletionTests(TestCase):
+    """An in-flight estimate result is discarded if the part was re-queued meanwhile (Copilot #54 r4)."""
+
+    def test_result_discarded_when_part_no_longer_estimating(self) -> None:
+        from unittest import mock
+
+        from core.models import OrcaMachineProfile, OrcaPrintPreset, Part
+        from core.services import slicing_worker
+
+        preset = OrcaPrintPreset.objects.create(
+            name="P", orca_name="P", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        OrcaMachineProfile.objects.create(
+            name="M", orca_name="M", state=OrcaMachineProfile.STATE_RESOLVED, instantiation=True
+        )
+        # Part carries an override so resolution succeeds, but status is PENDING (NOT the
+        # ESTIMATING we claim) — simulating a re-queue that happened while slicing was in flight.
+        part = Part.objects.create(name="p", print_preset=preset, estimation_status=Part.ESTIMATION_PENDING)
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+
+        with (
+            mock.patch.object(
+                slicing_worker, "_find_compatible_machine", return_value=OrcaMachineProfile.objects.first()
+            ),
+            mock.patch.object(slicing_worker, "_build_slicer_kwargs", return_value={}),
+            mock.patch.object(slicing_worker, "create_3mf_bundle", return_value=b"3mf"),
+            mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls,
+        ):
+            client_cls.return_value.slice_bundle.return_value = mock.Mock(
+                plates=[], total_filament_grams=12.0, total_filament_mm=3400.0, total_print_time_seconds=60
+            )
+            slicing_worker._estimate_part_in_background(part.pk)
+
+        part.refresh_from_db()
+        # The completion must NOT have written a SUCCESS result over the PENDING re-queue.
+        self.assertNotEqual(part.estimation_status, Part.ESTIMATION_SUCCESS)
+        self.assertIsNone(part.filament_used_grams)

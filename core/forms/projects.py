@@ -24,6 +24,11 @@ class ProjectForm(forms.ModelForm):
             "description": forms.Textarea(attrs={"rows": 4}),
         }
 
+    def __init__(self, *args, **kwargs) -> None:
+        """Make ``default_print_preset`` mandatory (Variant B: preset resolution needs it)."""
+        super().__init__(*args, **kwargs)
+        self.fields["default_print_preset"].required = True
+
 
 class SubProjectForm(forms.ModelForm):
     """Form for creating and updating sub-projects (includes quantity field)."""
@@ -34,6 +39,11 @@ class SubProjectForm(forms.ModelForm):
         widgets = {
             "description": forms.Textarea(attrs={"rows": 4}),
         }
+
+    def __init__(self, *args, **kwargs) -> None:
+        """Make ``default_print_preset`` mandatory (Variant B: preset resolution needs it)."""
+        super().__init__(*args, **kwargs)
+        self.fields["default_print_preset"].required = True
 
 
 class ProjectEditForm(forms.ModelForm):
@@ -54,6 +64,11 @@ class ProjectEditForm(forms.ModelForm):
         widgets = {
             "description": forms.Textarea(attrs={"rows": 4}),
         }
+
+    def __init__(self, *args, **kwargs) -> None:
+        """Make ``default_print_preset`` mandatory (Variant B: preset resolution needs it)."""
+        super().__init__(*args, **kwargs)
+        self.fields["default_print_preset"].required = True
 
 
 class AddComponentForm(forms.ModelForm):

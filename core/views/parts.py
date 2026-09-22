@@ -147,9 +147,17 @@ class PartDetailView(LoginRequiredMixin, DetailView):
             instantiation=True,
         )
 
-        # Draft jobs the user can add this part to — only those whose
-        # existing parts share the same effective preset and filament.
-        effective_preset_id = part.effective_print_preset_id
+        # Draft jobs the user can add this part to — those whose pinned preset (Variant B)
+        # is one this part can resolve to, and whose filament matches. The allowed presets
+        # are the part's own resolution candidates (override, single project, or the distinct
+        # containing-project presets offered by the dropdown).
+        auto_candidate, choice_candidates = part.resolve_job_preset_candidates()
+        if auto_candidate is not None:
+            allowed_preset_ids = {auto_candidate.pk}
+        elif choice_candidates:
+            allowed_preset_ids = {c.pk for c in choice_candidates}
+        else:
+            allowed_preset_ids = set()
         effective_filament_id = part.spoolman_filament_id
 
         draft_jobs = PrintJob.objects.filter(
@@ -160,15 +168,16 @@ class PartDetailView(LoginRequiredMixin, DetailView):
         for job in draft_jobs:
             job_parts = job.job_parts.all()
             if not job_parts:
-                # Empty job is always compatible
+                # Empty job is always compatible (it will be pinned when the part is added).
                 compatible_jobs.append(job)
                 continue
-            compatible = all(
-                jp.part.effective_print_preset_id == effective_preset_id
-                and jp.part.spoolman_filament_id == effective_filament_id
-                for jp in job_parts
-            )
-            if compatible:
+            filament_ok = all(jp.part.spoolman_filament_id == effective_filament_id for jp in job_parts)
+            if job.print_preset_id is not None:
+                preset_ok = job.print_preset_id in allowed_preset_ids
+            else:
+                # Legacy unpinned job: fall back to the existing parts' own presets.
+                preset_ok = all(jp.part.effective_print_preset_id in allowed_preset_ids for jp in job_parts)
+            if filament_ok and preset_ok:
                 compatible_jobs.append(job)
 
         context["draft_jobs"] = compatible_jobs
@@ -206,6 +215,10 @@ class PartDetailView(LoginRequiredMixin, DetailView):
                     )
                     break
         context["part_usage"] = usage
+
+        auto_preset, preset_choices = part.resolve_job_preset_candidates()
+        context["job_preset_auto"] = auto_preset
+        context["job_preset_choices"] = preset_choices
 
         return context
 
@@ -322,13 +335,17 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
         response = super().form_valid(form)
 
         if needs_re_estimate:
-            # Clear old estimates so new ones are written
+            # Clear old estimates so new ones are written. Also drop any stale project-context
+            # request preset: the inputs changed, so the worker must resolve fresh (else a
+            # request queued before this edit would estimate with the wrong preset).
             Part.objects.filter(pk=self.object.pk).update(
                 filament_used_grams=None,
                 filament_used_meters=None,
                 estimated_print_time=None,
                 estimation_status=Part.ESTIMATION_NONE,
                 estimation_error="",
+                estimated_with_preset=None,
+                estimation_requested_preset=None,
             )
             _trigger_part_estimation(self.object)
 
@@ -393,17 +410,20 @@ class PartReEstimateView(ProjectManageMixin, View):
             messages.warning(request, "No model file — cannot estimate.")
             return redirect("core:part_detail", pk=part.pk)
 
-        preset = part.effective_print_preset
-        if not preset:
+        if not part.is_estimable():
             messages.warning(request, "No print preset configured — cannot estimate.")
             return redirect("core:part_detail", pk=part.pk)
 
+        # Clear provenance AND any stale request channel: the single-part path carries no
+        # build context, so the worker must resolve the preset itself.
         Part.objects.filter(pk=part.pk).update(
             filament_used_grams=None,
             filament_used_meters=None,
             estimated_print_time=None,
             estimation_status=Part.ESTIMATION_NONE,
             estimation_error="",
+            estimated_with_preset=None,
+            estimation_requested_preset=None,
         )
         _trigger_part_estimation(part)
         messages.info(request, f"Re-estimation started for '{part.name}'.")

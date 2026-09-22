@@ -13,9 +13,30 @@ Projects are the core organizational unit in LayerNexus. They group parts, docum
 | **Name** | Project name (required) |
 | **Description** | Optional description or notes |
 | **Cover Image** | Optional cover image displayed in lists and detail views |
-| **Default Slicer Profile** | Optional default OrcaSlicer profile for all parts |
+| **Default Print Preset** | **Required.** The OrcaSlicer print preset used for every part in this project that has no preset of its own. |
 
 4. Click **Save**.
+
+### Print Presets
+
+Every project must have a **default print preset**. This preset drives how each part in
+the project is sliced and estimated:
+
+- A part with its **own** print preset override always uses that override.
+- A part **without** an override uses the default preset of the project it is built
+  under — resolved top-down, per build path. A part shared by two modules is therefore
+  sliced with each module's preset on the respective build.
+- Creating jobs from a project produces **one draft job per distinct preset + filament**
+  combination, and each job records the preset it was created with.
+- Adding a **shared** part (used in projects with different presets) to a job from the
+  part page asks you to **pick the preset** first.
+- Estimating such a shared part with no override reports *"Preset ambiguous — set an
+  override"* instead of guessing; set a part-level override to resolve it.
+
+The REST API follows the same rules: `POST /projects/{id}/re-estimate/` and
+`POST /parts/{id}/estimate/` resolve the preset the same way, and creating a project via
+the API requires `default_print_preset`. The OpenAPI schema (served by drf-spectacular at
+the schema/Swagger endpoints) is generated automatically from the serializers.
 
 ### Cover Images
 

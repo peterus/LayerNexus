@@ -6,7 +6,7 @@ from django.contrib.auth.models import Permission, User
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from core.models import Part, Project, ProjectPart
+from core.models import OrcaPrintPreset, Part, Project, ProjectPart
 
 
 class ApiProjectPartTests(APITestCase):
@@ -18,10 +18,17 @@ class ApiProjectPartTests(APITestCase):
         self.user.user_permissions.add(Permission.objects.get(codename="can_manage_projects"))
         token = Token.objects.create(user=self.user)
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        self.preset = OrcaPrintPreset.objects.create(
+            name="P", orca_name="P", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
 
     def test_project_crud_roundtrip(self) -> None:
         """Create, read, patch and delete a project."""
-        resp = self.client.post("/api/v1/projects/", {"name": "Truck", "description": "d"}, format="json")
+        resp = self.client.post(
+            "/api/v1/projects/",
+            {"name": "Truck", "description": "d", "default_print_preset": self.preset.pk},
+            format="json",
+        )
         self.assertEqual(resp.status_code, 201)
         pk = resp.data["id"]
 
@@ -107,3 +114,24 @@ class ApiProjectPartTests(APITestCase):
         self.assertEqual(component["child"]["id"], child.pk)
         self.assertEqual(len(component["child"]["parts"]), 1)
         self.assertEqual(component["child"]["parts"][0]["part"], part.pk)
+
+
+class ProjectSerializerPresetRequiredTests(APITestCase):
+    """The ProjectSerializer requires default_print_preset (Variant B)."""
+
+    def test_create_project_without_preset_is_rejected(self) -> None:
+        from core.api.serializers import ProjectSerializer
+
+        serializer = ProjectSerializer(data={"name": "P", "description": ""})
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("default_print_preset", serializer.errors)
+
+    def test_create_project_with_preset_is_valid(self) -> None:
+        from core.api.serializers import ProjectSerializer
+        from core.models import OrcaPrintPreset
+
+        preset = OrcaPrintPreset.objects.create(
+            name="P", orca_name="P", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        serializer = ProjectSerializer(data={"name": "P", "description": "", "default_print_preset": preset.pk})
+        self.assertTrue(serializer.is_valid(), serializer.errors)

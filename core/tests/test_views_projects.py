@@ -29,6 +29,9 @@ class ProjectViewTests(TestDataMixin, TestCase):
     def setUp(self):
         super().setUp()
         self.client.login(username="testuser", password="testpass123")
+        self.preset = OrcaPrintPreset.objects.create(
+            name="FormPreset", orca_name="FormPreset", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
 
     def test_project_list_200(self):
         resp = self.client.get(reverse("core:project_list"))
@@ -57,6 +60,7 @@ class ProjectViewTests(TestDataMixin, TestCase):
             {
                 "name": "New Project",
                 "description": "New desc",
+                "default_print_preset": self.preset.pk,
             },
         )
         self.assertEqual(resp.status_code, 302)
@@ -69,7 +73,7 @@ class ProjectViewTests(TestDataMixin, TestCase):
     def test_project_update_post(self):
         resp = self.client.post(
             reverse("core:project_update", args=[self.project.pk]),
-            {"name": "Updated Name", "description": "", "quantity": "1"},
+            {"name": "Updated Name", "description": "", "quantity": "1", "default_print_preset": self.preset.pk},
         )
         self.assertEqual(resp.status_code, 302)
         self.project.refresh_from_db()
@@ -78,7 +82,7 @@ class ProjectViewTests(TestDataMixin, TestCase):
     def test_project_update_other_user_404(self):
         resp = self.client.post(
             reverse("core:project_update", args=[self.other_project.pk]),
-            {"name": "Hacked", "description": "", "quantity": "1"},
+            {"name": "Hacked", "description": "", "quantity": "1", "default_print_preset": self.preset.pk},
         )
         self.assertEqual(resp.status_code, 302)
 
@@ -109,7 +113,7 @@ class ProjectViewTests(TestDataMixin, TestCase):
 
         resp = self.client.post(
             reverse("core:project_update", args=[self.project.pk]),
-            {"name": "Renamed Module", "description": ""},
+            {"name": "Renamed Module", "description": "", "default_print_preset": self.preset.pk},
         )
         self.assertEqual(resp.status_code, 302)
         self.project.refresh_from_db()
@@ -131,7 +135,7 @@ class ProjectViewTests(TestDataMixin, TestCase):
         parent = Project.objects.create(name="Assembly", created_by=self.user)
         resp = self.client.post(
             reverse("core:subproject_create", args=[parent.pk]),
-            {"name": "New Module", "description": "", "quantity": "3"},
+            {"name": "New Module", "description": "", "quantity": "3", "default_print_preset": self.preset.pk},
         )
         self.assertEqual(resp.status_code, 302)
         child = Project.objects.get(name="New Module")

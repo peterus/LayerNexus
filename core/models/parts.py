@@ -12,6 +12,28 @@ if TYPE_CHECKING:
     from core.models.projects import Project
 
 
+def resolve_part_preset(part: Part, nearest_project: Project | None) -> Optional[OrcaPrintPreset]:
+    """Resolve a part's effective print preset given its nearest containing project.
+
+    Applies the Variant-B precedence: an explicit ``part.print_preset`` override wins;
+    otherwise the ``default_print_preset`` of the nearest directly-containing project on
+    the current build path is used; otherwise ``None``.
+
+    Args:
+        part: The part whose print preset to resolve.
+        nearest_project: The project directly containing the part on this build path,
+            or ``None`` when there is no project context.
+
+    Returns:
+        The resolved :class:`~core.models.orca_profiles.OrcaPrintPreset`, or ``None``.
+    """
+    if part.print_preset_id is not None:
+        return part.print_preset
+    if nearest_project is not None and nearest_project.default_print_preset_id is not None:
+        return nearest_project.default_print_preset
+    return None
+
+
 class Part(models.Model):
     """A standalone reusable part that can be attached to projects via ProjectPart edges."""
 
@@ -43,6 +65,26 @@ class Part(models.Model):
         blank=True,
         related_name="parts",
         help_text="Print preset for slicing this part (inherited from project if not set)",
+    )
+    estimated_with_preset = models.ForeignKey(
+        "OrcaPrintPreset",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="estimated_parts",
+        help_text="The print preset that produced the currently stored estimate.",
+    )
+    estimation_requested_preset = models.ForeignKey(
+        "OrcaPrintPreset",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="estimation_requests",
+        help_text=(
+            "Transient queue-time channel: a whole-project re-estimate pins the "
+            "project-context preset here so the worker estimates with it. Consumed "
+            "(cleared) by the worker on claim; never used as estimate provenance."
+        ),
     )
     notes = models.TextField(blank=True)
 
@@ -124,6 +166,73 @@ class Part(models.Model):
             OrcaPrintPreset instance, or ``None``.
         """
         return self.print_preset if self.print_preset_id else None
+
+    def resolve_estimation_preset(self) -> tuple[Optional[OrcaPrintPreset], bool]:
+        """Resolve the preset to estimate this part with, flagging ambiguity.
+
+        Variant B without a build context: an explicit override wins; otherwise the
+        ``default_print_preset`` of the containing projects is used when they all agree
+        (or there is exactly one). When two or more containing projects disagree and there
+        is no override, the preset is **ambiguous** — estimation must not guess.
+
+        Returns:
+            ``(preset, ambiguous)``. When ``ambiguous`` is ``True`` the preset is ``None``
+            and the caller should mark the estimate as needing an override rather than
+            picking one. When ``ambiguous`` is ``False`` the preset may still be ``None``
+            (no override and no containing-project default).
+        """
+        if self.print_preset_id is not None:
+            return self.print_preset, False
+        distinct: dict[int, OrcaPrintPreset] = {}
+        for project in self.containing_projects():
+            if project.default_print_preset_id is not None:
+                distinct[project.default_print_preset_id] = project.default_print_preset
+        if len(distinct) > 1:
+            return None, True
+        if len(distinct) == 1:
+            return next(iter(distinct.values())), False
+        return None, False
+
+    def resolve_job_preset_candidates(self) -> tuple[Optional[OrcaPrintPreset], list[OrcaPrintPreset]]:
+        """Resolve the preset for the standalone (part-path) "Add to Job" flow.
+
+        Variant B without a project build context, with a UI escape hatch: an explicit
+        override, a single containing project, or several projects that all agree yield an
+        unambiguous ``auto`` preset (and no choices). Several containing projects that
+        disagree and no override yield ``auto=None`` and the distinct containing-project
+        presets as ``choices`` so the UI can offer a dropdown.
+
+        Returns:
+            ``(auto_preset, choices)``. When ``choices`` is non-empty the caller must ask
+            the user to pick one; otherwise ``auto_preset`` (possibly ``None``) is used.
+        """
+        if self.print_preset_id is not None:
+            return self.print_preset, []
+        distinct: dict[int, OrcaPrintPreset] = {}
+        for project in self.containing_projects():
+            if project.default_print_preset_id is not None:
+                distinct[project.default_print_preset_id] = project.default_print_preset
+        if len(distinct) > 1:
+            return None, list(distinct.values())
+        if len(distinct) == 1:
+            return next(iter(distinct.values())), []
+        return None, []
+
+    def is_estimable(self) -> bool:
+        """Return whether this part is worth queuing for background estimation.
+
+        Variant B: a part is estimable when it has an STL file and its estimation preset
+        either resolves to a concrete preset OR is ambiguous. Ambiguous parts are still
+        queued so the background worker records the "ambiguous" status rather than the
+        caller silently swallowing it (see :meth:`resolve_estimation_preset`).
+
+        Returns:
+            ``True`` when the part should be queued, else ``False``.
+        """
+        if not self.stl_file:
+            return False
+        preset, ambiguous = self.resolve_estimation_preset()
+        return preset is not None or ambiguous
 
     @property
     def color_display(self) -> str:
@@ -221,6 +330,34 @@ class Part(models.Model):
             .distinct()
         )
         return self.job_entries.filter(pk__in=completed_pks).aggregate(total=Sum("quantity"))["total"] or 0
+
+    def printed_quantity_for_by_preset(self, assembly: Project) -> dict[Optional[int], int]:
+        """Attributed completed-plate quantities for ``assembly``, grouped by job preset.
+
+        Same completion rule and attribution as :meth:`printed_quantity_for`, but the sum
+        is split by the producing job's pinned ``print_preset`` so a per-preset job-creation
+        split can subtract prints from the correct bundle instead of one aggregate. Prints
+        from legacy jobs with no pinned preset are grouped under the ``None`` key (the caller
+        allocates those greedily).
+
+        Args:
+            assembly: The build context (top-level assembly project) to filter by.
+
+        Returns:
+            ``{print_preset_id_or_None: quantity}`` over attributed, completed job entries.
+        """
+        completed = "completed"
+        completed_pks = (
+            self.job_entries.filter(target_assembly=assembly, print_job__plates__status=completed)
+            .values_list("pk", flat=True)
+            .distinct()
+        )
+        rows = (
+            self.job_entries.filter(pk__in=completed_pks)
+            .values("print_job__print_preset")
+            .annotate(total=Sum("quantity"))
+        )
+        return {row["print_job__print_preset"]: row["total"] for row in rows}
 
 
 class PrintTimeEstimate(models.Model):

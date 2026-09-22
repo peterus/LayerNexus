@@ -15,16 +15,25 @@ from core.forms import (
 )
 from core.models import (
     HardwarePart,
+    OrcaPrintPreset,
     Project,
     ProjectHardware,
 )
+
+
+def _default_preset() -> OrcaPrintPreset:
+    """Create a minimal resolved preset for the now-mandatory ``default_print_preset``."""
+    return OrcaPrintPreset.objects.create(
+        name="Default", orca_name="Default", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+    )
 
 
 class ProjectFormTests(TestCase):
     """Tests for the ProjectForm."""
 
     def test_valid_form(self):
-        form = ProjectForm(data={"name": "My Project", "description": "Desc"})
+        preset = _default_preset()
+        form = ProjectForm(data={"name": "My Project", "description": "Desc", "default_print_preset": preset.pk})
         self.assertTrue(form.is_valid())
 
     def test_name_required(self):
@@ -33,7 +42,8 @@ class ProjectFormTests(TestCase):
         self.assertIn("name", form.errors)
 
     def test_description_optional(self):
-        form = ProjectForm(data={"name": "My Project", "description": ""})
+        preset = _default_preset()
+        form = ProjectForm(data={"name": "My Project", "description": "", "default_print_preset": preset.pk})
         self.assertTrue(form.is_valid())
 
 
@@ -47,7 +57,9 @@ class ProjectEditFormTests(TestCase):
 
     def test_valid_form(self):
         """Editing a project's own attributes is valid."""
-        form = ProjectEditForm(data={"name": "Top Level", "description": ""})
+        form = ProjectEditForm(
+            data={"name": "Top Level", "description": "", "default_print_preset": _default_preset().pk}
+        )
         self.assertTrue(form.is_valid())
 
     def test_form_has_no_parent_or_quantity_fields(self):
@@ -59,7 +71,15 @@ class ProjectEditFormTests(TestCase):
     def test_extra_parent_quantity_data_is_ignored(self):
         """Stray parent/quantity POST data does not re-parent or set a quantity."""
         parent = Project.objects.create(name="Parent Project")
-        form = ProjectEditForm(data={"name": "Child", "description": "", "parent": parent.pk, "quantity": "3"})
+        form = ProjectEditForm(
+            data={
+                "name": "Child",
+                "description": "",
+                "parent": parent.pk,
+                "quantity": "3",
+                "default_print_preset": _default_preset().pk,
+            }
+        )
         self.assertTrue(form.is_valid())
         self.assertNotIn("parent", form.cleaned_data)
         self.assertNotIn("quantity", form.cleaned_data)
@@ -591,3 +611,40 @@ class AddPartToProjectFormTests(TestCase):
         self.assertEqual(edge.part, self.part)
         self.assertEqual(edge.quantity, 4)
         self.assertTrue(ProjectPart.objects.filter(project=self.project, part=self.part).exists())
+
+
+class ProjectFormPresetRequiredTests(TestCase):
+    def _valid_preset(self):
+        from core.models import OrcaPrintPreset
+
+        return OrcaPrintPreset.objects.create(
+            name="P", orca_name="P", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+
+    def test_project_form_requires_preset(self) -> None:
+        from core.forms import ProjectForm
+
+        form = ProjectForm(data={"name": "P", "description": ""})
+        self.assertFalse(form.is_valid())
+        self.assertIn("default_print_preset", form.errors)
+
+    def test_subproject_form_requires_preset(self) -> None:
+        from core.forms import SubProjectForm
+
+        form = SubProjectForm(data={"name": "P", "description": "", "quantity": 1})
+        self.assertFalse(form.is_valid())
+        self.assertIn("default_print_preset", form.errors)
+
+    def test_project_edit_form_requires_preset(self) -> None:
+        from core.forms import ProjectEditForm
+
+        form = ProjectEditForm(data={"name": "P", "description": "", "quantity": 1})
+        self.assertFalse(form.is_valid())
+        self.assertIn("default_print_preset", form.errors)
+
+    def test_project_form_valid_with_preset(self) -> None:
+        from core.forms import ProjectForm
+
+        preset = self._valid_preset()
+        form = ProjectForm(data={"name": "P", "description": "", "default_print_preset": preset.pk})
+        self.assertTrue(form.is_valid(), form.errors)
