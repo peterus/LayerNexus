@@ -119,12 +119,14 @@ class ProjectComponentCycleTests(TestCase):
 
 
 class ProjectSaveDoesNotTouchEdgesTests(TestCase):
-    """Regression: ``Project.save()`` must never mutate ``ProjectComponent`` edges.
+    """Regression: ``Project.save()`` must never *delete* ``ProjectComponent`` edges.
 
     A leftover Phase-6 dual-write shim in :meth:`Project.save` deleted the parent
     edges of any project whose legacy ``parent`` FK was ``None`` (always the case for
     edge-based projects), so a plain GUI/API edit silently wiped composition edges and
-    corrupted assemblies. Saving a project must leave the composition graph untouched.
+    corrupted assemblies. Edge reconciliation on save is now additive only (upsert when
+    the legacy ``parent`` FK is set); saving an edge-based project must leave its
+    composition edges untouched.
     """
 
     def test_save_keeps_incoming_component_edges(self):

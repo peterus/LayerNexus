@@ -93,15 +93,30 @@ class Project(models.Model):
         or import raises :class:`ValidationError` instead of persisting a graph
         that would later blow up the recursive aggregate properties.
 
-        A ``save()`` never touches ``ProjectComponent`` composition edges: the
-        composition graph is authoritative and is edited only through its own edge
-        models. (A Phase-6 dual-write shim that mirrored the legacy ``parent`` FK onto
-        an edge — and, fatally, *deleted* the parent edges of every edge-based project,
-        whose legacy ``parent`` is ``None`` — used to live here; removing it stops a
-        plain project edit from silently wiping assemblies.)
+        Edge reconciliation is **additive only**: when the legacy ``parent`` FK is
+        set, one matching ``ProjectComponent`` edge is upserted so a project created
+        via ``Project(parent=…)`` still appears under its assembly. A ``save()``
+        **never deletes** composition edges.
+
+        This is the fix for a production data corruptor: the previous shim ran
+        ``ProjectComponent.objects.filter(child_project=self).delete()`` on *every*
+        save whose ``parent`` FK was ``None`` — which is every edge-based project —
+        so a plain GUI edit or API ``PATCH`` silently wiped the assembly's parent
+        edges. Re-parenting/detaching is now done exclusively through the
+        ``ProjectComponent`` edge UI (which owns edge deletion); the additive mirror
+        here is an interim bridge for the still-present legacy ``parent`` FK and is
+        removed together with that field in the contract phase.
         """
         self._assert_parent_acyclic()
         super().save(*args, **kwargs)
+        if self.parent_id is not None:
+            from core.models.composition import ProjectComponent
+
+            ProjectComponent.objects.update_or_create(
+                parent_project_id=self.parent_id,
+                child_project=self,
+                defaults={"quantity": self.quantity},
+            )
 
     def clean(self) -> None:
         """Validate that the parent assignment does not create a cycle.

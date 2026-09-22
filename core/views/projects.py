@@ -234,11 +234,22 @@ class SubProjectCreateView(ProjectManageMixin, CreateView):
         return form
 
     def form_valid(self, form: SubProjectForm) -> HttpResponse:
-        """Set parent, created_by, and save sub-project."""
-        form.instance.parent = self.get_parent()
+        """Create the sub-project node and link it to the parent via a composition edge.
+
+        The new project is a normal node; its membership in the parent assembly is
+        expressed as a ``ProjectComponent`` edge (the authoritative composition
+        model), not via the legacy ``parent`` FK. The form's ``quantity`` is the
+        edge quantity (how many of this module the assembly needs).
+        """
         form.instance.created_by = self.request.user
+        response = super().form_valid(form)
+        ProjectComponent.objects.create(
+            parent_project=self.get_parent(),
+            child_project=self.object,
+            quantity=form.cleaned_data.get("quantity", 1),
+        )
         messages.success(self.request, "Sub-project created successfully.")
-        return super().form_valid(form)
+        return response
 
     def get_success_url(self) -> str:
         """Redirect to the parent project detail page after creation."""
@@ -259,19 +270,15 @@ class ProjectUpdateView(ProjectManageMixin, UpdateView):
         return context
 
     def get_form(self, form_class=None) -> ProjectEditForm:
-        """Return form with filtered parent and print-preset querysets.
+        """Return the edit form with resolved print-preset choices.
 
-        The parent queryset excludes the project itself and all its
-        descendants to prevent circular references.
+        Composition is edited through the ``ProjectComponent`` edge UI, so this
+        form no longer exposes a ``parent`` field to filter.
         """
         form = super().get_form(form_class)
         form.fields["default_print_preset"].queryset = OrcaPrintPreset.objects.filter(
             state=OrcaPrintPreset.STATE_RESOLVED,
             instantiation=True,
-        )
-        excluded_ids = {self.object.pk} | self.object.get_descendant_ids()
-        form.fields["parent"].queryset = Project.objects.exclude(
-            pk__in=excluded_ids,
         )
         return form
 
