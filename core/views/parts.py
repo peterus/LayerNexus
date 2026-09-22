@@ -393,8 +393,7 @@ class PartReEstimateView(ProjectManageMixin, View):
             messages.warning(request, "No model file — cannot estimate.")
             return redirect("core:part_detail", pk=part.pk)
 
-        preset = part.effective_print_preset
-        if not preset:
+        if not part.is_estimable():
             messages.warning(request, "No print preset configured — cannot estimate.")
             return redirect("core:part_detail", pk=part.pk)
 

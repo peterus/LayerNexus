@@ -670,3 +670,70 @@ class EstimationPresetResolutionTests(TestCase):
         part.refresh_from_db()
         self.assertEqual(part.estimation_status, Part.ESTIMATION_ERROR)
         self.assertIn("ambiguous", part.estimation_error.lower())
+
+
+class ReEstimateEligibilityTests(TestCase):
+    def _preset(self, name):
+        from core.models import OrcaPrintPreset
+
+        return OrcaPrintPreset.objects.create(
+            name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+
+    def test_is_estimable_true_for_legacy_part_with_project_default(self) -> None:
+        from core.models import Part, Project, ProjectPart
+
+        project = Project.objects.create(name="Proj", default_print_preset=self._preset("P"))
+        part = Part.objects.create(name="p")  # no override
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+        ProjectPart.objects.create(project=project, part=part, quantity=1)
+        self.assertTrue(part.is_estimable())
+
+    def test_is_estimable_false_without_any_preset(self) -> None:
+        from core.models import Part
+
+        part = Part.objects.create(name="p")
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+        self.assertFalse(part.is_estimable())
+
+    def test_is_estimable_true_when_ambiguous(self) -> None:
+        from core.models import Part, Project, ProjectPart
+
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        part = Part.objects.create(name="p")
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+        self.assertTrue(part.is_estimable())  # queued so the worker records ambiguity
+
+    def test_gui_project_re_estimate_queues_legacy_part(self) -> None:
+        from unittest import mock
+
+        from django.contrib.auth.models import Group, Permission, User
+        from django.urls import reverse
+
+        from core.models import Part, Project, ProjectPart
+
+        project = Project.objects.create(name="Proj", default_print_preset=self._preset("P"))
+        part = Part.objects.create(name="p")  # no override, legacy
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+        ProjectPart.objects.create(project=project, part=part, quantity=1)
+
+        user = User.objects.create_user("designer", password="pw")
+        perm = Permission.objects.get(codename="can_manage_projects")
+        group, _ = Group.objects.get_or_create(name="Designer")
+        group.permissions.add(perm)
+        user.groups.add(group)
+        self.client.force_login(user)
+
+        with mock.patch("core.views.helpers._start_orcaslicer_worker"):
+            resp = self.client.post(reverse("core:project_re_estimate", kwargs={"pk": project.pk}))
+        self.assertEqual(resp.status_code, 302)
+        part.refresh_from_db()
+        # Previously this part was skipped (no own preset); now it is queued.
+        self.assertEqual(part.estimation_status, Part.ESTIMATION_PENDING)

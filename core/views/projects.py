@@ -386,10 +386,9 @@ class ProjectReEstimateView(ProjectManageMixin, View):
 
         count = 0
         for part in parts.values():
-            if not part.stl_file:
-                continue
-            preset = part.effective_print_preset
-            if not preset:
+            # Variant B: estimable if the preset resolves (or is ambiguous) in this
+            # project context. Preserves the #51 shared-part dedup above.
+            if not part.is_estimable():
                 continue
 
             Part.objects.filter(pk=part.pk).update(

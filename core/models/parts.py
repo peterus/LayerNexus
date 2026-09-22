@@ -181,6 +181,22 @@ class Part(models.Model):
             return next(iter(distinct.values())), False
         return None, False
 
+    def is_estimable(self) -> bool:
+        """Return whether this part is worth queuing for background estimation.
+
+        Variant B: a part is estimable when it has an STL file and its estimation preset
+        either resolves to a concrete preset OR is ambiguous. Ambiguous parts are still
+        queued so the background worker records the "ambiguous" status rather than the
+        caller silently swallowing it (see :meth:`resolve_estimation_preset`).
+
+        Returns:
+            ``True`` when the part should be queued, else ``False``.
+        """
+        if not self.stl_file:
+            return False
+        preset, ambiguous = self.resolve_estimation_preset()
+        return preset is not None or ambiguous
+
     @property
     def color_display(self) -> str:
         """Display-friendly color string ('—' if not set)."""
