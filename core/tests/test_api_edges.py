@@ -88,6 +88,23 @@ class ApiComponentEdgeTests(APITestCase):
         self.assertEqual(resp.status_code, 204)
         self.assertFalse(ProjectComponent.objects.filter(pk=edge.pk).exists())
 
+    def test_delete_component_clears_stale_legacy_parent_fk(self) -> None:
+        """Deleting an edge via the API clears the child's stale legacy parent FK too.
+
+        The detach durability (clearing the mirror FK so the former parent stays
+        deletable under ``on_delete=PROTECT``) lives in ``ProjectComponent.delete``, so
+        it applies to the DRF path as well as the HTML view.
+        """
+        child = Project.objects.create(name="LegacyModule", parent=self.parent, quantity=2)
+        edge = child.parent_links.get()  # seeded on insert by Project.save()
+
+        resp = self.client.delete(f"/api/v1/projects/{self.parent.pk}/components/{edge.pk}/")
+        self.assertEqual(resp.status_code, 204)
+
+        child.refresh_from_db()
+        self.assertIsNone(child.parent_id)
+        self.assertEqual(self.parent.subprojects.count(), 0)
+
 
 class ApiPartEdgeTests(APITestCase):
     """Project↔part composition edges under ``/projects/{id}/parts/``."""

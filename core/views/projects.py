@@ -5,7 +5,6 @@ import logging
 from django import forms as django_forms
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -475,24 +474,13 @@ class ProjectComponentDeleteView(ProjectManageMixin, DeleteView):
     model = ProjectComponent
     http_method_names = ["post"]
 
-    def form_valid(self, form: django_forms.Form) -> HttpResponse:
-        """Delete the edge and clear the child's stale legacy ``parent`` FK if it matches.
-
-        The composition graph is authoritative, so detaching a module must be durable.
-        If the removed edge was the child's legacy ``parent`` mirror, clear that FK
-        (via a queryset update, to avoid re-seeding the edge through
-        :meth:`Project.save`) so the stale ``on_delete=PROTECT`` reference no longer
-        blocks deletion of the former parent and no longer leaks preset inheritance.
-        """
-        child_id = self.object.child_project_id
-        parent_id = self.object.parent_project_id
-        with transaction.atomic():
-            response = super().form_valid(form)
-            Project.objects.filter(pk=child_id, parent_id=parent_id).update(parent=None, quantity=1)
-        return response
-
     def get_success_url(self) -> str:
-        """Redirect back to the parent assembly detail page."""
+        """Redirect back to the parent assembly detail page.
+
+        The edge deletion (and the atomic clear of the child's stale legacy ``parent``
+        FK) is handled in :meth:`ProjectComponent.delete`, so every delete path — this
+        view and the DRF API — detaches durably.
+        """
         messages.success(self.request, "Module removed from assembly.")
         return reverse("core:project_detail", kwargs={"pk": self.object.parent_project_id})
 

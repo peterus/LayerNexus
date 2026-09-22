@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django.db.models import CheckConstraint, F, Q, UniqueConstraint
 
 
@@ -173,3 +173,25 @@ class ProjectComponent(models.Model):
             and component_would_create_cycle(self.parent_project_id, self.child_project_id)
         ):
             raise ValidationError({"child_project": "This would make an assembly contain itself (cycle)."})
+
+    def delete(self, *args, **kwargs):
+        """Delete the edge and clear the child's stale legacy ``parent`` FK if it mirrored this edge.
+
+        The composition graph is authoritative, so detaching a module must be durable on
+        **every** delete path — the HTML view, the DRF API, a shell — not just one. If the
+        child's legacy ``parent`` still points at this edge's parent (the mirror seeded on
+        insert), clear it, via a queryset ``update`` so :meth:`Project.save` does not
+        re-seed the edge. Both writes run in one :func:`~django.db.transaction.atomic`
+        block so they commit or roll back together; otherwise the stale
+        ``on_delete=PROTECT`` FK would keep blocking deletion of the former parent and leak
+        preset inheritance.
+        """
+        from core.models.projects import Project
+
+        child_id = self.child_project_id
+        parent_id = self.parent_project_id
+        with transaction.atomic():
+            result = super().delete(*args, **kwargs)
+            if child_id is not None and parent_id is not None:
+                Project.objects.filter(pk=child_id, parent_id=parent_id).update(parent=None, quantity=1)
+        return result
