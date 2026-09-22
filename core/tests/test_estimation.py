@@ -565,3 +565,44 @@ class SlicingWorkerLockTests(TestCase):
             _orcaslicer_worker_loop(lock_fh=fake_fh)
 
         mock_acquire.assert_not_called()
+
+
+class SliceJobUsesJobPresetTests(TestCase):
+    def test_slice_job_passes_job_print_preset_to_kwargs(self) -> None:
+        from unittest import mock
+
+        from core.models import OrcaMachineProfile, OrcaPrintPreset, Part, PrintJob, PrintJobPart
+        from core.services import slicing_worker
+
+        job_preset = OrcaPrintPreset.objects.create(
+            name="JobPreset", orca_name="JobPreset", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        part_preset = OrcaPrintPreset.objects.create(
+            name="PartPreset", orca_name="PartPreset", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        machine = OrcaMachineProfile.objects.create(
+            name="M", orca_name="M", state=OrcaMachineProfile.STATE_RESOLVED, instantiation=True
+        )
+        part = Part.objects.create(name="p", print_preset=part_preset)
+        part.stl_file.name = "stl_files/x.stl"
+        part.save(update_fields=["stl_file"])
+        job = PrintJob.objects.create(name="J", machine_profile=machine, print_preset=job_preset)
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
+
+        captured: dict = {}
+
+        def fake_build_kwargs(machine_profile, print_preset, filament_profile):
+            captured["print_preset"] = print_preset
+            return {}
+
+        with (
+            mock.patch.object(slicing_worker, "_build_slicer_kwargs", side_effect=fake_build_kwargs),
+            mock.patch.object(slicing_worker, "create_3mf_bundle", return_value=b"3mf"),
+            mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls,
+        ):
+            client_cls.return_value.slice_bundle.return_value = mock.Mock(
+                plates=[], total_filament_grams=None, total_filament_mm=None, total_print_time_seconds=None
+            )
+            slicing_worker._slice_job_in_background(job.pk)
+
+        self.assertEqual(captured["print_preset"], job_preset)

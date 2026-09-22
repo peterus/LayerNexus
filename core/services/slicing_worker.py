@@ -452,7 +452,8 @@ def _slice_job_in_background(job_pk: int) -> None:
             if mapping and mapping.orca_filament_profile:
                 filament_profile = mapping.orca_filament_profile
 
-        print_preset = first_part.effective_print_preset
+        # The resolved preset is pinned on the job at creation (Variant B); slice with it.
+        print_preset = job.print_preset
 
         slice_kwargs = _build_slicer_kwargs(
             machine_profile=machine_profile,
