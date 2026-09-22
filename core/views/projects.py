@@ -477,9 +477,11 @@ class ProjectComponentDeleteView(ProjectManageMixin, DeleteView):
     def get_success_url(self) -> str:
         """Redirect back to the parent assembly detail page.
 
-        The edge deletion (and the atomic clear of the child's stale legacy ``parent``
-        FK) is handled in :meth:`ProjectComponent.delete`, so every delete path — this
-        view and the DRF API — detaches durably.
+        The edge deletion, plus the clear of the child's stale legacy ``parent`` FK, is
+        handled by the ``post_delete`` receiver on ``ProjectComponent``
+        (``_clear_legacy_parent_on_component_delete`` in ``core/models/composition.py``),
+        so every delete path — this view, the DRF API, bulk and cascade deletes —
+        detaches durably.
         """
         messages.success(self.request, "Module removed from assembly.")
         return reverse("core:project_detail", kwargs={"pk": self.object.parent_project_id})

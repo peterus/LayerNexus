@@ -190,20 +190,22 @@ class ProjectSaveDoesNotTouchEdgesTests(TestCase):
         self.assertEqual(parent.subprojects.count(), 0)
 
     def test_save_does_not_recreate_a_detached_legacy_edge(self):
-        # A project with a legacy parent FK seeds its mirror edge on create. If that
-        # edge is later detached through the edge UI (only the ProjectComponent row is
-        # deleted), a subsequent scalar save/PATCH of the project must NOT resurrect it
-        # — the mirror runs on insert only, so edge-authoritative detach is durable.
+        # A project with a legacy parent FK seeds its mirror edge on create. Detaching
+        # (deleting the edge) fires the post_delete signal that also clears the mirror
+        # FK, so a later reload + scalar save (as a separate request would do) resurrects
+        # neither the edge (the mirror is insert-only) nor the FK.
         parent = Project.objects.create(name="Assembly")
         child = Project.objects.create(name="Module", parent=parent, quantity=1)
         self.assertEqual(child.parent_links.count(), 1)
 
-        child.parent_links.all().delete()  # edge UI detach; legacy parent_id stays set
+        child.parent_links.all().delete()  # detach → signal clears the DB parent_id too
 
+        child = Project.objects.get(pk=child.pk)  # reload, as a separate request would
         child.name = "Module v2"
         child.save()
 
         self.assertEqual(child.parent_links.count(), 0)
+        self.assertIsNone(child.parent_id)
 
     def test_save_keeps_edges_across_shared_module(self):
         # A module shared by two assemblies: saving it must keep BOTH parent edges.
