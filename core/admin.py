@@ -45,6 +45,11 @@ class ProjectAdmin(admin.ModelAdmin):
     list_filter = ("created_by", "created_at")
     search_fields = ("name", "description")
     inlines = [ProjectHardwareInline]
+    # Composition is edited through the ProjectComponent edge models; the legacy
+    # parent/quantity FK fields are a dead, non-authoritative write path (the
+    # save() mirror only seeds an edge on insert), so keep them out of the admin
+    # change form to avoid diverging the legacy row from the composition graph.
+    exclude = ("parent", "quantity")
 
 
 @admin.register(Part)

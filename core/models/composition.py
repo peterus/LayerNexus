@@ -12,6 +12,8 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import CheckConstraint, F, Q, UniqueConstraint
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 
 
 def component_would_create_cycle(parent_id: int, child_id: int) -> bool:
@@ -173,3 +175,25 @@ class ProjectComponent(models.Model):
             and component_would_create_cycle(self.parent_project_id, self.child_project_id)
         ):
             raise ValidationError({"child_project": "This would make an assembly contain itself (cycle)."})
+
+
+@receiver(post_delete, sender=ProjectComponent)
+def _clear_legacy_parent_on_component_delete(sender, instance, **kwargs) -> None:
+    """Clear a child's stale legacy ``parent`` FK whenever its mirror edge is deleted.
+
+    The composition graph is authoritative, so detaching a module must be durable on
+    **every** delete path. ``ProjectComponent.delete()`` alone would miss Django's bulk
+    ``QuerySet.delete()`` and cascade deletes; ``post_delete`` fires for every deleted
+    edge on all of those paths (and inside the delete's own transaction). If the child's
+    legacy ``parent`` still points at the removed edge's parent (the mirror seeded on
+    insert), clear it — via a queryset ``update`` so :meth:`Project.save` does not re-seed
+    the edge — so the stale ``on_delete=PROTECT`` FK no longer blocks deletion of the
+    former parent and preset inheritance no longer leaks from it.
+    """
+    from core.models.projects import Project
+
+    if instance.child_project_id is not None and instance.parent_project_id is not None:
+        Project.objects.filter(
+            pk=instance.child_project_id,
+            parent_id=instance.parent_project_id,
+        ).update(parent=None, quantity=1)

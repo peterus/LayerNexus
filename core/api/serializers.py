@@ -98,13 +98,25 @@ class ProjectComponentSerializer(serializers.ModelSerializer):
     """Serialize a sub-project composition edge (parent supplied by the URL).
 
     The cycle guard runs in :meth:`validate` using the parent from the view context, so
-    both create and quantity/child updates return a structured ``400`` instead of the
-    model's ``save()`` raising an unhandled ``ValidationError`` (which would be a ``500``).
+    a create returns a structured ``400`` instead of the model's ``save()`` raising an
+    unhandled ``ValidationError`` (which would be a ``500``).
+
+    ``child_project`` is the edge's identity and is **read-only on update**: reassigning
+    it on an existing edge would orphan the old child's legacy ``parent`` FK (which is
+    cleaned up only on delete, via the ``post_delete`` receiver) and is not a meaningful
+    operation — change composition by deleting and recreating the edge. Only ``quantity``
+    is mutable on update.
     """
 
     class Meta:
         model = ProjectComponent
         fields = ["id", "child_project", "quantity"]
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Make ``child_project`` read-only when updating an existing edge."""
+        super().__init__(*args, **kwargs)
+        if self.instance is not None:
+            self.fields["child_project"].read_only = True
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         """Reject edges that would make an assembly (transitively) contain itself."""

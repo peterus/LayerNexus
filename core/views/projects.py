@@ -234,7 +234,16 @@ class SubProjectCreateView(ProjectManageMixin, CreateView):
         return form
 
     def form_valid(self, form: SubProjectForm) -> HttpResponse:
-        """Set parent, created_by, and save sub-project."""
+        """Create the sub-project under the parent assembly.
+
+        The legacy ``parent`` FK is set so the child still participates in
+        ``Project.effective_default_print_preset`` inheritance (which walks the
+        ``parent`` chain until that traversal is migrated onto composition edges).
+        :meth:`Project.save` mirrors that FK into the authoritative
+        ``ProjectComponent`` edge on insert — inside its own atomic block — so the
+        node and its assembly edge are created together; the form's ``quantity``
+        becomes the edge quantity.
+        """
         form.instance.parent = self.get_parent()
         form.instance.created_by = self.request.user
         messages.success(self.request, "Sub-project created successfully.")
@@ -259,19 +268,15 @@ class ProjectUpdateView(ProjectManageMixin, UpdateView):
         return context
 
     def get_form(self, form_class=None) -> ProjectEditForm:
-        """Return form with filtered parent and print-preset querysets.
+        """Return the edit form with resolved print-preset choices.
 
-        The parent queryset excludes the project itself and all its
-        descendants to prevent circular references.
+        Composition is edited through the ``ProjectComponent`` edge UI, so this
+        form no longer exposes a ``parent`` field to filter.
         """
         form = super().get_form(form_class)
         form.fields["default_print_preset"].queryset = OrcaPrintPreset.objects.filter(
             state=OrcaPrintPreset.STATE_RESOLVED,
             instantiation=True,
-        )
-        excluded_ids = {self.object.pk} | self.object.get_descendant_ids()
-        form.fields["parent"].queryset = Project.objects.exclude(
-            pk__in=excluded_ids,
         )
         return form
 
@@ -478,7 +483,14 @@ class ProjectComponentDeleteView(ProjectManageMixin, DeleteView):
     http_method_names = ["post"]
 
     def get_success_url(self) -> str:
-        """Redirect back to the parent assembly detail page."""
+        """Redirect back to the parent assembly detail page.
+
+        The edge deletion, plus the clear of the child's stale legacy ``parent`` FK, is
+        handled by the ``post_delete`` receiver on ``ProjectComponent``
+        (``_clear_legacy_parent_on_component_delete`` in ``core/models/composition.py``),
+        so every delete path — this view, the DRF API, bulk and cascade deletes —
+        detaches durably.
+        """
         messages.success(self.request, "Module removed from assembly.")
         return reverse("core:project_detail", kwargs={"pk": self.object.parent_project_id})
 

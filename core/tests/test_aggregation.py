@@ -235,43 +235,6 @@ class ProjectCycleGuardTests(TestCase):
         self.assertEqual(a._collect_hardware_with_multiplier(), [])
 
 
-class ProjectEditFormCycleTests(TestCase):
-    """The edit form must reject cyclic re-parenting (defence beyond the queryset)."""
-
-    def test_form_rejects_descendant_parent(self):
-        from core.forms import ProjectEditForm
-
-        root = Project.objects.create(name="Root")
-        child = Project.objects.create(name="Child", parent=root)
-        form = ProjectEditForm(
-            data={
-                "name": "Root",
-                "description": "",
-                "parent": child.pk,
-                "quantity": 1,
-            },
-            instance=root,
-        )
-        self.assertFalse(form.is_valid())
-        self.assertIn("parent", form.errors)
-
-    def test_form_rejects_self_parent(self):
-        from core.forms import ProjectEditForm
-
-        root = Project.objects.create(name="Root")
-        form = ProjectEditForm(
-            data={
-                "name": "Root",
-                "description": "",
-                "parent": root.pk,
-                "quantity": 1,
-            },
-            instance=root,
-        )
-        self.assertFalse(form.is_valid())
-        self.assertIn("parent", form.errors)
-
-
 class ProjectAggregatedStatusTests(TestDataMixin, TestCase):
     """Tests for the Project.aggregated_status property."""
 

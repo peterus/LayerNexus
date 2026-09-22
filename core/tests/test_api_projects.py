@@ -77,6 +77,26 @@ class ApiProjectPartTests(APITestCase):
         ProjectPart.objects.create(project=project, part_id=part_pk, quantity=3)
         self.assertTrue(project.part_links.filter(part_id=part_pk).exists())
 
+    def test_patch_project_keeps_component_edges(self) -> None:
+        """Regression: a PATCH on a project must not wipe its composition edges.
+
+        A leftover Phase-6 dual-write shim in ``Project.save`` deleted the parent
+        ``ProjectComponent`` edges of any project whose legacy ``parent`` FK was
+        ``None`` — which is every edge-based module — so editing a scalar field via
+        the API silently corrupted assemblies.
+        """
+        truck = Project.objects.create(name="Truck")
+        cabin = Project.objects.create(name="Cabin")
+        truck.child_links.create(child_project=cabin, quantity=2)
+
+        resp = self.client.patch(f"/api/v1/projects/{cabin.pk}/", {"name": "Cabin v2"}, format="json")
+        self.assertEqual(resp.status_code, 200)
+
+        self.assertEqual(cabin.parent_links.count(), 1)
+        edge = cabin.parent_links.get()
+        self.assertEqual(edge.parent_project_id, truck.pk)
+        self.assertEqual(edge.quantity, 2)
+
     def test_project_tree(self) -> None:
         """The tree endpoint returns nested child modules, direct parts and hardware."""
         parent = Project.objects.create(name="Assembly")
