@@ -116,3 +116,52 @@ class ProjectComponentCycleTests(TestCase):
         ProjectComponent.objects.create(parent_project=a, child_project=b)
         # Adding/keeping the already-present a -> b edge is not a cycle.
         self.assertFalse(component_would_create_cycle(a.pk, b.pk))
+
+
+class ProjectSaveDoesNotTouchEdgesTests(TestCase):
+    """Regression: ``Project.save()`` must never mutate ``ProjectComponent`` edges.
+
+    A leftover Phase-6 dual-write shim in :meth:`Project.save` deleted the parent
+    edges of any project whose legacy ``parent`` FK was ``None`` (always the case for
+    edge-based projects), so a plain GUI/API edit silently wiped composition edges and
+    corrupted assemblies. Saving a project must leave the composition graph untouched.
+    """
+
+    def test_save_keeps_incoming_component_edges(self):
+        truck = Project.objects.create(name="Truck")
+        cabin = Project.objects.create(name="Cabin")
+        ProjectComponent.objects.create(parent_project=truck, child_project=cabin, quantity=2)
+
+        # A plain edit + save of the child (its legacy parent FK is None).
+        cabin.name = "Cabin v2"
+        cabin.save()
+
+        self.assertEqual(cabin.parent_links.count(), 1)
+        edge = cabin.parent_links.get()
+        self.assertEqual(edge.parent_project_id, truck.pk)
+        self.assertEqual(edge.quantity, 2)
+
+    def test_save_keeps_outgoing_component_edges(self):
+        truck = Project.objects.create(name="Truck")
+        cabin = Project.objects.create(name="Cabin")
+        ProjectComponent.objects.create(parent_project=truck, child_project=cabin, quantity=3)
+
+        # Saving the assembly must not disturb the edges it owns either.
+        truck.name = "Truck v2"
+        truck.save()
+
+        self.assertEqual(truck.child_links.count(), 1)
+        self.assertEqual(truck.child_links.get().child_project_id, cabin.pk)
+
+    def test_save_keeps_edges_across_shared_module(self):
+        # A module shared by two assemblies: saving it must keep BOTH parent edges.
+        truck_a = Project.objects.create(name="Truck A")
+        truck_b = Project.objects.create(name="Truck B")
+        cabin = Project.objects.create(name="Cabin")
+        ProjectComponent.objects.create(parent_project=truck_a, child_project=cabin)
+        ProjectComponent.objects.create(parent_project=truck_b, child_project=cabin)
+
+        cabin.description = "shared module"
+        cabin.save()
+
+        self.assertEqual(cabin.parent_links.count(), 2)
