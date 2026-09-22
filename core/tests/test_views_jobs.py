@@ -4,7 +4,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate, ProjectPart
+from core.models import OrcaPrintPreset, Part, PrintJob, PrintJobPart, PrintJobPlate, ProjectPart
 from core.tests.mixins import TestDataMixin
 
 
@@ -184,3 +184,25 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
         self.client.login(username="otheruser", password="otherpass123")
         resp = self.client.post(self._url())
         self.assertEqual(resp.status_code, 403)
+
+
+class CreateJobsResolvedPresetTests(TestDataMixin, TestCase):
+    """The project-path job creation resolves and pins the project preset (Variant B)."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+        self.project_preset = OrcaPrintPreset.objects.create(
+            name="ProjPreset", orca_name="ProjPreset", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        self.project.default_print_preset = self.project_preset
+        self.project.save(update_fields=["default_print_preset"])
+        # self.part is a legacy part with NO own preset — must inherit via resolution.
+        self.part.stl_file = SimpleUploadedFile("legacy.stl", b"solid legacy")
+        self.part.save()
+
+    def test_created_job_pins_resolved_project_preset(self):
+        resp = self.client.post(reverse("core:project_create_jobs", args=[self.project.pk]))
+        self.assertIn(resp.status_code, (302, 200))
+        job = PrintJob.objects.latest("created_at")
+        self.assertEqual(job.print_preset_id, self.project_preset.pk)

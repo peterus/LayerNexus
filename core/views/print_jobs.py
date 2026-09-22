@@ -15,6 +15,7 @@ from core.forms import AddPartToJobForm, PrintJobForm
 from core.mixins import RoleRequiredMixin
 from core.models import (
     OrcaMachineProfile,
+    OrcaPrintPreset,
     Part,
     PrintJob,
     PrintJobPart,
@@ -314,6 +315,11 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
         """Create one draft job per preset/filament group."""
         project = get_object_or_404(Project, pk=pk)
 
+        # Resolve each part's preset in THIS project context (Variant B) and index by part pk.
+        resolved_preset_by_pk: dict[int, OrcaPrintPreset | None] = {
+            part.pk: preset for part, _mult, preset in project.resolve_part_presets()
+        }
+
         # Per-assembly requirements: needed (edge-authoritative) minus prints attributed
         # to THIS project. Each row is {part, needed, printed, remaining}.
         rows = project.variant_progress()["parts"]
@@ -323,16 +329,17 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
             messages.warning(request, "No eligible parts found (all printed or missing model file).")
             return redirect("core:project_detail", pk=project.pk)
 
-        # Group by (effective_print_preset_id, spoolman_filament_id)
+        # Group by (resolved_preset_id, spoolman_filament_id) — one bundle = one preset.
         groups: dict[tuple[int | None, int | None], list[tuple[Part, int]]] = defaultdict(list)
         for part, remaining in eligible:
-            key = (part.effective_print_preset_id, part.spoolman_filament_id)
+            resolved = resolved_preset_by_pk.get(part.pk)
+            key = (resolved.pk if resolved is not None else None, part.spoolman_filament_id)
             groups[key].append((part, remaining))
 
         jobs_created = 0
         parts_added = 0
 
-        for (_preset_id, filament_id), group_parts in groups.items():
+        for (preset_id, filament_id), group_parts in groups.items():
             # Build a descriptive job name
             label_parts: list[str] = [project.name]
             if filament_id:
@@ -355,6 +362,7 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
                 name=job_name,
                 status=PrintJob.STATUS_DRAFT,
                 created_by=request.user,
+                print_preset_id=preset_id,
             )
 
             for part, remaining in group_parts:
