@@ -176,6 +176,19 @@ class ProjectSaveDoesNotTouchEdgesTests(TestCase):
         self.assertEqual(edge.quantity, 7)
         self.assertEqual(child.parent_links.count(), 1)
 
+    def test_bulk_edge_delete_clears_legacy_parent_fk(self):
+        # Detach durability must hold on the bulk QuerySet.delete() path too (which
+        # bypasses Model.delete()); the post_delete signal covers it.
+        parent = Project.objects.create(name="Assembly")
+        child = Project.objects.create(name="Module", parent=parent, quantity=2)
+        self.assertEqual(child.parent_links.count(), 1)
+
+        child.parent_links.all().delete()  # bulk delete, not instance.delete()
+
+        child.refresh_from_db()
+        self.assertIsNone(child.parent_id)
+        self.assertEqual(parent.subprojects.count(), 0)
+
     def test_save_does_not_recreate_a_detached_legacy_edge(self):
         # A project with a legacy parent FK seeds its mirror edge on create. If that
         # edge is later detached through the edge UI (only the ProjectComponent row is
