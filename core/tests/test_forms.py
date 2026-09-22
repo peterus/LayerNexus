@@ -65,6 +65,21 @@ class ProjectEditFormTests(TestCase):
         self.assertNotIn("quantity", form.cleaned_data)
 
 
+class ProjectAdminTests(TestCase):
+    """The Django admin must not expose the legacy parent/quantity write path."""
+
+    def test_admin_form_excludes_legacy_parent_and_quantity(self):
+        """Composition is edge-authoritative; the admin change form omits the dead FK fields."""
+        from django.contrib.admin.sites import AdminSite
+
+        from core.admin import ProjectAdmin
+
+        admin_instance = ProjectAdmin(Project, AdminSite())
+        form_class = admin_instance.get_form(request=None)
+        self.assertNotIn("parent", form_class.base_fields)
+        self.assertNotIn("quantity", form_class.base_fields)
+
+
 class PartFormTests(TestCase):
     """Tests for the PartForm, including STL file validation."""
 
