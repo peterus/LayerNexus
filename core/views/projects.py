@@ -5,6 +5,7 @@ import logging
 from django import forms as django_forms
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -485,8 +486,9 @@ class ProjectComponentDeleteView(ProjectManageMixin, DeleteView):
         """
         child_id = self.object.child_project_id
         parent_id = self.object.parent_project_id
-        response = super().form_valid(form)
-        Project.objects.filter(pk=child_id, parent_id=parent_id).update(parent=None, quantity=1)
+        with transaction.atomic():
+            response = super().form_valid(form)
+            Project.objects.filter(pk=child_id, parent_id=parent_id).update(parent=None, quantity=1)
         return response
 
     def get_success_url(self) -> str:
