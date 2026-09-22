@@ -514,3 +514,21 @@ class PrintJobPresetFieldTests(TestCase):
 
         job = PrintJob.objects.create(name="J")
         self.assertIsNone(job.print_preset_id)
+
+
+class PartEstimatedWithPresetFieldTests(TestCase):
+    def test_part_records_estimated_with_preset(self) -> None:
+        from core.models import OrcaPrintPreset, Part
+
+        preset = OrcaPrintPreset.objects.create(
+            name="P", orca_name="P", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        part = Part.objects.create(name="p", estimated_with_preset=preset)
+        part.refresh_from_db()
+        self.assertEqual(part.estimated_with_preset_id, preset.pk)
+
+    def test_part_estimated_with_preset_defaults_to_none(self) -> None:
+        from core.models import Part
+
+        part = Part.objects.create(name="p")
+        self.assertIsNone(part.estimated_with_preset_id)

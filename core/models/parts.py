@@ -66,6 +66,14 @@ class Part(models.Model):
         related_name="parts",
         help_text="Print preset for slicing this part (inherited from project if not set)",
     )
+    estimated_with_preset = models.ForeignKey(
+        "OrcaPrintPreset",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="estimated_parts",
+        help_text="The print preset that produced the currently stored estimate.",
+    )
     notes = models.TextField(blank=True)
 
     # Filament usage estimates (back-filled from first successful PrintJob slice)
