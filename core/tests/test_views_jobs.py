@@ -206,3 +206,79 @@ class CreateJobsResolvedPresetTests(TestDataMixin, TestCase):
         self.assertIn(resp.status_code, (302, 200))
         job = PrintJob.objects.latest("created_at")
         self.assertEqual(job.print_preset_id, self.project_preset.pk)
+
+
+class AddPartToJobPresetTests(TestDataMixin, TestCase):
+    """Part-path job creation resolves the preset, offering a dropdown when ambiguous."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def _preset(self, name):
+        return OrcaPrintPreset.objects.create(
+            name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+
+    def test_candidates_single_project_auto(self):
+        from core.models import Part, Project, ProjectPart
+
+        preset = self._preset("P")
+        project = Project.objects.create(name="Proj", default_print_preset=preset)
+        part = Part.objects.create(name="p")
+        ProjectPart.objects.create(project=project, part=part, quantity=1)
+        auto, choices = part.resolve_job_preset_candidates()
+        self.assertEqual(auto, preset)
+        self.assertEqual(choices, [])
+
+    def test_candidates_multiple_different_offers_choices(self):
+        from core.models import Part, Project, ProjectPart
+
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        part = Part.objects.create(name="p")
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+        auto, choices = part.resolve_job_preset_candidates()
+        self.assertIsNone(auto)
+        self.assertEqual({c.name for c in choices}, {"PA", "PB"})
+
+    def test_add_part_new_job_pins_chosen_preset(self):
+        from core.models import Part, Project, ProjectPart
+
+        pa = self._preset("PA")
+        pb = self._preset("PB")
+        a = Project.objects.create(name="A", default_print_preset=pa)
+        b = Project.objects.create(name="B", default_print_preset=pb)
+        part = Part.objects.create(name="p")
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+
+        resp = self.client.post(
+            reverse("core:add_part_to_job", kwargs={"part_pk": part.pk}),
+            {"job": "", "quantity": 1, "print_preset": pb.pk},
+        )
+        self.assertEqual(resp.status_code, 302)
+        job = PrintJob.objects.latest("created_at")
+        self.assertEqual(job.print_preset_id, pb.pk)
+
+    def test_add_part_ambiguous_without_choice_is_rejected(self):
+        from core.models import Part, Project, ProjectPart
+
+        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
+        part = Part.objects.create(name="p")
+        part.stl_file.name = "stl_files/p.stl"
+        part.save(update_fields=["stl_file"])
+        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        ProjectPart.objects.create(project=b, part=part, quantity=1)
+
+        before = PrintJob.objects.count()
+        resp = self.client.post(
+            reverse("core:add_part_to_job", kwargs={"part_pk": part.pk}),
+            {"job": "", "quantity": 1},  # no print_preset chosen
+        )
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(PrintJob.objects.count(), before)  # no job created

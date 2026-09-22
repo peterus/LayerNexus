@@ -219,12 +219,24 @@ class AddPartToJobView(RoleRequiredMixin, View):
         job = form.cleaned_data.get("job")
         quantity = form.cleaned_data["quantity"]
 
+        # Resolve the preset for a *new* job (Variant B part path). An explicit dropdown
+        # choice (multi-project, ambiguous case) overrides the auto resolution.
+        auto_preset, preset_choices = part.resolve_job_preset_candidates()
+        chosen_preset_id = request.POST.get("print_preset") or None
+        if preset_choices and chosen_preset_id is None:
+            messages.error(request, "This part is in projects with different presets — choose a preset.")
+            return redirect("core:part_detail", pk=part.pk)
+        new_job_preset_id = (
+            chosen_preset_id if chosen_preset_id is not None else (auto_preset.pk if auto_preset is not None else None)
+        )
+
         if not job:
             # Create a new draft job
             job = PrintJob.objects.create(
                 name=f"Job with {part.name}",
                 status=PrintJob.STATUS_DRAFT,
                 created_by=request.user,
+                print_preset_id=new_job_preset_id,
             )
             messages.info(request, f"New draft job '{job}' created.")
 

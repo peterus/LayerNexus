@@ -207,6 +207,10 @@ class PartDetailView(LoginRequiredMixin, DetailView):
                     break
         context["part_usage"] = usage
 
+        auto_preset, preset_choices = part.resolve_job_preset_candidates()
+        context["job_preset_auto"] = auto_preset
+        context["job_preset_choices"] = preset_choices
+
         return context
 
     @staticmethod

@@ -181,6 +181,31 @@ class Part(models.Model):
             return next(iter(distinct.values())), False
         return None, False
 
+    def resolve_job_preset_candidates(self) -> tuple[Optional[OrcaPrintPreset], list[OrcaPrintPreset]]:
+        """Resolve the preset for the standalone (part-path) "Add to Job" flow.
+
+        Variant B without a project build context, with a UI escape hatch: an explicit
+        override, a single containing project, or several projects that all agree yield an
+        unambiguous ``auto`` preset (and no choices). Several containing projects that
+        disagree and no override yield ``auto=None`` and the distinct containing-project
+        presets as ``choices`` so the UI can offer a dropdown.
+
+        Returns:
+            ``(auto_preset, choices)``. When ``choices`` is non-empty the caller must ask
+            the user to pick one; otherwise ``auto_preset`` (possibly ``None``) is used.
+        """
+        if self.print_preset_id is not None:
+            return self.print_preset, []
+        distinct: dict[int, OrcaPrintPreset] = {}
+        for project in self.containing_projects():
+            if project.default_print_preset_id is not None:
+                distinct[project.default_print_preset_id] = project.default_print_preset
+        if len(distinct) > 1:
+            return None, list(distinct.values())
+        if len(distinct) == 1:
+            return next(iter(distinct.values())), []
+        return None, []
+
     def is_estimable(self) -> bool:
         """Return whether this part is worth queuing for background estimation.
 
