@@ -93,32 +93,34 @@ class Project(models.Model):
         or import raises :class:`ValidationError` instead of persisting a graph
         that would later blow up the recursive aggregate properties.
 
-        Edge reconciliation is **seed-only**: when the legacy ``parent`` FK is set,
-        one matching ``ProjectComponent`` edge is created *if missing* so a project
-        created via ``Project(parent=…)`` still appears under its assembly. A ``save()``
-        **never deletes** edges and **never overwrites** an existing edge's
-        ``quantity`` — the edge is authoritative once it exists, so edits made through
-        the edge UI (which changes ``ProjectComponent.quantity`` without touching the
-        legacy ``Project.quantity``) are not silently reverted by a later scalar save.
+        Edge reconciliation is **seed-on-create only**: when a project is *inserted*
+        with the legacy ``parent`` FK set, one matching ``ProjectComponent`` edge is
+        created if missing, so a project created via ``Project(parent=…)`` still
+        appears under its assembly. A ``save()`` **never deletes** edges, **never
+        overwrites** an existing edge's ``quantity``, and — crucially — does **not**
+        re-run the mirror on later saves. The composition graph is authoritative once
+        the row exists: detaching/re-parenting through the ``ProjectComponent`` edge UI
+        (which owns edge deletion) is durable and is not undone by a subsequent scalar
+        save or API ``PATCH`` of a project whose stale legacy ``parent_id`` is still set.
 
         This is the fix for a production data corruptor: the previous shim ran
         ``ProjectComponent.objects.filter(child_project=self).delete()`` on *every*
         save whose ``parent`` FK was ``None`` — which is every edge-based project —
         so a plain GUI edit or API ``PATCH`` silently wiped the assembly's parent
-        edges. Re-parenting/detaching is now done exclusively through the
-        ``ProjectComponent`` edge UI (which owns edge deletion); the additive mirror
-        here is an interim bridge for the still-present legacy ``parent`` FK and is
-        removed together with that field in the contract phase.
+        edges. The seed-on-create mirror is an interim bridge for the still-present
+        legacy ``parent`` FK and is removed together with that field in the contract
+        phase.
 
-        The FK row and the mirrored edge are written inside one
-        :func:`~django.db.transaction.atomic` block, so a failure of the edge upsert
-        rolls back the FK write too — the two dependent writes never commit apart
-        (no parent row left without its mirrored edge).
+        The row insert and the seeded edge are written inside one
+        :func:`~django.db.transaction.atomic` block, so a failure of the edge create
+        rolls back the insert too — the two dependent writes never commit apart
+        (no parent row left without its seeded edge).
         """
         self._assert_parent_acyclic()
+        creating = self._state.adding
         with transaction.atomic():
             super().save(*args, **kwargs)
-            if self.parent_id is not None:
+            if creating and self.parent_id is not None:
                 from core.models.composition import ProjectComponent
 
                 ProjectComponent.objects.get_or_create(
