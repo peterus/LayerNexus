@@ -253,7 +253,17 @@ SPOOLMAN_URL = os.environ.get("SPOOLMAN_URL", "")
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_BROWSER_XSS_FILTER = True
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_AGE = 28800  # 8 hours
+# 14-day default; sliding window when SESSION_SAVE_EVERY_REQUEST is on.
+#
+# Trade-off: with the (default) database-backed session engine on SQLite,
+# SESSION_SAVE_EVERY_REQUEST=1 writes the session row on every authenticated
+# request to refresh its expiry, which adds write-lock contention under load.
+# For this app's expected scale (a self-hosted, small-team print manager) the
+# smoother "stay logged in while active" behaviour is worth it, and the flag is
+# env-configurable: set SESSION_SAVE_EVERY_REQUEST=0 to fall back to a fixed
+# lifetime from login (no per-request write) on busier deployments.
+SESSION_COOKIE_AGE = int(os.environ.get("SESSION_COOKIE_AGE", "1209600"))
+SESSION_SAVE_EVERY_REQUEST = os.environ.get("SESSION_SAVE_EVERY_REQUEST", "1") == "1"
 CSRF_COOKIE_HTTPONLY = True
 X_FRAME_OPTIONS = "DENY"
 

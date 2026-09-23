@@ -12,6 +12,8 @@ services:
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-change-me-in-production}
       - CSRF_TRUSTED_ORIGINS=${CSRF_TRUSTED_ORIGINS:-}
       - DEBUG=${DEBUG:-1}
+      - SESSION_COOKIE_AGE=${SESSION_COOKIE_AGE:-1209600}
+      - SESSION_SAVE_EVERY_REQUEST=${SESSION_SAVE_EVERY_REQUEST:-1}
     command: ["gunicorn", "layernexus.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--reload"]
     restart: unless-stopped
     depends_on:
