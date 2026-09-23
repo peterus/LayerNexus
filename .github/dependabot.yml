@@ -1,0 +1,44 @@
+# Dependabot configuration — automated dependency update PRs.
+# Covers all three ecosystems this repo ships: Python (requirements.txt),
+# the Docker base image (Dockerfile), and the GitHub Actions workflows.
+# Minor/patch updates are grouped to reduce PR noise; major bumps are left
+# out so breaking-change upgrades stay a deliberate, human-reviewed step.
+# Every PR runs through the existing CI gates (ruff, migrations, tests,
+# coverage, check --deploy, pip-audit) before it can merge.
+version: 2
+updates:
+  # --- Python dependencies (requirements.txt) ---
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # Django is intentionally capped at <7.0 in requirements.txt; skip the
+      # 7.0 major so a breaking upgrade never lands automatically.
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  # --- Docker base image (Dockerfile) ---
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+
+  # --- GitHub Actions workflow versions ---
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    groups:
+      actions-all:
+        patterns:
+          - "*"
