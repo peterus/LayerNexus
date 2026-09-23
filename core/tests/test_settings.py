@@ -38,11 +38,14 @@ class SessionLifetimeSettingsTests(SimpleTestCase):
         finally:
             importlib.reload(settings_module)
 
-    def test_sliding_sessions_enabled_for_non_zero_flag(self) -> None:
-        """Any value other than the literal "0" keeps the sliding window on."""
+    def test_sliding_flag_requires_literal_one(self) -> None:
+        """Only the literal "1" enables sliding; any other value disables it."""
         try:
             with mock.patch.dict(os.environ, {"SESSION_SAVE_EVERY_REQUEST": "1"}):
                 reloaded = importlib.reload(settings_module)
                 self.assertTrue(reloaded.SESSION_SAVE_EVERY_REQUEST)
+            with mock.patch.dict(os.environ, {"SESSION_SAVE_EVERY_REQUEST": "true"}):
+                reloaded = importlib.reload(settings_module)
+                self.assertFalse(reloaded.SESSION_SAVE_EVERY_REQUEST)
         finally:
             importlib.reload(settings_module)
