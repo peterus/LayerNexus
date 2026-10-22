@@ -27,16 +27,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           python-version: "3.14"
+          enable-cache: true
 
       - name: Install MkDocs
-        run: pip install mkdocs-material
+        # mkdocs-material is pinned in the "docs" group of uv.lock.
+        run: uv sync --locked --only-group docs
 
       - name: Build documentation
-        run: mkdocs build
+        run: uv run --no-sync mkdocs build
 
       - name: Setup Pages
         uses: actions/configure-pages@v6

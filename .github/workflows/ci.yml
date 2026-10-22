@@ -16,22 +16,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           python-version: "3.14"
+          enable-cache: true
 
-      - name: Install ruff
-        # Pinned: unpinned installs pulled ruff 0.16.x, which reformats Python
-        # code blocks embedded in Markdown and broke `ruff format --check` on the
-        # docs. Bump deliberately.
-        run: pip install ruff==0.15.20
+      - name: Check uv.lock matches pyproject.toml
+        # Fails when pyproject.toml was changed without re-running `uv lock`.
+        run: uv lock --check
+
+      - name: Install lint tools
+        # ruff comes from uv.lock (pinned in the "dev" group), not from here.
+        run: uv sync --locked --only-group dev
 
       - name: Ruff check
-        run: ruff check .
+        run: uv run --no-sync ruff check .
 
       - name: Ruff format check
-        run: ruff format --check .
+        run: uv run --no-sync ruff format --check .
 
   test:
     name: Tests
@@ -44,35 +47,33 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           python-version: "3.14"
-          cache: pip
+          enable-cache: true
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install coverage
+        # --locked: install exactly uv.lock, fail if it is out of date.
+        run: uv sync --locked
 
       - name: Check for missing migrations
-        run: python manage.py makemigrations --check --dry-run --noinput
+        run: uv run --no-sync python manage.py makemigrations --check --dry-run --noinput
 
       - name: Run Django system checks
-        run: python manage.py check --fail-level WARNING
+        run: uv run --no-sync python manage.py check --fail-level WARNING
 
       - name: Run migrations
-        run: python manage.py migrate --noinput
+        run: uv run --no-sync python manage.py migrate --noinput
 
       - name: Collect static files
-        run: python manage.py collectstatic --noinput
+        run: uv run --no-sync python manage.py collectstatic --noinput
 
       - name: Run tests with coverage
         run: |
-          coverage run manage.py test core -v 2
-          coverage report
-          coverage xml
+          uv run --no-sync coverage run manage.py test core -v 2
+          uv run --no-sync coverage report
+          uv run --no-sync coverage xml
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v7
@@ -86,27 +87,36 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           python-version: "3.14"
-          cache: pip
+          enable-cache: true
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pip-audit
+        run: uv sync --locked
 
-      - name: Audit dependencies (pip-audit)
-        run: pip-audit
+      - name: Audit locked dependencies (pip-audit)
+        # Audits every package pinned in uv.lock (runtime + all groups), with
+        # exact versions and hashes - no resolution, no installs.
+        run: |
+          set -euo pipefail
+          uv export --locked --all-groups --no-emit-project --format requirements-txt -o "$RUNNER_TEMP/locked-requirements.txt"
+          # Guard against an empty export silently passing the audit.
+          COUNT=$(grep -cE '^[A-Za-z0-9._-]+==' "$RUNNER_TEMP/locked-requirements.txt" || true)
+          if [ "${COUNT:-0}" -eq 0 ]; then
+            echo "::error::uv export produced no pinned packages - refusing to report a clean audit."
+            exit 1
+          fi
+          echo "Auditing ${COUNT} locked packages"
+          uv run --no-sync pip-audit --strict --disable-pip -r "$RUNNER_TEMP/locked-requirements.txt"
 
       - name: Django deployment checklist
         run: |
           DJANGO_SECRET_KEY=ci-audit-key-that-is-long-enough-for-django-security-check-validation \
           DEBUG=0 \
           ALLOWED_HOSTS=localhost \
-          python manage.py check --deploy --fail-level WARNING
+          uv run --no-sync python manage.py check --deploy --fail-level WARNING
 
   docker:
     name: Docker Build & Smoke Test
