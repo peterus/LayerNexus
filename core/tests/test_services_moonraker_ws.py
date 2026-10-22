@@ -97,10 +97,16 @@ class FakeWebSocket:
     mirroring ``async for raw in ws`` in the client.
     """
 
-    def __init__(self, frames: Iterable[str], client: MoonrakerWebSocketClient | None = None) -> None:
+    def __init__(
+        self,
+        frames: Iterable[str],
+        client: MoonrakerWebSocketClient | None = None,
+        close_error: Exception | None = None,
+    ) -> None:
         self.frames = list(frames)
         self.sent: list[str] = []
         self.client = client
+        self.close_error = close_error
         self.delay_during_iteration: list[float] = []
 
     async def send(self, message: str) -> None:
@@ -111,6 +117,8 @@ class FakeWebSocket:
             if self.client is not None:
                 self.delay_during_iteration.append(self.client._reconnect_delay)
             yield frame
+        if self.close_error is not None:
+            raise self.close_error
 
 
 def fake_connect(ws: FakeWebSocket) -> MagicMock:
@@ -155,12 +163,34 @@ class MoonrakerWebSocketClientTests(IsolatedAsyncioTestCase):
             ping_timeout=20,
         )
 
-    async def test_connect_appends_token_when_api_key(self) -> None:
+    async def test_connect_appends_token_when_available(self) -> None:
         connect = await self._listen(FakeWebSocket([]), token="abc")
 
         url = connect.call_args.args[0]
         self.assertEqual(url, "ws://printer.local:7125/websocket?token=abc")
         self.assertEqual(connect.call_args.kwargs, {"ping_interval": 20, "ping_timeout": 20})
+
+    @patch("core.services.moonraker_ws.requests.get")
+    async def test_api_key_fetches_oneshot_token_for_url(self, mock_get: MagicMock) -> None:
+        self.printer.moonraker_api_key = "secret"
+        mock_get.return_value.json.return_value = {"result": "abc"}
+        connect = fake_connect(FakeWebSocket([]))
+
+        with patch("core.services.moonraker_ws.websockets.connect", connect):
+            await self.client._connect_and_listen()
+
+        self.assertEqual(mock_get.call_args.args[0], "http://printer.local:7125/access/oneshot_token")
+        self.assertEqual(mock_get.call_args.kwargs["headers"], {"X-Api-Key": "secret"})
+        self.assertEqual(connect.call_args.args[0], "ws://printer.local:7125/websocket?token=abc")
+
+    async def test_abnormal_close_during_iteration_propagates(self) -> None:
+        notify = {"method": "notify_status_update", "params": [{}, 1.0]}
+        ws = FakeWebSocket([json.dumps(notify)], close_error=ConnectionClosedError(None, None))
+
+        with self.assertRaises(ConnectionClosedError):
+            await self._listen(ws)
+
+        self.assertEqual(self.events, [notify])
 
     async def test_subscribe_request_sent(self) -> None:
         ws = FakeWebSocket([])
