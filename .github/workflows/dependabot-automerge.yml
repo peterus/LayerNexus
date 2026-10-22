@@ -1,0 +1,89 @@
+# Auto-merge for grouped Dependabot PRs.
+#
+# Enables GitHub auto-merge (squash) for exactly two Dependabot groups defined
+# in .github/dependabot.yml:
+#   - "python-deps": weekly lower-bound bumps of uncapped pip packages
+#   - "actions-all": GitHub Actions updates, majors included
+# The PR then merges by itself once all required checks are green. Individual
+# Dependabot PRs (e.g. raising the django/websockets/djangorestframework/
+# drf-spectacular upper bound) and all non-Dependabot PRs are never touched.
+#
+# Notes:
+#   - Token: the built-in GITHUB_TOKEN (no PAT). Merges performed with it do
+#     NOT trigger further workflows, so an auto-merge does not start the
+#     push-to-main runs (CI on main, Docker publish). Accepted: the image is
+#     rebuilt by the next regular merge to main.
+#   - Branch protection on main is strict (branch must be up to date). If two
+#     Dependabot PRs are open at once, the second one stays BEHIND after the
+#     first merges; Dependabot usually rebases it by itself, otherwise comment
+#     "@dependabot rebase" on it. Its auto-merge stays armed and completes
+#     after the rebased CI run is green. Use "@dependabot rebase", not the
+#     "Update branch" button / gh pr update-branch: that push comes from a
+#     human actor and the "disarm" job below switches auto-merge off again.
+#     Never bypass protection (--admin) here.
+#   - Trigger is pull_request (not pull_request_target): Dependabot PRs come
+#     from branches in this repo, and for Dependabot-triggered runs GitHub
+#     grants the write permissions requested below. No PR code is checked out
+#     or executed.
+name: Dependabot Auto-Merge
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  automerge:
+    name: Enable auto-merge
+    # Only PRs opened by Dependabot AND whose latest event came from Dependabot
+    # itself (a human push onto a Dependabot branch is handled by "disarm").
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge for grouped PRs
+        if: steps.metadata.outputs.dependency-group == 'python-deps' || steps.metadata.outputs.dependency-group == 'actions-all'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GROUP: ${{ steps.metadata.outputs.dependency-group }}
+        run: |
+          set -euo pipefail
+          if [ "$GROUP" = "python-deps" ]; then
+            # Safety net: the pip group must only raise lower bounds. If any
+            # changed line carries an upper bound ("<"), a capped package slipped
+            # into the group (missing exclude-pattern) -> leave it for a human.
+            DIFF=$(gh pr diff "$PR_URL")
+            CHANGED=$(grep -E '^[+-]' <<<"$DIFF" | grep -vE '^(\+\+\+|---)( |$)' || true)
+            if grep -q '<' <<<"$CHANGED"; then
+              echo "::warning::Group PR changes an upper bound (<) - auto-merge not enabled, manual review required."
+              gh pr merge --disable-auto "$PR_URL" || true
+              exit 0
+            fi
+          fi
+          gh pr merge --auto --squash "$PR_URL"
+
+  disarm:
+    name: Disable auto-merge after non-Dependabot push
+    # A human pushed onto a Dependabot PR: their commit must not ride along on
+    # an auto-merge armed earlier, so switch it off (re-arm manually if wanted).
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Disable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --disable-auto "$PR_URL" || true
