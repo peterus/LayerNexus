@@ -22,11 +22,18 @@ updates:
   #     updates -> individual PRs, never auto-merged (manual upgrade cycle).
   #   - Cooldown: only propose releases that are at least 3 days old (7 days
   #     for majors), so a broken/yanked release has time to surface first.
+  #   - Note: for 0.x packages (e.g. drf-spectacular) Dependabot classifies
+  #     0.30 -> 0.31 as "minor", so such bumps are grouped and auto-merged too;
+  #     the CI test suite is the safety net.
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # Version updates cover only direct dependencies by default; "all" also
+    # updates the transitive packages pinned in uv.lock.
+    allow:
+      - dependency-type: "all"
     cooldown:
       default-days: 3
       semver-major-days: 7
