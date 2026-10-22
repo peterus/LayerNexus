@@ -112,17 +112,24 @@ Attach your IDE debugger (VS Code or PyCharm) to port `5678` for step-through de
 
 ## Running Tests
 
+Run the tests on the host with uv (`coverage` is part of the `dev` group, which the
+Docker image does not contain). They need `DEBUG=1` and, in a fresh checkout, the
+static files collected once:
+
 ```bash
+export DEBUG=1
+uv run python manage.py collectstatic --noinput
+
 # Run the full test suite
-docker compose exec web python manage.py test core -v 2
+uv run python manage.py test core -v 2
 
 # Run with coverage
-docker compose exec web coverage run manage.py test core -v 2
-docker compose exec web coverage report
+uv run coverage run manage.py test core -v 2
+uv run coverage report
 ```
 
-!!! important
-    Always run tests through Docker Compose — never run `manage.py` directly on the host.
+The suite can also run inside the container (without coverage):
+`docker compose exec web python manage.py test core -v 2`.
 
 ---
 
@@ -269,7 +276,7 @@ core/
 4. **Run** linting and tests:
    ```bash
    uv run ruff check . && uv run ruff format --check .
-   docker compose exec web python manage.py test core -v 2
+   uv run python manage.py test core -v 2
    ```
 5. **Commit** with a descriptive message.
 6. **Push** to your fork and open a Pull Request.
