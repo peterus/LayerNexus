@@ -33,6 +33,12 @@ on:
 
 permissions: {}
 
+# One run per PR at a time; a newer event (e.g. a human push -> "disarm")
+# cancels an older, still-running arming run instead of racing it.
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   automerge:
     name: Enable auto-merge
@@ -55,6 +61,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GROUP: ${{ steps.metadata.outputs.dependency-group }}
         run: |
           set -euo pipefail
@@ -70,7 +77,9 @@ jobs:
               exit 0
             fi
           fi
-          gh pr merge --auto --squash "$PR_URL"
+          # Bind the merge to the commit this run inspected: if the head moved
+          # in the meantime, gh refuses and the newer run decides instead.
+          gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
 
   disarm:
     name: Disable auto-merge after non-Dependabot push
