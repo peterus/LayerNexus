@@ -81,7 +81,11 @@ jobs:
             if grep -q '<' <<<"$CHANGED"; then
               echo "::warning::Group PR changes an upper bound (<) - auto-merge not enabled, manual review required."
               # Disarm an auto-merge armed by an earlier run; errors fail the job.
-              if [ "$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" = "true" ]; then
+              # Plain assignment so a failing gh call aborts the job under set -e
+              # (a command substitution inside "[ ... ]" would not).
+              ARMED=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
+              case "$ARMED" in true | false) ;; *) echo "::error::Unexpected autoMergeRequest state: ${ARMED}"; exit 1 ;; esac
+              if [ "$ARMED" = "true" ]; then
                 gh pr merge --disable-auto "$PR_URL"
               fi
               exit 0
@@ -109,6 +113,10 @@ jobs:
         # silently leaving auto-merge on.
         run: |
           set -euo pipefail
-          if [ "$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" = "true" ]; then
+          # Plain assignment so a failing gh call aborts the job under set -e
+          # (a command substitution inside "[ ... ]" would not).
+          ARMED=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
+          case "$ARMED" in true | false) ;; *) echo "::error::Unexpected autoMergeRequest state: ${ARMED}"; exit 1 ;; esac
+          if [ "$ARMED" = "true" ]; then
             gh pr merge --disable-auto "$PR_URL"
           fi
