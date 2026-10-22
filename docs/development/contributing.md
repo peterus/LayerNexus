@@ -276,7 +276,7 @@ core/
 4. **Run** linting and tests:
    ```bash
    uv run ruff check . && uv run ruff format --check .
-   uv run python manage.py test core -v 2
+   DEBUG=1 uv run python manage.py test core -v 2
    ```
 5. **Commit** with a descriptive message.
 6. **Push** to your fork and open a Pull Request.

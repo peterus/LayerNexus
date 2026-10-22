@@ -12,10 +12,12 @@ This is the single source of truth for working in this repo (it replaces the for
 ## Commands
 
 uv (`uv sync` builds `.venv` from `uv.lock`, runtime + `dev` group) — no pytest; use
-Django's test runner. Tests need `DEBUG=1` (or `DJANGO_SECRET_KEY`) and, in a fresh
-checkout, `collectstatic` first (otherwise ~110 failures on the missing static manifest):
+Django's test runner. Tests need `DEBUG=1` (with `DEBUG=0` the SSL redirect breaks the
+test client) and, in a fresh checkout, `collectstatic` first (otherwise ~110 failures on
+the missing static manifest):
 
 ```bash
+export DEBUG=1                                                 # required for tests (as in CI)
 uv sync                                                        # create/refresh .venv from uv.lock
 uv run python manage.py collectstatic --noinput               # once per fresh checkout
 uv run python manage.py test core                              # full suite (CI runs this)
