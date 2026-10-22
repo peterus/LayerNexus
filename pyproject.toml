@@ -23,7 +23,7 @@ dependencies = [
 dev = [
     # Pinned: ruff 0.16.x reformats Python code blocks embedded in Markdown and
     # breaks `ruff format --check` on the docs. Bump deliberately.
-    "ruff==0.15.20",
+    "ruff==0.17.1",
     "coverage",
     "pip-audit",
 ]
