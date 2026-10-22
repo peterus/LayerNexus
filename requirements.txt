@@ -1,5 +1,5 @@
 django>=5.1,<7.0
-requests>=2.31
+requests>=2.34.2
 pillow>=10.0
 markdown>=3.5
 bleach>=6.0
