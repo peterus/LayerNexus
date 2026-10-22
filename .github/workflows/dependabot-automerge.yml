@@ -2,10 +2,11 @@
 #
 # Enables GitHub auto-merge (squash) for exactly two Dependabot groups defined
 # in .github/dependabot.yml:
-#   - "python-deps": minor + patch updates of all Python packages except django
+#   - "python-deps": minor + patch updates of all Python packages except
+#     django and ruff
 #   - "actions-all": GitHub Actions updates, majors included
 # The PR then merges by itself once all required checks are green. Individual
-# Dependabot PRs (django minor, every Python major, Docker images) and all
+# Dependabot PRs (django, ruff, every Python major, Docker images) and all
 # non-Dependabot PRs are never touched.
 #
 # Belt and braces: a "python-deps" PR is only armed if fetch-metadata does not

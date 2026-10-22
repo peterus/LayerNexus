@@ -153,8 +153,8 @@ raw `request.user.is_staff` check.
   commit both files. CI runs `uv lock --check` and `uv sync --locked`. The Docker image
   installs `--frozen --no-dev` (runtime only); the `debug` stage adds the `debug` group.
 - **Dependabot** (`.github/dependabot.yml`, ecosystem `uv`): grouped `python-deps`
-  (minor+patch, all packages except django) and `actions-all` PRs auto-merge after green CI;
-  django updates and all Python majors are individual PRs, merged manually.
+  (minor+patch, all packages except django and ruff) and `actions-all` PRs auto-merge after green CI;
+  django and ruff updates and all Python majors are individual PRs, merged manually.
 - **Coverage gate: `fail_under = 55`** (`pyproject.toml`).
 - **Never hand-edit migrations** — only add via `makemigrations`. CI fails on any
   un-generated migration (`makemigrations --check`).

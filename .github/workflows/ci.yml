@@ -101,7 +101,7 @@ jobs:
         # exact versions and hashes - no resolution, no installs.
         run: |
           set -euo pipefail
-          uv export --locked --all-groups --no-emit-project --format requirements-txt -o "$RUNNER_TEMP/locked-requirements.txt"
+          uv export --quiet --locked --all-groups --no-emit-project --format requirements-txt -o "$RUNNER_TEMP/locked-requirements.txt"
           # Guard against an empty export silently passing the audit.
           COUNT=$(grep -cE '^[A-Za-z0-9._-]+==' "$RUNNER_TEMP/locked-requirements.txt" || true)
           if [ "${COUNT:-0}" -eq 0 ]; then

@@ -15,9 +15,11 @@ updates:
   # version and can classify updates by semver.
   # Policy:
   #   - Minor + patch updates of every package (direct and transitive) except
-  #     django -> one grouped PR "python-deps", auto-merged after green CI.
-  #   - Django minor updates and ALL major updates -> individual PRs, never
-  #     auto-merged (manual upgrade cycle).
+  #     django and ruff -> one grouped PR "python-deps", auto-merged after
+  #     green CI.
+  #   - Django updates, ruff updates (pinned "==" in pyproject.toml: a new
+  #     ruff minor can reformat the docs, bump deliberately) and ALL major
+  #     updates -> individual PRs, never auto-merged (manual upgrade cycle).
   #   - Cooldown: only propose releases that are at least 3 days old (7 days
   #     for majors), so a broken/yanked release has time to surface first.
   - package-ecosystem: "uv"
@@ -34,6 +36,7 @@ updates:
           - "*"
         exclude-patterns:
           - "django"
+          - "ruff"
         update-types:
           - "minor"
           - "patch"
