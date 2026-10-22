@@ -90,6 +90,9 @@ cd LayerNexus
 # Install dependencies (needs uv: https://docs.astral.sh/uv/) — creates .venv from uv.lock
 uv sync
 
+# Development mode (without it a DJANGO_SECRET_KEY is required)
+export DEBUG=1
+
 # Run migrations
 uv run python manage.py migrate
 
@@ -347,11 +350,11 @@ The first user to register is automatically assigned the **Admin** role. Subsequ
 # Via Docker (recommended)
 docker compose exec web python manage.py test core
 
-# Local (no pytest — use Django's test runner)
-python manage.py test core
+# Local (no pytest — use Django's test runner; tests need DEBUG=1)
+DEBUG=1 uv run python manage.py test core
 
 # Single module
-python manage.py test core.tests.test_views_parts
+DEBUG=1 uv run python manage.py test core.tests.test_views_parts
 ```
 
 The test suite includes 500+ tests covering models, views, forms, services, permissions, and integration features. Coverage is gated at ≥ 55% in CI.
