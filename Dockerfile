@@ -3,9 +3,19 @@
 # ──────────────────────────────────────────────
 FROM python:3.14-slim AS base
 
+# uv installs the locked dependencies (uv.lock) into /app/.venv, using the
+# image's system Python (never a downloaded one). The venv comes first on PATH,
+# so plain `python` / `gunicorn` (entrypoint.sh, compose commands) use it.
+COPY --from=ghcr.io/astral-sh/uv:0.13 /uv /bin/uv
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    DATABASE_PATH=/app/data/db.sqlite3
+    DATABASE_PATH=/app/data/db.sqlite3 \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_LINK_MODE=copy \
+    UV_NO_CACHE=1 \
+    PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
 
@@ -13,8 +23,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt gunicorn
+# Dependencies first (cached layer), application code afterwards.
+# --frozen: install exactly what uv.lock pins; --no-dev: runtime only (the
+# dev/debug/docs groups stay out of the image).
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
 
 COPY . .
 
@@ -72,7 +85,7 @@ CMD ["gunicorn", "layernexus.wsgi:application", "--bind", "0.0.0.0:8000", "--wor
 # ──────────────────────────────────────────────
 FROM base AS debug
 
-RUN pip install --no-cache-dir debugpy django-debug-toolbar
+RUN uv sync --frozen --no-dev --group debug --no-install-project
 
 ENV DEBUG=1
 
