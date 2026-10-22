@@ -1,3 +1,44 @@
+[project]
+name = "layernexus"
+# Keep in sync with the VERSION file (VERSION is what the Docker image is tagged with).
+version = "0.1.0"
+description = "The control center for your 3D print workflow"
+license = "GPL-3.0-only"
+requires-python = ">=3.12"
+dependencies = [
+    "Django>=6.1.2,<7.0",
+    "requests>=2.34.2",
+    "pillow>=13.0.0",
+    "markdown>=3.11.1",
+    "bleach>=6.4.0",
+    "whitenoise>=6.12.0",
+    "websockets>=17.3,<18",
+    "djangorestframework>=3.18.3,<4.0",
+    "defusedxml>=0.7.1",
+    "drf-spectacular>=0.30.0,<1.0",
+    "gunicorn>=26.2.0",
+]
+
+[dependency-groups]
+dev = [
+    # Pinned: ruff 0.16.x reformats Python code blocks embedded in Markdown and
+    # breaks `ruff format --check` on the docs. Bump deliberately.
+    "ruff==0.15.20",
+    "coverage",
+    "pip-audit",
+]
+debug = [
+    "debugpy",
+    "django-debug-toolbar",
+]
+docs = [
+    "mkdocs-material",
+]
+
+[tool.uv]
+# Django app, not an installable package: uv only manages the environment.
+package = false
+
 [tool.ruff]
 target-version = "py310"
 line-length = 120

@@ -1,3 +1,7 @@
+# uv binary source. A named FROM stage (not an inline COPY --from=<image>) so
+# Dependabot's docker ecosystem tracks and bumps the uv tag.
+FROM ghcr.io/astral-sh/uv:0.13 AS uv
+
 # ──────────────────────────────────────────────
 # Base stage: shared between release and debug
 # ──────────────────────────────────────────────
@@ -13,8 +17,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt gunicorn
+# uv installs the locked dependencies (uv.lock) into /app/.venv, using the
+# image's system Python (never a downloaded one). The venv comes first on PATH,
+# so plain `python` / `gunicorn` (entrypoint.sh, compose commands) use it.
+# Bytecode is compiled at install time: the venv is root-owned and
+# PYTHONDONTWRITEBYTECODE is set, so it could not be cached at runtime.
+# The uv binary is only bind-mounted for the sync steps, not shipped.
+ENV UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    PATH="/app/.venv/bin:$PATH"
+
+# Dependencies first (cached layer), application code afterwards.
+# --frozen: install exactly what uv.lock pins; --no-dev: runtime only (the
+# dev/debug/docs groups stay out of the image). The uv download cache lives in
+# a BuildKit cache mount, so it is reused across lock changes but never ends
+# up in the image.
+COPY pyproject.toml uv.lock ./
+RUN --mount=from=uv,source=/uv,target=/bin/uv \
+    --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
 
 COPY . .
 
@@ -72,7 +95,9 @@ CMD ["gunicorn", "layernexus.wsgi:application", "--bind", "0.0.0.0:8000", "--wor
 # ──────────────────────────────────────────────
 FROM base AS debug
 
-RUN pip install --no-cache-dir debugpy django-debug-toolbar
+RUN --mount=from=uv,source=/uv,target=/bin/uv \
+    --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --group debug --no-install-project
 
 ENV DEBUG=1
 

@@ -1,26 +1,35 @@
 # CLAUDE.md — LayerNexus
 
-Django 6.0 web app to manage large-scale 3D printing. Core workflow:
+Django 6.1 web app to manage large-scale 3D printing. Core workflow:
 **STL upload → OrcaSlicer slicing → G-code to Klipper/Moonraker → print-job & queue tracking.**
-Filament inventory via Spoolman. Python 3.12+ (Django 6.0 requires ≥3.12; CI: 3.14,
-local `.venv`: 3.13), SQLite.
-App version in `VERSION`.
+Filament inventory via Spoolman. Python 3.12+ (Django 6 requires ≥3.12; CI + Docker: 3.14),
+SQLite. Dependencies managed with **uv** (`pyproject.toml` + committed `uv.lock`).
+App version in `VERSION` (keep `[project].version` in `pyproject.toml` in sync).
 
 This is the single source of truth for working in this repo (it replaces the former
 `.github/copilot-instructions.md`).
 
 ## Commands
 
-Local venv (`.venv`, Python 3.13) — no pytest; use Django's test runner:
+uv (`uv sync` builds `.venv` from `uv.lock`, runtime + `dev` group) — no pytest; use
+Django's test runner. Tests need `DEBUG=1` (with `DEBUG=0` the SSL redirect breaks the
+test client) and, in a fresh checkout, `collectstatic` first (otherwise ~110 failures on
+the missing static manifest):
 
 ```bash
-.venv/bin/python manage.py test core                          # full suite (CI runs this)
-.venv/bin/python manage.py test core.tests.test_views_parts   # single module
-.venv/bin/python manage.py makemigrations                     # after model changes
-.venv/bin/python manage.py makemigrations --check --dry-run   # CI gate: fails on missing migration
-.venv/bin/python manage.py check --fail-level WARNING
-ruff check . && ruff format --check .                         # lint + format (CI gate)
-.venv/bin/python -m coverage run manage.py test core && .venv/bin/python -m coverage report  # coverage (gate: >=55%)
+export DEBUG=1                                                 # required for tests (as in CI)
+uv sync                                                        # create/refresh .venv from uv.lock
+uv run python manage.py collectstatic --noinput               # once per fresh checkout
+uv run python manage.py test core                              # full suite (CI runs this)
+uv run python manage.py test core.tests.test_views_parts       # single module
+uv run python manage.py makemigrations                         # after model changes
+uv run python manage.py makemigrations --check --dry-run       # CI gate: fails on missing migration
+uv run python manage.py check --fail-level WARNING
+uv run ruff check . && uv run ruff format --check .            # lint + format (CI gate)
+uv run coverage run manage.py test core && uv run coverage report  # coverage (gate: >=55%)
+uv add <pkg>                      # add a dependency (updates pyproject.toml + uv.lock)
+uv lock --upgrade-package <pkg>   # upgrade one package in the lock
+uv lock --check                   # CI gate: uv.lock must match pyproject.toml
 ```
 
 Docker (full stack: `web` + `worker` + `orcaslicer` + `spoolman`):
@@ -138,9 +147,17 @@ raw `request.user.is_staff` check.
 
 ## Non-obvious gotchas
 
-- **Ruff is pinned to `0.15.20`** in CI — newer versions reformat Markdown code blocks
-  and break `ruff format --check` on the docs. Match it locally. Config in
-  `pyproject.toml` (line-length 120; `core/migrations` excluded).
+- **Ruff is pinned to `0.15.20`** in the `dev` group (`pyproject.toml` → `uv.lock`) — newer
+  versions reformat Markdown code blocks and break `ruff format --check` on the docs. Always
+  run it via `uv run ruff` so you get the locked version. Config in `pyproject.toml`
+  (line-length 120; `core/migrations` excluded).
+- **Never hand-edit `uv.lock`** — change `pyproject.toml` / use `uv add` / `uv lock`, then
+  commit both files. CI runs `uv lock --check` and `uv sync --locked`. The Docker image
+  installs `--frozen --no-dev` (runtime only); the `debug` stage adds the `debug` group.
+- **Dependabot** (`.github/dependabot.yml`, ecosystem `uv`): grouped `python-deps`
+  (minor+patch, all packages except django and ruff), `django-patch` and `actions-all` PRs
+  auto-merge after green CI; django minor, ruff and all Python majors are individual PRs,
+  merged manually.
 - **Coverage gate: `fail_under = 55`** (`pyproject.toml`).
 - **Never hand-edit migrations** — only add via `makemigrations`. CI fails on any
   un-generated migration (`makemigrations --check`).
@@ -160,6 +177,7 @@ raw `request.user.is_staff` check.
 
 ## CI gate (all must pass before merge)
 
-`ruff check` + `ruff format --check` → `makemigrations --check` →
+`uv lock --check` + `ruff check` + `ruff format --check` → `makemigrations --check` →
 `manage.py check --fail-level WARNING` → `manage.py test core` (coverage ≥ 55) →
-`check --deploy` + `pip-audit` (security) → Docker release build + `/health/` smoke test.
+`check --deploy` + `pip-audit` on `uv.lock` (security) → Docker release build + `/health/`
+smoke test.

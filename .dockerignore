@@ -9,7 +9,6 @@ docker-compose*.yml
 # Documentation
 docs/
 *.md
-!requirements.txt
 LICENSE
 mkdocs.yml
 

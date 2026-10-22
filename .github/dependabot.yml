@@ -1,60 +1,62 @@
 # Dependabot configuration — automated dependency update PRs.
-# Covers all three ecosystems this repo ships: Python (requirements.txt),
-# the Docker base image (Dockerfile), and the GitHub Actions workflows.
-# Every PR runs through the existing CI gates (ruff, migrations, tests,
-# coverage, check --deploy, pip-audit) before it can merge. The grouped PRs
-# ("python-deps", "actions-all") are auto-merged once CI is green by
-# .github/workflows/dependabot-automerge.yml; everything else stays manual.
+# Covers all three ecosystems this repo ships: Python (pyproject.toml +
+# uv.lock), the Docker images (Dockerfile: Python base image and the uv
+# image), and the GitHub Actions workflows.
+# Every PR runs through the existing CI gates (ruff, lock check, migrations,
+# tests, coverage, check --deploy, pip-audit, Docker smoke test) before it can
+# merge. The grouped PRs ("python-deps", "django-patch", "actions-all") are
+# auto-merged once CI is green by .github/workflows/dependabot-automerge.yml;
+# everything else stays manual.
 version: 2
 updates:
-  # --- Python dependencies (requirements.txt) ---
+  # --- Python dependencies (pyproject.toml + uv.lock) ---
   #
-  # Why semver "update-types" cannot be used here (verified in dependabot-core):
-  # requirements.txt uses range requirements (">=X" / ">=X,<Y"), never "==" pins.
-  # Dependabot's pip parser only sets a dependency's current version for pinned
-  # requirements (python/helpers/lib/parser.py: version_from_install_req ->
-  # install_req.is_pinned), so for every line here the current version is nil.
-  # Both semver filters need that version:
-  #   - groups.update-types: SemverGroupingRules#allow_grouping? returns false
-  #     when the current version is not a valid version -> each update became an
-  #     individual PR instead of joining the group (#58-#61).
-  #   - ignore update-types "version-update:semver-major":
-  #     IgnoreCondition#versions_by_type returns [] without a current version ->
-  #     nothing is ignored (websockets <16 -> <18 still arrived as #57).
-  # The former "python-minor-patch" group + semver-major ignore were therefore
-  # no-ops and have been removed.
-  #
-  # Policy instead (no hand-maintained version lists):
-  #   - Packages WITHOUT an upper bound only ever get their lower bound raised.
-  #     The Docker build already installs the newest release, so these bumps
-  #     are low-risk even across majors -> one weekly grouped PR "python-deps",
-  #     auto-merged after green CI.
-  #   - Packages WITH an upper bound (django <7, websockets <18,
-  #     djangorestframework <4, drf-spectacular <1) are excluded from the group,
-  #     so EVERY update to them - a cap raise as well as a lower-bound bump
-  #     within the cap - is an individual PR that is never auto-merged and goes
-  #     through a manual upgrade cycle. (Telling the two apart would need the
-  #     semver classification that ranges cannot provide, see above.)
-  #     When you add a new dependency with an upper bound ("<"), add its name
-  #     to exclude-patterns below.
-  #     Safety net: the auto-merge workflow refuses to merge a group PR that
-  #     changes any "<" bound, so a forgotten entry fails safe (manual review).
-  - package-ecosystem: "pip"
+  # uv.lock pins exact versions, so Dependabot knows each package's current
+  # version and can classify updates by semver.
+  # Policy:
+  #   - Minor + patch updates of every package (direct and transitive) except
+  #     django and ruff -> one grouped PR "python-deps", auto-merged after
+  #     green CI.
+  #   - Django patch updates -> own group "django-patch", auto-merged after
+  #     green CI (security/bugfix releases).
+  #   - Django minor updates, ruff updates (pinned "==" in pyproject.toml: a
+  #     new ruff minor can reformat the docs, bump deliberately) and ALL major
+  #     updates -> individual PRs, never auto-merged (manual upgrade cycle).
+  #   - Cooldown: only propose releases that are at least 3 days old (7 days
+  #     for majors), so a broken/yanked release has time to surface first.
+  #   - Note: for 0.x packages (e.g. drf-spectacular) Dependabot classifies
+  #     0.30 -> 0.31 as "minor", so such bumps are grouped and auto-merged too;
+  #     the CI test suite is the safety net.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # Version updates cover only direct dependencies by default; "all" also
+    # updates the transitive packages pinned in uv.lock.
+    allow:
+      - dependency-type: "all"
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
     groups:
+      # Listed first: a dependency joins the first group it matches.
+      django-patch:
+        patterns:
+          - "django"
+        update-types:
+          - "patch"
       python-deps:
         patterns:
           - "*"
         exclude-patterns:
           - "django"
-          - "websockets"
-          - "djangorestframework"
-          - "drf-spectacular"
+          - "ruff"
+        update-types:
+          - "minor"
+          - "patch"
 
-  # --- Docker base image (Dockerfile) ---
+  # --- Docker images (Dockerfile) ---
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
@@ -62,13 +64,15 @@ updates:
     open-pull-requests-limit: 3
 
   # --- GitHub Actions workflow versions ---
-  # Actions are pinned to major tags, so majors are part of the group too and
-  # are auto-merged after green CI.
+  # All action updates, majors included, are grouped and auto-merged after
+  # green CI.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 3
     groups:
       actions-all:
         patterns:

@@ -10,7 +10,7 @@ If you just want to **run** LayerNexus, see the [Quick Start](../quick-start.md)
 
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/)
 - [Git](https://git-scm.com/)
-- Python 3.10+ (optional, for running linters locally)
+- [uv](https://docs.astral.sh/uv/) (optional, for running linters/tests locally — it provides Python 3.12+ and the locked dependencies)
 
 ---
 
@@ -112,36 +112,67 @@ Attach your IDE debugger (VS Code or PyCharm) to port `5678` for step-through de
 
 ## Running Tests
 
+Run the tests on the host with uv (`coverage` is part of the `dev` group, which the
+Docker image does not contain). They need `DEBUG=1` and, in a fresh checkout, the
+static files collected once:
+
 ```bash
+export DEBUG=1
+uv run python manage.py collectstatic --noinput
+
 # Run the full test suite
-docker compose exec web python manage.py test core -v 2
+uv run python manage.py test core -v 2
 
 # Run with coverage
-docker compose exec web coverage run manage.py test core -v 2
-docker compose exec web coverage report
+uv run coverage run manage.py test core -v 2
+uv run coverage report
 ```
 
-!!! important
-    Always run tests through Docker Compose — never run `manage.py` directly on the host.
+The suite can also run inside the container (without coverage):
+`docker compose exec web python manage.py test core -v 2`.
+
+---
+
+## Dependencies
+
+Dependencies are managed with [uv](https://docs.astral.sh/uv/). `pyproject.toml` lists
+the direct dependencies (`[project]`) and the `dev` / `debug` / `docs` groups; `uv.lock`
+pins every package to an exact version and is used by CI and the Docker build.
+
+```bash
+# Create/refresh .venv from uv.lock (runtime + dev group)
+uv sync
+
+# Add a dependency (updates pyproject.toml and uv.lock)
+uv add <package>
+uv add --group dev <package>
+
+# Upgrade one package within its allowed range
+uv lock --upgrade-package <package>
+```
+
+Never edit `uv.lock` by hand — CI fails if it does not match `pyproject.toml`
+(`uv lock --check`). Commit `pyproject.toml` and `uv.lock` together.
 
 ---
 
 ## Linting and Formatting
 
-LayerNexus uses [Ruff](https://github.com/astral-sh/ruff) for linting and formatting:
+LayerNexus uses [Ruff](https://github.com/astral-sh/ruff) for linting and formatting.
+Its version is pinned in the `dev` group of `pyproject.toml`; run it via `uv run`:
 
 ```bash
 # Check for lint issues
-ruff check .
+uv run ruff check .
 
 # Check formatting
-ruff format --check .
+uv run ruff format --check .
 
 # Auto-fix lint issues
-ruff check --fix .
+uv run ruff check --fix .
 
 # Auto-format code
-ruff format .
+uv run ruff format .
 ```
 
 Ruff is configured in `pyproject.toml`:
@@ -244,8 +275,8 @@ core/
 3. **Make** your changes following the code style guidelines.
 4. **Run** linting and tests:
    ```bash
-   ruff check . && ruff format --check .
-   docker compose exec web python manage.py test core -v 2
+   uv run ruff check . && uv run ruff format --check .
+   DEBUG=1 uv run python manage.py test core -v 2
    ```
 5. **Commit** with a descriptive message.
 6. **Push** to your fork and open a Pull Request.
@@ -259,7 +290,8 @@ The CI pipeline runs automatically on pull requests:
 | **Ruff lint** | Code style and best practices |
 | **Ruff format** | Code formatting |
 | **Django tests** | Full test suite with coverage |
-| **pip-audit** | Dependency security scan |
+| **uv lock check** | `uv.lock` matches `pyproject.toml` |
+| **pip-audit** | Security scan of all versions pinned in `uv.lock` |
 | **Docker build** | Image build and smoke test |
 
 All checks must pass before a PR can be merged.
