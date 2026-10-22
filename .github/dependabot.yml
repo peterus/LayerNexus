@@ -17,8 +17,10 @@ updates:
   #   - Minor + patch updates of every package (direct and transitive) except
   #     django and ruff -> one grouped PR "python-deps", auto-merged after
   #     green CI.
-  #   - Django updates, ruff updates (pinned "==" in pyproject.toml: a new
-  #     ruff minor can reformat the docs, bump deliberately) and ALL major
+  #   - Django patch updates -> own group "django-patch", auto-merged after
+  #     green CI (security/bugfix releases).
+  #   - Django minor updates, ruff updates (pinned "==" in pyproject.toml: a
+  #     new ruff minor can reformat the docs, bump deliberately) and ALL major
   #     updates -> individual PRs, never auto-merged (manual upgrade cycle).
   #   - Cooldown: only propose releases that are at least 3 days old (7 days
   #     for majors), so a broken/yanked release has time to surface first.
@@ -38,6 +40,12 @@ updates:
       default-days: 3
       semver-major-days: 7
     groups:
+      # Listed first: a dependency joins the first group it matches.
+      django-patch:
+        patterns:
+          - "django"
+        update-types:
+          - "patch"
       python-deps:
         patterns:
           - "*"

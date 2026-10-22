@@ -1,16 +1,18 @@
 # Auto-merge for grouped Dependabot PRs.
 #
-# Enables GitHub auto-merge (squash) for exactly two Dependabot groups defined
-# in .github/dependabot.yml:
+# Enables GitHub auto-merge (squash) for exactly three Dependabot groups
+# defined in .github/dependabot.yml:
 #   - "python-deps": minor + patch updates of all Python packages except
 #     django and ruff
+#   - "django-patch": Django patch releases
 #   - "actions-all": GitHub Actions updates, majors included
 # The PR then merges by itself once all required checks are green. Individual
-# Dependabot PRs (django, ruff, every Python major, Docker images) and all
+# Dependabot PRs (django minor, ruff, every Python major, Docker images) and all
 # non-Dependabot PRs are never touched.
 #
 # Belt and braces: a "python-deps" PR is only armed if fetch-metadata does not
-# classify it as a semver-major update (the group is minor/patch only anyway).
+# classify it as a semver-major update, a "django-patch" PR only if it is a
+# semver-patch update (the groups are restricted to those types anyway).
 #
 # Notes:
 #   - Token: the built-in GITHUB_TOKEN (no PAT). Merges performed with it do
@@ -64,7 +66,9 @@ jobs:
         if: >-
           (steps.metadata.outputs.dependency-group == 'actions-all') ||
           (steps.metadata.outputs.dependency-group == 'python-deps' &&
-           steps.metadata.outputs.update-type != 'version-update:semver-major')
+           steps.metadata.outputs.update-type != 'version-update:semver-major') ||
+          (steps.metadata.outputs.dependency-group == 'django-patch' &&
+           steps.metadata.outputs.update-type == 'version-update:semver-patch')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -81,7 +85,9 @@ jobs:
         if: >-
           !((steps.metadata.outputs.dependency-group == 'actions-all') ||
             (steps.metadata.outputs.dependency-group == 'python-deps' &&
-             steps.metadata.outputs.update-type != 'version-update:semver-major'))
+             steps.metadata.outputs.update-type != 'version-update:semver-major') ||
+            (steps.metadata.outputs.dependency-group == 'django-patch' &&
+             steps.metadata.outputs.update-type == 'version-update:semver-patch'))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
