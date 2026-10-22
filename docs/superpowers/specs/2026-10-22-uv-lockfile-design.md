@@ -46,6 +46,11 @@ Versionssprünge vor; semver-Klassifikation funktioniert wieder, die Workarounds
    - **Cooldown** für uv: 3 Tage default/minor/patch, 7 Tage major. Für actions ebenfalls 3 Tage.
    - Docker-Ökosystem unverändert (trackt künftig auch das uv-Image-Tag).
    - YAML-Kommentare aktualisieren (Root-Cause-Text der Ranges entfernen/kürzen).
+   - **Nachtrag (User-Entscheidung während PR #71):** Django-**Patches** werden ebenfalls
+     auto-gemergt — eigene Gruppe `django-patch` (patterns `django`, `update-types: [patch]`,
+     vor `python-deps`), im Workflow nur bei `update-type == semver-patch` scharf. Außerdem
+     `ruff` aus `python-deps` ausgenommen (bewusst gepinnt) und `allow: dependency-type: all`
+     (transitive Pakete). Nur Django-Minor + Majors + ruff bleiben manuell.
 
 ## User-Entscheidungen (2026-10-22)
 

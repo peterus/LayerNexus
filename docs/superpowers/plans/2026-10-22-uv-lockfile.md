@@ -15,7 +15,7 @@
 - Lock auf den heute aufgelösten Stand; keine bewussten Upgrades.
 - Ruff bleibt `0.15.20` (jetzt via Lock). Coverage-Gate 55 bleibt.
 - Major-Tag-Pins für Actions/Images wie im restlichen Repo, keine SHA-Pins.
-- Auto-Merge: nur `python-deps` (minor+patch, ohne django) und `actions-all`; nie Majors, nie Django-Minor.
+- Auto-Merge: nur `python-deps` (minor+patch, ohne django/ruff), `django-patch` (Nachtrag, User-Entscheidung) und `actions-all`; nie Majors, nie Django-Minor.
 - Cooldown: uv default 3 / semver-major 7 Tage; actions 3 Tage.
 - Merge nur über `gh`, squash; Koordinator arbeitet nicht im Haupt-Checkout.
 

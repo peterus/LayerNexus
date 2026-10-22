@@ -4,9 +4,9 @@
 # image), and the GitHub Actions workflows.
 # Every PR runs through the existing CI gates (ruff, lock check, migrations,
 # tests, coverage, check --deploy, pip-audit, Docker smoke test) before it can
-# merge. The grouped PRs ("python-deps", "actions-all") are auto-merged once
-# CI is green by .github/workflows/dependabot-automerge.yml; everything else
-# stays manual.
+# merge. The grouped PRs ("python-deps", "django-patch", "actions-all") are
+# auto-merged once CI is green by .github/workflows/dependabot-automerge.yml;
+# everything else stays manual.
 version: 2
 updates:
   # --- Python dependencies (pyproject.toml + uv.lock) ---
