@@ -31,9 +31,12 @@ updates:
   #     auto-merged after green CI.
   #   - Packages WITH an upper bound (django <7, websockets <18,
   #     djangorestframework <4, drf-spectacular <1) are excluded from the group,
-  #     so raising a cap is always an individual PR that is never auto-merged
-  #     and goes through a manual upgrade cycle. When you add a new dependency
-  #     with an upper bound ("<"), add its name to exclude-patterns below.
+  #     so EVERY update to them - a cap raise as well as a lower-bound bump
+  #     within the cap - is an individual PR that is never auto-merged and goes
+  #     through a manual upgrade cycle. (Telling the two apart would need the
+  #     semver classification that ranges cannot provide, see above.)
+  #     When you add a new dependency with an upper bound ("<"), add its name
+  #     to exclude-patterns below.
   #     Safety net: the auto-merge workflow refuses to merge a group PR that
   #     changes any "<" bound, so a forgotten entry fails safe (manual review).
   - package-ecosystem: "pip"

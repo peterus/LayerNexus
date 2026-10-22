@@ -61,7 +61,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
           GROUP: ${{ steps.metadata.outputs.dependency-group }}
         run: |
           set -euo pipefail
@@ -69,11 +71,19 @@ jobs:
             # Safety net: the pip group must only raise lower bounds. If any
             # changed line carries an upper bound ("<"), a capped package slipped
             # into the group (missing exclude-pattern) -> leave it for a human.
-            DIFF=$(gh pr diff "$PR_URL")
+            # The diff is taken for exactly HEAD_SHA (not the PR's current head).
+            DIFF=$(gh api -H "Accept: application/vnd.github.diff" "repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}")
             CHANGED=$(grep -E '^[+-]' <<<"$DIFF" | grep -vE '^(\+\+\+|---)( |$)' || true)
+            if [ -z "$CHANGED" ]; then
+              echo "::error::Empty diff for ${HEAD_SHA} - refusing to auto-merge."
+              exit 1
+            fi
             if grep -q '<' <<<"$CHANGED"; then
               echo "::warning::Group PR changes an upper bound (<) - auto-merge not enabled, manual review required."
-              gh pr merge --disable-auto "$PR_URL" || true
+              # Disarm an auto-merge armed by an earlier run; errors fail the job.
+              if [ "$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" = "true" ]; then
+                gh pr merge --disable-auto "$PR_URL"
+              fi
               exit 0
             fi
           fi
@@ -95,4 +105,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --disable-auto "$PR_URL" || true
+        # Only disarm when armed; any API error fails the job visibly instead of
+        # silently leaving auto-merge on.
+        run: |
+          set -euo pipefail
+          if [ "$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')" = "true" ]; then
+            gh pr merge --disable-auto "$PR_URL"
+          fi
