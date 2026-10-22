@@ -1,29 +1,58 @@
 # Dependabot configuration — automated dependency update PRs.
 # Covers all three ecosystems this repo ships: Python (requirements.txt),
 # the Docker base image (Dockerfile), and the GitHub Actions workflows.
-# Minor/patch updates are grouped to reduce PR noise; major bumps are left
-# out so breaking-change upgrades stay a deliberate, human-reviewed step.
 # Every PR runs through the existing CI gates (ruff, migrations, tests,
-# coverage, check --deploy, pip-audit) before it can merge.
+# coverage, check --deploy, pip-audit) before it can merge. The grouped PRs
+# ("python-deps", "actions-all") are auto-merged once CI is green by
+# .github/workflows/dependabot-automerge.yml; everything else stays manual.
 version: 2
 updates:
   # --- Python dependencies (requirements.txt) ---
+  #
+  # Why semver "update-types" cannot be used here (verified in dependabot-core):
+  # requirements.txt uses range requirements (">=X" / ">=X,<Y"), never "==" pins.
+  # Dependabot's pip parser only sets a dependency's current version for pinned
+  # requirements (python/helpers/lib/parser.py: version_from_install_req ->
+  # install_req.is_pinned), so for every line here the current version is nil.
+  # Both semver filters need that version:
+  #   - groups.update-types: SemverGroupingRules#allow_grouping? returns false
+  #     when the current version is not a valid version -> each update became an
+  #     individual PR instead of joining the group (#58-#61).
+  #   - ignore update-types "version-update:semver-major":
+  #     IgnoreCondition#versions_by_type returns [] without a current version ->
+  #     nothing is ignored (websockets <16 -> <18 still arrived as #57).
+  # The former "python-minor-patch" group + semver-major ignore were therefore
+  # no-ops and have been removed.
+  #
+  # Policy instead (no hand-maintained version lists):
+  #   - Packages WITHOUT an upper bound only ever get their lower bound raised.
+  #     The Docker build already installs the newest release, so these bumps
+  #     are low-risk even across majors -> one weekly grouped PR "python-deps",
+  #     auto-merged after green CI.
+  #   - Packages WITH an upper bound (django <7, websockets <18,
+  #     djangorestframework <4, drf-spectacular <1) are excluded from the group,
+  #     so EVERY update to them - a cap raise as well as a lower-bound bump
+  #     within the cap - is an individual PR that is never auto-merged and goes
+  #     through a manual upgrade cycle. (Telling the two apart would need the
+  #     semver classification that ranges cannot provide, see above.)
+  #     When you add a new dependency with an upper bound ("<"), add its name
+  #     to exclude-patterns below.
+  #     Safety net: the auto-merge workflow refuses to merge a group PR that
+  #     changes any "<" bound, so a forgotten entry fails safe (manual review).
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
     groups:
-      python-minor-patch:
-        update-types:
-          - "minor"
-          - "patch"
-    ignore:
-      # Django is intentionally capped at <7.0 in requirements.txt; skip the
-      # 7.0 major so a breaking upgrade never lands automatically.
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-major"
+      python-deps:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "django"
+          - "websockets"
+          - "djangorestframework"
+          - "drf-spectacular"
 
   # --- Docker base image (Dockerfile) ---
   - package-ecosystem: "docker"
@@ -33,6 +62,8 @@ updates:
     open-pull-requests-limit: 3
 
   # --- GitHub Actions workflow versions ---
+  # Actions are pinned to major tags, so majors are part of the group too and
+  # are auto-merged after green CI.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
