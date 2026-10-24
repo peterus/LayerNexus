@@ -26,7 +26,6 @@ from typing import Any
 
 from asgiref.sync import sync_to_async
 from django.core.management.base import BaseCommand
-from django.db import connection
 
 from core.models import PrinterProfile, PrintQueue
 from core.services.moonraker_ws import MoonrakerWebSocketClient
@@ -45,16 +44,6 @@ class PrinterSnapshot:
     moonraker_url: str
     moonraker_api_key: str
     updated_at: Any  # datetime
-
-
-@sync_to_async
-def _enable_sqlite_wal() -> None:
-    if connection.vendor != "sqlite":
-        return
-    with connection.cursor() as cursor:
-        cursor.execute("PRAGMA journal_mode=WAL;")
-        cursor.execute("PRAGMA busy_timeout=5000;")
-    logger.info("SQLite WAL mode + busy_timeout enabled")
 
 
 @sync_to_async
@@ -246,8 +235,6 @@ async def _reconcile_loop(
 
 
 async def _main(reload_interval: float) -> None:
-    await _enable_sqlite_wal()
-
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):

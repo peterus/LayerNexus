@@ -32,6 +32,7 @@ These have sensible defaults in the Docker image and usually don't need to be ch
 | `ALLOW_REGISTRATION` | Whether new users can create accounts themselves. Set to `true` or `false`. | `true` |
 | `LOG_LEVEL` | How much detail to log. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`. | `INFO` |
 | `DATABASE_PATH` | Where to store the database file. You usually don't need to change this. | `/app/data/db.sqlite3` |
+| `DATABASE_TIMEOUT` | Seconds a database write waits for another write to finish before failing with "database is locked". | `20` |
 
 ---
 

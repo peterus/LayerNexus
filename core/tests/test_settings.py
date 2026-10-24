@@ -3,6 +3,7 @@ import os
 from unittest import mock
 
 from django.conf import settings
+from django.db import connection
 from django.test import SimpleTestCase
 
 from layernexus import settings as settings_module
@@ -49,3 +50,31 @@ class SessionLifetimeSettingsTests(SimpleTestCase):
                 self.assertFalse(reloaded.SESSION_SAVE_EVERY_REQUEST)
         finally:
             importlib.reload(settings_module)
+
+
+class DatabaseSettingsTests(SimpleTestCase):
+    databases = {"default"}
+    """Guards the SQLite locking configuration for concurrent web + worker writes."""
+
+    def test_transactions_start_immediate(self) -> None:
+        self.assertEqual(settings.DATABASES["default"]["OPTIONS"]["transaction_mode"], "IMMEDIATE")
+
+    def test_wal_enabled_for_every_connection(self) -> None:
+        self.assertIn("journal_mode=WAL", settings.DATABASES["default"]["OPTIONS"]["init_command"])
+
+    def test_default_timeout_is_20_seconds(self) -> None:
+        self.assertEqual(settings.DATABASES["default"]["OPTIONS"]["timeout"], 20)
+
+    def test_timeout_honours_environment_override(self) -> None:
+        try:
+            with mock.patch.dict(os.environ, {"DATABASE_TIMEOUT": "45"}):
+                reloaded = importlib.reload(settings_module)
+                self.assertEqual(reloaded.DATABASES["default"]["OPTIONS"]["timeout"], 45)
+        finally:
+            importlib.reload(settings_module)
+
+    def test_connection_applies_busy_timeout_pragma(self) -> None:
+        """Django translates ``timeout`` into PRAGMA busy_timeout (ms) on each connection."""
+        with connection.cursor() as cursor:
+            cursor.execute("PRAGMA busy_timeout;")
+            self.assertEqual(cursor.fetchone()[0], 20000)

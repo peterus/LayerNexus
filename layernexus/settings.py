@@ -112,6 +112,19 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": os.environ.get("DATABASE_PATH", str(BASE_DIR / "db.sqlite3")),
+        "OPTIONS": {
+            # web (gunicorn) and the moonraker worker write concurrently. DEFERRED transactions
+            # (the default) fail instantly with "database is locked" when upgrading a read lock
+            # to a write lock; IMMEDIATE takes the write lock up front so writers queue on
+            # the busy timeout instead.
+            "transaction_mode": "IMMEDIATE",
+            # Seconds to wait for the write lock (Django's default is 5).
+            # Also applied as PRAGMA busy_timeout on every connection (web and worker alike).
+            "timeout": int(os.environ.get("DATABASE_TIMEOUT", "20")),
+            # WAL lets readers proceed during a write; shared by web and the moonraker worker
+            # (formerly enabled only in the worker). Persistent in the DB file, cheap to re-issue.
+            "init_command": "PRAGMA journal_mode=WAL;",
+        },
     }
 }
 

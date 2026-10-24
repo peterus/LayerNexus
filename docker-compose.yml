@@ -14,6 +14,7 @@ services:
       - DEBUG=${DEBUG:-1}
       - SESSION_COOKIE_AGE=${SESSION_COOKIE_AGE:-1209600}
       - SESSION_SAVE_EVERY_REQUEST=${SESSION_SAVE_EVERY_REQUEST:-1}
+      - DATABASE_TIMEOUT=${DATABASE_TIMEOUT:-20}
     command: ["gunicorn", "layernexus.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--reload"]
     restart: unless-stopped
     depends_on:
@@ -34,6 +35,7 @@ services:
       - DEBUG=${DEBUG:-0}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - WORKER_RELOAD_INTERVAL=${WORKER_RELOAD_INTERVAL:-10}
+      - DATABASE_TIMEOUT=${DATABASE_TIMEOUT:-20}
     # The image-wide HEALTHCHECK (curl :8000/health/) only fits the web service.
     # The worker runs `manage.py moonraker_worker` with no HTTP server, so it
     # would be permanently "unhealthy". Override with a process-liveness probe
