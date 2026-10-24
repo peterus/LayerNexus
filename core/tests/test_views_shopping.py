@@ -83,6 +83,16 @@ class ShoppingListViewTests(ShoppingViewTestBase):
         self.assertContains(response, f"Used in: Child Module, {self.project.name}")
         self.assertNotContains(response, "bi-info-circle")
 
+    def test_list_used_in_root_only_and_escaped(self) -> None:
+        child = Project.objects.create(name="<b>X</b>", created_by=self.admin_user)
+        ProjectComponent.objects.create(parent_project=self.project, child_project=child, quantity=1)
+        ProjectHardware.objects.create(project=child, hardware_part=self.m3, quantity=1)
+        self.login(self.designer_user)
+        response = self.client.get(self.list_url)
+        self.assertContains(response, f"Used in: {self.project.name}</div>")
+        self.assertContains(response, "&lt;b&gt;X&lt;/b&gt;")
+        self.assertNotContains(response, "<b>X</b>")
+
     def test_list_requires_login(self) -> None:
         response = self.client.get(self.list_url)
         self.assertEqual(response.status_code, 302)
@@ -214,6 +224,16 @@ class ShoppingSummaryTests(ShoppingViewTestBase):
         self.login(self.designer_user)
         response = self.client.get(reverse("core:project_detail", args=[self.project.pk]))
         self.assertNotContains(response, "Aggregated Hardware (incl. Sub-Projects)")
+
+    def test_project_detail_summary_for_child_only_hardware(self) -> None:
+        ProjectHardware.objects.filter(project=self.project).delete()
+        child = Project.objects.create(name="Child Module", created_by=self.admin_user)
+        ProjectComponent.objects.create(parent_project=self.project, child_project=child, quantity=1)
+        ProjectHardware.objects.create(project=child, hardware_part=self.m3, quantity=1)
+        self.login(self.designer_user)
+        response = self.client.get(reverse("core:project_detail", args=[self.project.pk]))
+        self.assertContains(response, self.list_url)
+        self.assertNotContains(response, "No hardware items yet.")
 
     def test_project_detail_no_summary_without_hardware(self) -> None:
         ProjectHardware.objects.filter(project=self.project).delete()

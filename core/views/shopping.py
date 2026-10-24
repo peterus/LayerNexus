@@ -95,7 +95,7 @@ class ProjectShoppingResetView(ProjectManageMixin, View):
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Delete all stored shopping statuses of the project."""
-        project = _get_project(pk)
+        project = get_object_or_404(Project, pk=pk)
         count = HardwareShoppingItem.reset(project)
         messages.success(request, f"Shopping list reset ({count} item(s)).")
         return redirect(_list_url(project))
