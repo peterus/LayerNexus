@@ -105,8 +105,18 @@ from .queue import (
     RunAllQueuesView,
     RunNextQueueView,
 )
+from .shopping import (
+    ProjectShoppingCartOrderedView,
+    ProjectShoppingItemSetView,
+    ProjectShoppingListView,
+    ProjectShoppingResetView,
+)
 
 __all__ = [
+    "ProjectShoppingCartOrderedView",
+    "ProjectShoppingItemSetView",
+    "ProjectShoppingListView",
+    "ProjectShoppingResetView",
     "AddPartToJobView",
     "AdminDashboardView",
     "ApiTokenView",

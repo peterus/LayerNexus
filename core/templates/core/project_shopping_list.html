@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+
+{% block title %}Shopping List — {{ project.name }} — {{ APP_NAME }}{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+  <div>
+    <h1 class="h3 mb-1"><i class="bi bi-cart3 me-2"></i>Shopping List — {{ project.name }}</h1>
+    <div class="text-body-secondary">
+      {{ counts.open }} open · {{ counts.in_cart }} in cart · {{ counts.ordered }} ordered
+    </div>
+  </div>
+  <div class="d-flex gap-2">
+    <a href="{% url 'core:project_detail' project.pk %}" class="btn btn-outline-secondary">
+      <i class="bi bi-arrow-left me-1"></i>Back to project
+    </a>
+    {% if rows and perms.core.can_manage_projects %}
+    <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#cartOrderedModal"{% if counts.in_cart == 0 %} disabled{% endif %}>
+      <i class="bi bi-bag-check me-1"></i>Mark cart as ordered
+    </button>
+    <button type="button" class="btn btn-outline-danger" data-bs-toggle="modal" data-bs-target="#resetModal">
+      <i class="bi bi-arrow-counterclockwise me-1"></i>Reset all
+    </button>
+    {% endif %}
+  </div>
+</div>
+
+{% if not rows %}
+<div class="card">
+  <div class="card-body text-center text-body-secondary py-5">
+    <i class="bi bi-cart-x fs-1 d-block mb-2"></i>
+    No hardware required for this project.
+    <div class="mt-3"><a href="{% url 'core:project_detail' project.pk %}" class="btn btn-outline-primary btn-sm">Go to project</a></div>
+  </div>
+</div>
+{% else %}
+{% for category, category_rows in grouped_rows %}
+<h2 class="h5 mt-4 mb-2">{{ category }}</h2>
+<div class="card mb-3">
+  <ul class="list-group list-group-flush">
+    {% for row in category_rows %}
+    <li class="list-group-item d-flex align-items-center gap-3 flex-wrap{% if row.status == 'ordered' %} text-body-secondary{% endif %}" id="hw-{{ row.hardware_part.pk }}">
+      <div class="flex-grow-1{% if row.status == 'ordered' %} opacity-50{% endif %}">
+        <span class="fw-semibold">{{ row.hardware_part.name }}</span>
+        <i class="bi bi-info-circle ms-1" title="Used in: {{ row.projects|join:', ' }}"></i>
+        {% if row.previous_quantity is not None %}
+        <small class="d-block text-warning-emphasis">Quantity changed (was {{ row.previous_quantity }})</small>
+        {% endif %}
+      </div>
+      <div class="fw-semibold{% if row.status == 'ordered' %} opacity-50{% endif %}">&times; {{ row.quantity }}</div>
+      <div>
+        {% if row.hardware_part.url %}
+        <a href="{{ row.hardware_part.url }}" target="_blank" rel="noopener noreferrer" class="btn btn-outline-secondary btn-sm">
+          <i class="bi bi-box-arrow-up-right me-1"></i>Shop
+        </a>
+        {% else %}
+        <span class="badge text-bg-warning">no link</span>
+        {% endif %}
+      </div>
+      <div class="d-flex align-items-center gap-2">
+        <span class="badge {% if row.status == 'ordered' %}text-bg-success{% elif row.status == 'in_cart' %}text-bg-primary{% else %}text-bg-secondary{% endif %}">
+          {% if row.status == 'in_cart' %}in cart{% else %}{{ row.status }}{% endif %}
+        </span>
+        {% if perms.core.can_manage_projects %}
+        <form method="post" action="{% url 'core:project_shopping_item_set' project.pk row.hardware_part.pk %}">
+          {% csrf_token %}
+          <input type="hidden" name="status" value="{{ row.next_status }}">
+          <button type="submit" class="btn btn-outline-primary btn-sm" title="Set to {{ row.next_status }}">
+            <i class="bi bi-arrow-right-circle"></i>
+          </button>
+        </form>
+        {% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if rows and perms.core.can_manage_projects %}
+<div class="modal fade" id="cartOrderedModal" tabindex="-1" aria-labelledby="cartOrderedModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" action="{% url 'core:project_shopping_cart_ordered' project.pk %}">
+        {% csrf_token %}
+        <div class="modal-header">
+          <h5 class="modal-title" id="cartOrderedModalLabel">Mark cart as ordered</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">Mark all {{ counts.in_cart }} item(s) in the cart as ordered?</div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Mark as ordered</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="resetModal" tabindex="-1" aria-labelledby="resetModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" action="{% url 'core:project_shopping_reset' project.pk %}">
+        {% csrf_token %}
+        <div class="modal-header">
+          <h5 class="modal-title" id="resetModalLabel">Reset all</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">Reset every item on this list back to open?</div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-danger">Reset all</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
