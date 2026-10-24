@@ -12,6 +12,7 @@ from .printers import urlpatterns as printer_urls
 from .projects import urlpatterns as project_urls
 from .queue import urlpatterns as queue_urls
 from .services import urlpatterns as service_urls
+from .shopping import urlpatterns as shopping_urls
 
 app_name = "core"
 
@@ -27,5 +28,6 @@ urlpatterns = (
     + service_urls
     + document_urls
     + hardware_urls
+    + shopping_urls
     + auth_urls
 )

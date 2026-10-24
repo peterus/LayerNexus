@@ -140,6 +140,10 @@ Hardware parts are organized into categories:
 
 Hardware costs are included in the project's total cost calculation.
 
+### Shopping list
+
+Each project has a **Shopping list** (linked from the project and cost pages) that sums up all hardware needed, including sub-projects, so you can buy it in one go. Every item moves through three steps: **open**, **in cart** and **ordered**; **Mark cart as ordered** advances all in-cart items at once. If the required quantity of an item changes after you set its status, the item automatically falls back to **open** so nothing is under-ordered. Everyone with project access can view the list; changing statuses requires the Designer or Admin role.
+
 ---
 
 ## Project Documents
