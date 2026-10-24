@@ -9,7 +9,7 @@ from core.models import (
     ProjectComponent,
     ProjectHardware,
 )
-from core.models.hardware import ShoppingItemNotRequired, ShoppingRow
+from core.models.hardware import ShoppingItemNotRequired, ShoppingQuantityChanged, ShoppingRow
 
 
 class ShoppingListTestBase(TestCase):
@@ -86,6 +86,13 @@ class SetStatusTests(ShoppingListTestBase):
         with self.assertRaises(ShoppingItemNotRequired):
             HardwareShoppingItem.set_status(self.root, self.magnet.pk, "in_cart")
         self.assertEqual(HardwareShoppingItem.objects.count(), 0)
+
+    def test_set_status_with_outdated_expected_quantity_writes_nothing(self) -> None:
+        with self.assertRaises(ShoppingQuantityChanged):
+            HardwareShoppingItem.set_status(self.root, self.m3.pk, "ordered", expected_quantity=8)
+        self.assertEqual(HardwareShoppingItem.objects.count(), 0)
+        row = HardwareShoppingItem.set_status(self.root, self.m3.pk, "ordered", expected_quantity=10)
+        self.assertEqual(row.status, "ordered")
 
     def test_set_status_on_changed_row_takes_new_quantity(self) -> None:
         HardwareShoppingItem.set_status(self.root, self.m3.pk, "ordered")

@@ -360,6 +360,21 @@ class Project(models.Model):
             prefix += "child_links__child_project__"
         return lookups
 
+    @classmethod
+    def hardware_prefetch_lookups(cls, depth: int = 3) -> list[str]:
+        """Prefetch lookups for walking only the composition tree (no parts/print jobs).
+
+        Lighter alternative to :meth:`aggregate_prefetch_lookups` for callers that
+        only aggregate hardware, such as the shopping list.
+
+        Args:
+            depth: Number of child-module levels to cover (root counts as 0).
+
+        Returns:
+            List of ``prefetch_related`` lookup strings.
+        """
+        return ["child_links__child_project" + "__child_links__child_project" * level for level in range(depth + 1)]
+
     def get_descendant_ids(self, _path: set[int] | None = None) -> set[int]:
         """Return the set of PKs of all descendant projects over the composition DAG.
 

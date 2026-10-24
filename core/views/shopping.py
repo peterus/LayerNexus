@@ -14,7 +14,7 @@ from django.views.generic import DetailView
 
 from core.mixins import ProjectManageMixin
 from core.models import HardwareShoppingItem, Project
-from core.models.hardware import ShoppingItemNotRequired
+from core.models.hardware import ShoppingItemNotRequired, ShoppingQuantityChanged
 
 __all__ = [
     "ProjectShoppingListView",
@@ -33,7 +33,7 @@ class ProjectShoppingListView(LoginRequiredMixin, DetailView):
 
     def get_queryset(self) -> QuerySet:
         """Prefetch the aggregate tree so sub-project recursion avoids N+1 queries."""
-        return Project.objects.prefetch_related(*Project.aggregate_prefetch_lookups())
+        return Project.objects.prefetch_related(*Project.hardware_prefetch_lookups())
 
     def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
         """Add rows, rows grouped by category and status counters."""
@@ -49,7 +49,7 @@ class ProjectShoppingListView(LoginRequiredMixin, DetailView):
 
 def _get_project(pk: int) -> Project:
     """Load a project with the aggregate tree prefetched for ``build_list``."""
-    return get_object_or_404(Project.objects.prefetch_related(*Project.aggregate_prefetch_lookups()), pk=pk)
+    return get_object_or_404(Project.objects.prefetch_related(*Project.hardware_prefetch_lookups()), pk=pk)
 
 
 def _list_url(project: Project, anchor: str = "") -> str:
@@ -66,7 +66,16 @@ class ProjectShoppingItemSetView(ProjectManageMixin, View):
         """Apply the submitted ``status`` and redirect back to the part's row."""
         project = _get_project(pk)
         try:
-            row = HardwareShoppingItem.set_status(project, hardware_part_pk, request.POST.get("status", ""))
+            expected = request.POST.get("quantity")
+            row = HardwareShoppingItem.set_status(
+                project,
+                hardware_part_pk,
+                request.POST.get("status", ""),
+                expected_quantity=int(expected) if expected is not None else None,
+            )
+        except ShoppingQuantityChanged as exc:
+            messages.warning(request, f"{exc}. Nothing was changed, please review the row.")
+            return redirect(_list_url(project, f"#hw-{hardware_part_pk}"))
         except ValueError:
             return HttpResponseBadRequest("Invalid shopping status.")
         except ShoppingItemNotRequired as exc:

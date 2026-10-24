@@ -108,6 +108,9 @@ HardwareShoppingItem
   „im Warenkorb“).
 - Ein Teil, das nicht (mehr) im aggregierten Bedarf des Projekts vorkommt, kann nicht gesetzt
   werden (404).
+- **Veraltete Seite:** Das Formular sendet zusätzlich die angezeigte Stückzahl (`quantity`). Weicht
+  sie von der aktuellen aggregierten Stückzahl ab, wird nichts gespeichert; Redirect auf die Zeile
+  mit Warnhinweis (verhindert, dass eine nie gesehene Menge als „bestellt“ markiert wird).
 - **Verwaiste Datensätze** (Teil nicht mehr im Bedarf) werden ignoriert und bei jeder
   Schreibaktion auf dieser Liste entfernt. Bekannte Grenze (akzeptiert): Wird ein Teil entfernt
   und später mit *exakt derselben* Stückzahl wieder hinzugefügt, ohne dass dazwischen eine

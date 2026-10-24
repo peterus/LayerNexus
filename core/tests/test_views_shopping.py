@@ -173,6 +173,34 @@ class ShoppingWriteViewTests(ShoppingViewTestBase):
         self.assertContains(response, 'name="status" value="ordered"')
         self.assertContains(response, 'name="status" value="in_cart"')
 
+    def test_stale_status_post_is_rejected_without_write(self) -> None:
+        self.login(self.designer_user)
+        response = self.client.post(self.set_url(self.m3), {"status": "ordered", "quantity": "3"})
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response["Location"].endswith(f"#hw-{self.m3.pk}"))
+        self.assertFalse(HardwareShoppingItem.objects.exists())
+        page = self.client.get(response["Location"].split("#")[0])
+        self.assertContains(page, "Nothing was changed")
+        response = self.client.post(self.set_url(self.m3), {"status": "ordered", "quantity": "4"})
+        self.assertEqual(self.status(self.m3), "ordered")
+
+    def test_set_status_non_numeric_quantity_returns_400(self) -> None:
+        self.login(self.designer_user)
+        response = self.client.post(self.set_url(self.m3), {"status": "in_cart", "quantity": "x"})
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(HardwareShoppingItem.objects.exists())
+
+    def test_list_renders_ordered_styling_and_action_labels(self) -> None:
+        HardwareShoppingItem.set_status(self.project, self.m3.pk, HardwareShoppingItem.STATUS_IN_CART)
+        HardwareShoppingItem.set_status(self.project, self.bearing.pk, HardwareShoppingItem.STATUS_ORDERED)
+        self.login(self.designer_user)
+        response = self.client.get(self.list_url)
+        self.assertContains(response, 'aria-label="Mark as ordered"')
+        self.assertContains(response, 'aria-label="Mark as open"')
+        self.assertContains(response, f'text-body-secondary" id="hw-{self.bearing.pk}"')
+        self.assertNotContains(response, f'text-body-secondary" id="hw-{self.m3.pk}"')
+        self.assertContains(response, 'name="quantity" value="4"')
+
     def test_write_endpoints_reject_get(self) -> None:
         self.login(self.admin_user)
         for url in (self.set_url(self.m3), self.cart_url, self.reset_url):

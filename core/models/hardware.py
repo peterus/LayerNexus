@@ -126,6 +126,10 @@ class ShoppingItemNotRequired(LookupError):
     """Raised when a hardware part is not part of a project's aggregated demand."""
 
 
+class ShoppingQuantityChanged(Exception):
+    """Raised when a status change was submitted for an outdated required quantity."""
+
+
 @dataclass
 class ShoppingRow:
     """One line of a project's shopping list with its effective status.
@@ -242,13 +246,21 @@ class HardwareShoppingItem(models.Model):
         project.hardware_shopping_items.exclude(hardware_part_id__in=[r.hardware_part.pk for r in rows]).delete()
 
     @classmethod
-    def set_status(cls, project: Project, hardware_part_id: int, status: str) -> ShoppingRow:
+    def set_status(
+        cls,
+        project: Project,
+        hardware_part_id: int,
+        status: str,
+        expected_quantity: int | None = None,
+    ) -> ShoppingRow:
         """Set the target status of one row, snapshotting the current quantity.
 
         Args:
             project: The project owning the list.
             hardware_part_id: Primary key of the hardware part.
             status: Target status; ``open`` deletes the record.
+            expected_quantity: Quantity the user saw when submitting; if given and
+                it differs from the current aggregated quantity, nothing is written.
 
         Returns:
             The updated row.
@@ -256,6 +268,7 @@ class HardwareShoppingItem(models.Model):
         Raises:
             ValueError: If ``status`` is not a known status.
             ShoppingItemNotRequired: If the part is not in the project's demand.
+            ShoppingQuantityChanged: If ``expected_quantity`` is outdated.
         """
         if status not in cls.ALL_STATUSES:
             raise ValueError(f"Invalid shopping status: {status!r}")
@@ -264,6 +277,10 @@ class HardwareShoppingItem(models.Model):
             row = next((r for r in rows if r.hardware_part.pk == hardware_part_id), None)
             if row is None:
                 raise ShoppingItemNotRequired(f"Hardware part {hardware_part_id} is not required by {project.name}")
+            if expected_quantity is not None and expected_quantity != row.quantity:
+                raise ShoppingQuantityChanged(
+                    f"Required quantity of {row.hardware_part.name} changed from {expected_quantity} to {row.quantity}"
+                )
             cls._prune_orphans(project, rows)
             if status == cls.STATUS_OPEN:
                 project.hardware_shopping_items.filter(hardware_part_id=hardware_part_id).delete()

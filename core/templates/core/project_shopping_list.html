@@ -65,6 +65,7 @@
         <form method="post" action="{% url 'core:project_shopping_item_set' project.pk row.hardware_part.pk %}">
           {% csrf_token %}
           <input type="hidden" name="status" value="{{ row.next_status }}">
+          <input type="hidden" name="quantity" value="{{ row.quantity }}">
           {% if row.next_status == "in_cart" %}{% firstof "Mark as in cart" as advance_label %}{% elif row.next_status == "ordered" %}{% firstof "Mark as ordered" as advance_label %}{% else %}{% firstof "Mark as open" as advance_label %}{% endif %}
           <button type="submit" class="btn btn-outline-primary btn-sm" title="{{ advance_label }}" aria-label="{{ advance_label }}">
             <i class="bi bi-arrow-right-circle"></i>
