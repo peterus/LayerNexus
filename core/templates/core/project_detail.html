@@ -536,6 +536,13 @@
   {% endif %}
 </div>
 
+{% if shopping_counts %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <span><i class="bi bi-cart me-1"></i>Shopping list &mdash; {{ shopping_counts.open }} open &middot; {{ shopping_counts.in_cart }} in cart &middot; {{ shopping_counts.ordered }} ordered</span>
+  <a href="{% url 'core:project_shopping_list' project.pk %}" class="btn btn-outline-primary btn-sm">Open shopping list</a>
+</div>
+{% endif %}
+
 {% if hardware_assignments %}
 <div class="table-responsive mb-4">
   <table class="table table-hover align-middle">
@@ -596,7 +603,7 @@
   </table>
 </div>
 {% else %}
-{% if not hardware_requirements %}
+{% if not shopping_counts %}
 <div class="text-center py-4 text-body-secondary mb-4">
   <i class="bi bi-nut display-4"></i>
   <p class="mt-2">No hardware items yet.</p>
@@ -604,64 +611,6 @@
 {% endif %}
 {% endif %}
 
-{# Show aggregated hardware from sub-projects #}
-{% if hardware_requirements %}
-{% with own_count=hardware_assignments.count %}
-{% if hardware_requirements|length > own_count or hardware_requirements|length > 0 and child_modules %}
-<div class="mb-4">
-  <h6 class="text-body-secondary"><i class="bi bi-diagram-3 me-1"></i>Aggregated Hardware (incl. Sub-Projects)</h6>
-  <div class="table-responsive">
-    <table class="table table-sm table-hover align-middle">
-      <thead>
-        <tr>
-          <th>Category</th>
-          <th>Name</th>
-          <th class="text-center">Total Qty</th>
-          <th class="text-end">Total Cost</th>
-          <th>Used in</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for req in hardware_requirements %}
-        <tr>
-          <td><span class="badge bg-secondary bg-opacity-25 text-body">{{ req.hardware_part.get_category_display }}</span></td>
-          <td>
-            {{ req.hardware_part.name }}
-            {% if req.hardware_part.url %}
-            <a href="{{ req.hardware_part.url }}" target="_blank" rel="noopener noreferrer" class="text-decoration-none ms-1" title="Open link"><i class="bi bi-box-arrow-up-right"></i></a>
-            {% endif %}
-          </td>
-          <td class="text-center">{{ req.total_quantity }}</td>
-          <td class="text-end">
-            {% if req.total_price != None %}
-            {{ req.total_price|floatformat:2 }}&thinsp;€
-            {% else %}
-            <span class="text-body-secondary">—</span>
-            {% endif %}
-          </td>
-          <td>
-            {% for pname in req.projects %}
-            <span class="badge bg-info bg-opacity-25 text-info-emphasis">{{ pname }}</span>
-            {% endfor %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-      {% if total_hardware_cost > 0 %}
-      <tfoot>
-        <tr class="table-light">
-          <td colspan="3" class="text-end fw-bold">Total Hardware Cost:</td>
-          <td class="text-end fw-bold">{{ total_hardware_cost|floatformat:2 }}&thinsp;€</td>
-          <td></td>
-        </tr>
-      </tfoot>
-      {% endif %}
-    </table>
-  </div>
-</div>
-{% endif %}
-{% endwith %}
-{% endif %}
 
 
 <div class="mt-3">

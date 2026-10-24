@@ -23,6 +23,7 @@ from core.forms import (
 )
 from core.mixins import ProjectManageMixin
 from core.models import (
+    HardwareShoppingItem,
     OrcaPrintPreset,
     Part,
     PrintJob,
@@ -158,7 +159,8 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
 
         # Hardware (own + aggregated from sub-projects)
         context["hardware_assignments"] = project.hardware_assignments.select_related("hardware_part").all()
-        context["hardware_requirements"] = project.hardware_requirements()
+        shopping_rows = HardwareShoppingItem.build_list(project)
+        context["shopping_counts"] = HardwareShoppingItem.counts(shopping_rows) if shopping_rows else None
         context["total_hardware_cost"] = project.total_hardware_cost
 
         # Composition edges drive the sub-module and parts tables (all users see them;

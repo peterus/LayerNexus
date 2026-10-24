@@ -140,3 +140,34 @@ class ShoppingWriteViewTests(ShoppingViewTestBase):
         for name in ("project_shopping_cart_ordered", "project_shopping_reset"):
             response = self.client.post(reverse(f"core:{name}", args=[empty.pk]))
             self.assertEqual(response.status_code, 302)
+
+
+class ShoppingSummaryTests(ShoppingViewTestBase):
+    """Shopping-list summary on the project detail and cost pages."""
+
+    def test_project_detail_shows_shopping_summary(self) -> None:
+        HardwareShoppingItem.set_status(self.project, self.m3.pk, HardwareShoppingItem.STATUS_IN_CART)
+        self.login(self.designer_user)
+        response = self.client.get(reverse("core:project_detail", args=[self.project.pk]))
+        self.assertContains(response, self.list_url)
+        self.assertContains(response, "1 in cart")
+        self.assertContains(response, "1 open")
+
+    def test_project_detail_drops_aggregated_hardware_block(self) -> None:
+        child = Project.objects.create(name="Child Module", parent=self.project)
+        ProjectHardware.objects.create(project=child, hardware_part=self.m3, quantity=1)
+        self.login(self.designer_user)
+        response = self.client.get(reverse("core:project_detail", args=[self.project.pk]))
+        self.assertNotContains(response, "Aggregated Hardware (incl. Sub-Projects)")
+
+    def test_project_detail_no_summary_without_hardware(self) -> None:
+        ProjectHardware.objects.filter(project=self.project).delete()
+        self.login(self.designer_user)
+        response = self.client.get(reverse("core:project_detail", args=[self.project.pk]))
+        self.assertNotContains(response, self.list_url)
+        self.assertContains(response, "No hardware items yet.")
+
+    def test_cost_page_links_shopping_list(self) -> None:
+        self.login(self.designer_user)
+        response = self.client.get(reverse("core:project_cost", args=[self.project.pk]))
+        self.assertContains(response, self.list_url)
