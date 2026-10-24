@@ -118,9 +118,10 @@ DATABASES = {
             # to a write lock; IMMEDIATE takes the write lock up front so writers queue on
             # the busy timeout instead.
             "transaction_mode": "IMMEDIATE",
-            # Seconds to wait for the write lock (Django's default is 5).
+            # Seconds to wait for the write lock (Django's default is 5); clamped to >=1 so a 0/negative
+            # value cannot reintroduce instant "database is locked" errors.
             # Also applied as PRAGMA busy_timeout on every connection (web and worker alike).
-            "timeout": int(os.environ.get("DATABASE_TIMEOUT", "20")),
+            "timeout": max(1, int(os.environ.get("DATABASE_TIMEOUT", "20"))),
             # WAL lets readers proceed during a write; shared by web and the moonraker worker
             # (formerly enabled only in the worker). Persistent in the DB file, cheap to re-issue.
             "init_command": "PRAGMA journal_mode=WAL;",
