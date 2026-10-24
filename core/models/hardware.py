@@ -205,7 +205,7 @@ class HardwareShoppingItem(models.Model):
         Returns:
             Rows sorted by category order (``CATEGORY_CHOICES``), then name.
         """
-        stored = {item.hardware_part_id: item for item in project.hardware_shopping_items.all()}
+        stored = {item.hardware_part_id: item for item in project.hardware_shopping_items.order_by()}
         category_index = {key: i for i, (key, _label) in enumerate(HardwarePart.CATEGORY_CHOICES)}
         rows: list[ShoppingRow] = []
         for req in project.hardware_requirements():

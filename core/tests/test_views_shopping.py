@@ -133,6 +133,27 @@ class ShoppingWriteViewTests(ShoppingViewTestBase):
             self.assertEqual(self.client.post(url, data).status_code, 403)
         self.assertFalse(HardwareShoppingItem.objects.exists())
 
+    def test_write_endpoints_forbidden_for_anonymous(self) -> None:
+        for url, data in (
+            (self.set_url(self.m3), {"status": "in_cart"}),
+            (self.cart_url, {}),
+            (self.reset_url, {}),
+        ):
+            self.assertEqual(self.client.post(url, data).status_code, 403)
+        self.assertFalse(HardwareShoppingItem.objects.exists())
+
+    def test_list_renders_state_after_actions(self) -> None:
+        self.login(self.designer_user)
+        response = self.client.get(self.list_url)
+        self.assertContains(response, "2 open · 0 in cart · 0 ordered")
+        self.assertContains(response, 'data-bs-target="#cartOrderedModal" disabled')
+        self.client.post(self.set_url(self.m3), {"status": "in_cart"})
+        response = self.client.get(self.list_url)
+        self.assertContains(response, "1 open · 1 in cart · 0 ordered")
+        self.assertNotContains(response, 'data-bs-target="#cartOrderedModal" disabled')
+        self.assertContains(response, 'name="status" value="ordered"')
+        self.assertContains(response, 'name="status" value="in_cart"')
+
     def test_write_endpoints_reject_get(self) -> None:
         self.login(self.admin_user)
         for url in (self.set_url(self.m3), self.cart_url, self.reset_url):

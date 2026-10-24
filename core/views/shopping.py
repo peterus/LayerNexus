@@ -47,6 +47,11 @@ class ProjectShoppingListView(LoginRequiredMixin, DetailView):
         return context
 
 
+def _get_project(pk: int) -> Project:
+    """Load a project with the aggregate tree prefetched for ``build_list``."""
+    return get_object_or_404(Project.objects.prefetch_related(*Project.aggregate_prefetch_lookups()), pk=pk)
+
+
 def _list_url(project: Project, anchor: str = "") -> str:
     """Return the shopping list URL of a project, optionally with an anchor."""
     return f"{reverse('core:project_shopping_list', args=[project.pk])}{anchor}"
@@ -59,7 +64,7 @@ class ProjectShoppingItemSetView(ProjectManageMixin, View):
 
     def post(self, request: HttpRequest, pk: int, hardware_part_pk: int) -> HttpResponse:
         """Apply the submitted ``status`` and redirect back to the part's row."""
-        project = get_object_or_404(Project, pk=pk)
+        project = _get_project(pk)
         try:
             row = HardwareShoppingItem.set_status(project, hardware_part_pk, request.POST.get("status", ""))
         except ValueError:
@@ -77,7 +82,7 @@ class ProjectShoppingCartOrderedView(ProjectManageMixin, View):
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Move every in-cart row to ordered."""
-        project = get_object_or_404(Project, pk=pk)
+        project = _get_project(pk)
         count = HardwareShoppingItem.mark_cart_ordered(project)
         messages.success(request, f"{count} item(s) marked as ordered.")
         return redirect(_list_url(project))
@@ -90,7 +95,7 @@ class ProjectShoppingResetView(ProjectManageMixin, View):
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Delete all stored shopping statuses of the project."""
-        project = get_object_or_404(Project, pk=pk)
+        project = _get_project(pk)
         count = HardwareShoppingItem.reset(project)
         messages.success(request, f"Shopping list reset ({count} item(s)).")
         return redirect(_list_url(project))
