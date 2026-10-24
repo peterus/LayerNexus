@@ -17,6 +17,42 @@ __all__: list[str] = [
     "_find_compatible_machine",
 ]
 
+# OrcaSlicer ``BedType`` enum names, indexed by their numeric value (1-based).
+ORCA_BED_TYPES: tuple[str, ...] = (
+    "Cool Plate",
+    "Engineering Plate",
+    "High Temp Plate",
+    "Textured PEI Plate",
+    "Textured Cool Plate",
+    "Supertack Plate",
+)
+DEFAULT_BED_TYPE = "High Temp Plate"
+
+
+def _resolve_bed_type(default_bed_type: Any) -> str:
+    """Resolve the plate type to slice with, mirroring the OrcaSlicer GUI.
+
+    The OrcaSlicer CLI does not apply the machine's ``default_bed_type`` and
+    falls back to "Cool Plate", so first-layer/bed temperatures would come
+    from ``cool_plate_temp*``. The GUI instead uses ``default_bed_type`` (a
+    name or legacy integer) and otherwise "High Temp Plate" — which is also
+    what single-bed printers (no plate selector) slice with.
+
+    Args:
+        default_bed_type: The machine profile's ``default_bed_type`` value.
+
+    Returns:
+        An OrcaSlicer bed type name.
+    """
+    value = str(default_bed_type or "").strip()
+    if value in ORCA_BED_TYPES:
+        return value
+    if value.isdigit() and 1 <= int(value) <= len(ORCA_BED_TYPES):
+        return ORCA_BED_TYPES[int(value) - 1]
+    if value:
+        logger.warning(f"Unknown default_bed_type '{value}', using '{DEFAULT_BED_TYPE}'")
+    return DEFAULT_BED_TYPE
+
 
 def _build_slicer_kwargs(
     machine_profile: OrcaMachineProfile | None,
@@ -68,6 +104,9 @@ def _build_slicer_kwargs(
 
             kwargs["printer_profile_json"] = json.dumps(orca_json).encode("utf-8")
             logger.debug(f"Machine: Using reconstructed JSON for '{machine_profile.orca_name}'")
+
+            kwargs["bed_type"] = _resolve_bed_type(orca_json.get("default_bed_type"))
+            logger.debug(f"Machine: Using bed type '{kwargs['bed_type']}'")
         except ValueError as exc:
             logger.warning(f"Machine profile not usable: {exc}")
 
