@@ -74,6 +74,15 @@ class ShoppingListViewTests(ShoppingViewTestBase):
         self.assertContains(response, "Mark cart as ordered")
         self.assertContains(response, "Reset all")
 
+    def test_list_shows_used_in_line(self) -> None:
+        child = Project.objects.create(name="Child Module", created_by=self.admin_user)
+        ProjectComponent.objects.create(parent_project=self.project, child_project=child, quantity=2)
+        ProjectHardware.objects.create(project=child, hardware_part=self.m3, quantity=1)
+        self.login(self.operator_user)
+        response = self.client.get(self.list_url)
+        self.assertContains(response, f"Used in: Child Module, {self.project.name}")
+        self.assertNotContains(response, "bi-info-circle")
+
     def test_list_requires_login(self) -> None:
         response = self.client.get(self.list_url)
         self.assertEqual(response.status_code, 302)

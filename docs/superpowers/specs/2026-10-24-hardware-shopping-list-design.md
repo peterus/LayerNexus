@@ -44,7 +44,7 @@ Anti-Ziel: Irgendetwas davon „nebenbei“ einbauen. Die Liste soll Bestellhilf
 | Ort | Eigene Seite, verlinkt aus Projektansicht und Kostenseite. |
 | Gültigkeit | Jedes Projekt hat eine Liste; Zustand je angesehenem Projekt, unabhängig von Unter-/Oberprojekten. |
 | Reset | Nur die Zeile, deren aggregierte Stückzahl sich geändert hat, fällt auf „offen“ zurück. |
-| Alter Aggregat-Block | „Aggregated Hardware (incl. Sub-Projects)“ in der Projektansicht entfällt, ersetzt durch Zusammenfassung + Link. Tabelle „Hardware“ (eigene Zuweisungen, Bearbeiten/Löschen) bleibt unverändert. Kosten + „Used in“ bleiben auf der Kostenseite. |
+| Alter Aggregat-Block | „Aggregated Hardware (incl. Sub-Projects)“ in der Projektansicht entfällt, ersetzt durch Zusammenfassung + Link. Tabelle „Hardware“ (eigene Zuweisungen, Bearbeiten/Löschen) bleibt unverändert. Kosten bleiben auf der Kostenseite; die Herkunft („Used in“) steht jetzt sichtbar auf der Einkaufsliste. |
 | RBAC | Ansehen: `LoginRequiredMixin`. Status setzen / Bulk-Aktionen: `ProjectManageMixin` (403 sonst); Bedienelemente nur bei `perms.core.can_manage_projects` sichtbar. |
 
 ## Verhalten im Detail
@@ -61,8 +61,10 @@ Anti-Ziel: Irgendetwas davon „nebenbei“ einbauen. Die Liste soll Bestellhilf
 - **Spalten:** Teil (Name), benötigte Stückzahl, Shop-Link, Status.
   - **Shop-Link:** Knopf/Icon, `target="_blank" rel="noopener noreferrer"`. Ohne `url`: gelbes
     Badge „no link“ (Hinweis, dass im Katalog eine URL fehlt).
-  - **Herkunft:** kleines ⓘ-Icon mit nativem `title`-Tooltip, der die beitragenden Projekte
-    auflistet (`hardware_requirements()[…]["projects"]`). Kein JS-Tooltip.
+  - **Herkunft:** sichtbare, gedämpfte Zeile unter dem Teilnamen
+    (`<div class="small text-body-secondary">Used in: A, B</div>`), die die beitragenden Projekte
+    sortiert auflistet (`hardware_requirements()[…]["projects"]`). Kein Tooltip (auf Touch-Geräten
+    nicht erreichbar) — die Herkunft ersetzt die „Used in“-Badges des entfallenen Aggregat-Blocks.
   - **Status:** Badge (offen / im Warenkorb / bestellt) plus — nur mit Recht — ein Knopf, der
     eine Stufe weiterschaltet: offen → im Warenkorb → bestellt → offen.
   - **Bestellte Zeilen** werden ausgegraut (z. B. `text-body-secondary`/`opacity`-Utility-Klasse),

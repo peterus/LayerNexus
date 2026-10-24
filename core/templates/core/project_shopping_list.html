@@ -42,7 +42,7 @@
     <li class="list-group-item d-flex align-items-center gap-3 flex-wrap{% if row.status == 'ordered' %} text-body-secondary{% endif %}" id="hw-{{ row.hardware_part.pk }}">
       <div class="flex-grow-1{% if row.status == 'ordered' %} opacity-50{% endif %}">
         <span class="fw-semibold">{{ row.hardware_part.name }}</span>
-        <i class="bi bi-info-circle ms-1" title="Used in: {{ row.projects|join:', ' }}"></i>
+        <div class="small text-body-secondary">Used in: {{ row.projects|join:", " }}</div>
         {% if row.previous_quantity is not None %}
         <small class="d-block text-warning-emphasis">Quantity changed (was {{ row.previous_quantity }})</small>
         {% endif %}
