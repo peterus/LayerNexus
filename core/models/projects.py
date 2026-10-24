@@ -869,7 +869,7 @@ class Project(models.Model):
         if self.pk in _path:
             return []
         next_path = _path | {self.pk}
-        result = [(hw, multiplier) for hw in self.hardware_assignments.select_related("hardware_part").all()]
+        result = [(hw, multiplier) for hw in self.hardware_assignments.select_related("hardware_part", "project").all()]
         for edge in self.child_links.all():
             result.extend(edge.child_project._collect_hardware_with_multiplier(multiplier * edge.quantity, next_path))
         return result

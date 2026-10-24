@@ -2,7 +2,7 @@
 
 from core.models.composition import ProjectComponent, ProjectPart
 from core.models.documents import FileVersion, ProjectDocument
-from core.models.hardware import HardwarePart, ProjectHardware
+from core.models.hardware import HardwarePart, HardwareShoppingItem, ProjectHardware, ShoppingRow
 from core.models.orca_profiles import (
     OrcaFilamentProfile,
     OrcaMachineProfile,
@@ -20,6 +20,7 @@ __all__ = [
     "CostProfile",
     "FileVersion",
     "HardwarePart",
+    "HardwareShoppingItem",
     "OrcaFilamentProfile",
     "OrcaMachineProfile",
     "OrcaPrintPreset",
@@ -36,5 +37,6 @@ __all__ = [
     "ProjectDocument",
     "ProjectHardware",
     "ProjectPart",
+    "ShoppingRow",
     "SpoolmanFilamentMapping",
 ]

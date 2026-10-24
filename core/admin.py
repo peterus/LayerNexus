@@ -4,6 +4,7 @@ from .models import (
     CostProfile,
     FileVersion,
     HardwarePart,
+    HardwareShoppingItem,
     OrcaFilamentProfile,
     OrcaMachineProfile,
     OrcaPrintPreset,
@@ -235,3 +236,9 @@ class ProjectHardwareAdmin(admin.ModelAdmin):
     list_display = ("project", "hardware_part", "quantity")
     list_filter = ("project",)
     search_fields = ("hardware_part__name", "project__name")
+
+
+@admin.register(HardwareShoppingItem)
+class HardwareShoppingItemAdmin(admin.ModelAdmin):
+    list_display = ["project", "hardware_part", "status", "quantity", "updated_at"]
+    list_filter = ["status"]
