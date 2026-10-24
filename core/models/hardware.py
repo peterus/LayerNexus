@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Optional
 from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
+from django.utils import timezone
 
 if TYPE_CHECKING:
     from core.models.projects import Project
@@ -288,7 +289,7 @@ class HardwareShoppingItem(models.Model):
             cls._prune_orphans(project, rows)
             part_ids = [r.hardware_part.pk for r in rows if r.status == cls.STATUS_IN_CART]
             return project.hardware_shopping_items.filter(hardware_part_id__in=part_ids).update(
-                status=cls.STATUS_ORDERED
+                status=cls.STATUS_ORDERED, updated_at=timezone.now()
             )
 
     @classmethod

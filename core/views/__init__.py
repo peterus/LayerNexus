@@ -113,10 +113,6 @@ from .shopping import (
 )
 
 __all__ = [
-    "ProjectShoppingCartOrderedView",
-    "ProjectShoppingItemSetView",
-    "ProjectShoppingListView",
-    "ProjectShoppingResetView",
     "AddPartToJobView",
     "AdminDashboardView",
     "ApiTokenView",
@@ -182,6 +178,10 @@ __all__ = [
     "ProjectPartDeleteView",
     "ProjectPartUpdateView",
     "ProjectReEstimateView",
+    "ProjectShoppingCartOrderedView",
+    "ProjectShoppingItemSetView",
+    "ProjectShoppingListView",
+    "ProjectShoppingResetView",
     "ProjectUpdateView",
     "QueueCheckPrinterStatusView",
     "QueueEntryReviewView",

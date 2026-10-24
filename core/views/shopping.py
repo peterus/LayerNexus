@@ -1,11 +1,11 @@
 """Project hardware shopping list views."""
 
-import logging
 from itertools import groupby
 from typing import Any
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.db.models import QuerySet
 from django.http import Http404, HttpRequest, HttpResponse, HttpResponseBadRequest
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
@@ -15,8 +15,6 @@ from django.views.generic import DetailView
 from core.mixins import ProjectManageMixin
 from core.models import HardwareShoppingItem, Project
 from core.models.hardware import ShoppingItemNotRequired
-
-logger = logging.getLogger(__name__)
 
 __all__ = [
     "ProjectShoppingListView",
@@ -32,6 +30,10 @@ class ProjectShoppingListView(LoginRequiredMixin, DetailView):
     model = Project
     template_name = "core/project_shopping_list.html"
     context_object_name = "project"
+
+    def get_queryset(self) -> QuerySet:
+        """Prefetch the aggregate tree so sub-project recursion avoids N+1 queries."""
+        return Project.objects.prefetch_related(*Project.aggregate_prefetch_lookups())
 
     def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
         """Add rows, rows grouped by category and status counters."""

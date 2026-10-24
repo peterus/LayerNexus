@@ -3,9 +3,11 @@
 from decimal import Decimal
 
 from django.conf import settings
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
-from core.models import HardwarePart, HardwareShoppingItem, Project, ProjectHardware
+from core.models import HardwarePart, HardwareShoppingItem, Project, ProjectComponent, ProjectHardware
 from core.tests.mixins import _RBACTestBase
 
 
@@ -33,6 +35,29 @@ class ShoppingViewTestBase(_RBACTestBase):
 
 
 class ShoppingListViewTests(ShoppingViewTestBase):
+    def _list_query_count(self) -> int:
+        """Return the number of queries needed to render the list page."""
+        with CaptureQueriesContext(connection) as ctx:
+            self.assertEqual(self.client.get(self.list_url).status_code, 200)
+        return len(ctx)
+
+    def test_list_query_count_grows_at_most_one_per_sub_project(self) -> None:
+        self.login(self.operator_user)
+
+        def add_child(name: str) -> None:
+            child = Project.objects.create(name=name)
+            ProjectComponent.objects.create(parent_project=self.project, child_project=child, quantity=1)
+            ProjectHardware.objects.create(project=child, hardware_part=self.m3, quantity=1)
+
+        add_child("Child 1")
+        self._list_query_count()  # warm up caches (content types, permissions)
+        one_child = self._list_query_count()
+        add_child("Child 2")
+        add_child("Child 3")
+        # Only the per-node hardware_assignments lookup remains (one query per sub-project);
+        # edge/child traversal comes from the prefetch cache.
+        self.assertLessEqual(self._list_query_count(), one_child + 2)
+
     def test_list_renders_for_operator_without_controls(self) -> None:
         self.login(self.operator_user)
         response = self.client.get(self.list_url)

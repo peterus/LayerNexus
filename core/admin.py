@@ -240,5 +240,6 @@ class ProjectHardwareAdmin(admin.ModelAdmin):
 
 @admin.register(HardwareShoppingItem)
 class HardwareShoppingItemAdmin(admin.ModelAdmin):
+    list_select_related = ["project", "hardware_part"]
     list_display = ["project", "hardware_part", "status", "quantity", "updated_at"]
     list_filter = ["status"]

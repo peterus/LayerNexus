@@ -9,7 +9,7 @@ from core.models import (
     ProjectComponent,
     ProjectHardware,
 )
-from core.models.hardware import ShoppingItemNotRequired
+from core.models.hardware import ShoppingItemNotRequired, ShoppingRow
 
 
 class ShoppingListTestBase(TestCase):
@@ -26,7 +26,8 @@ class ShoppingListTestBase(TestCase):
         ProjectHardware.objects.create(project=self.child, hardware_part=self.m3, quantity=3)
         ProjectHardware.objects.create(project=self.child, hardware_part=self.bearing, quantity=1)
 
-    def row(self, project: Project, part: HardwarePart):
+    def row(self, project: Project, part: HardwarePart) -> ShoppingRow:
+        """Return the shopping-list row of ``part`` for ``project``."""
         return next(r for r in HardwareShoppingItem.build_list(project) if r.hardware_part.pk == part.pk)
 
 
