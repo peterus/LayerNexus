@@ -182,12 +182,15 @@ class ShoppingWriteViewTests(ShoppingViewTestBase):
         page = self.client.get(response["Location"].split("#")[0])
         self.assertContains(page, "Nothing was changed")
         response = self.client.post(self.set_url(self.m3), {"status": "ordered", "quantity": "4"})
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response["Location"].endswith(f"#hw-{self.m3.pk}"))
         self.assertEqual(self.status(self.m3), "ordered")
 
     def test_set_status_non_numeric_quantity_returns_400(self) -> None:
         self.login(self.designer_user)
         response = self.client.post(self.set_url(self.m3), {"status": "in_cart", "quantity": "x"})
         self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.content, b"Invalid quantity.")
         self.assertFalse(HardwareShoppingItem.objects.exists())
 
     def test_list_renders_ordered_styling_and_action_labels(self) -> None:

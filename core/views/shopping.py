@@ -65,13 +65,17 @@ class ProjectShoppingItemSetView(ProjectManageMixin, View):
     def post(self, request: HttpRequest, pk: int, hardware_part_pk: int) -> HttpResponse:
         """Apply the submitted ``status`` and redirect back to the part's row."""
         project = _get_project(pk)
+        expected = request.POST.get("quantity")
         try:
-            expected = request.POST.get("quantity")
+            expected_quantity = int(expected) if expected is not None else None
+        except ValueError:
+            return HttpResponseBadRequest("Invalid quantity.")
+        try:
             row = HardwareShoppingItem.set_status(
                 project,
                 hardware_part_pk,
                 request.POST.get("status", ""),
-                expected_quantity=int(expected) if expected is not None else None,
+                expected_quantity=expected_quantity,
             )
         except ShoppingQuantityChanged as exc:
             messages.warning(request, f"{exc}. Nothing was changed, please review the row.")
