@@ -328,8 +328,41 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
         self.plate1.save()
         self._entry(self.plate1, PrintQueue.STATUS_WAITING)
         result = start_next_for_printer(self.printer)
-        self.assertEqual(result.outcome, "error")
-        self.assertIn("No G-code file", result.error)
+        self.assertEqual(result.outcome, "no_gcode")
+        self.assertEqual(result.error, "No G-code file for plate 1. Slice the job first.")
+        mock_get_backend.assert_not_called()
+
+    def test_start_next_db_error_after_start_keeps_claim(self, mock_get_backend):
+        """If the printer already accepted the start, a later DB error must not re-open the entry."""
+        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        with (
+            patch.object(PrintJobPlate, "save", side_effect=RuntimeError("database is locked")),
+            self.assertRaises(RuntimeError),
+        ):
+            start_next_for_printer(self.printer)
+        mock_get_backend.return_value.start_print.assert_called_once()
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, PrintQueue.STATUS_PRINTING)
+
+    def test_run_all_claims_entry_during_upload(self, mock_get_backend):
+        """Run All uses the same claim: a printer Start during its upload sees the printer busy."""
+        from django.contrib.auth.models import Group
+        from django.urls import reverse
+
+        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        concurrent: list = []
+
+        def upload(*args, **kwargs):
+            concurrent.append(start_next_for_printer(self.printer, expected_entry_pk=entry.pk))
+
+        mock_get_backend.return_value.upload_gcode.side_effect = upload
+        self.user.groups.add(Group.objects.get(name="Admin"))
+        self.client.login(username="testuser", password="testpass123")
+        with self.settings(ALLOWED_HOSTS=["testserver"]):
+            self.client.post(reverse("core:run_all_queues"))
+
+        self.assertEqual(concurrent[0].outcome, "busy")
+        mock_get_backend.return_value.start_print.assert_called_once()
 
     def test_start_next_claims_entry_during_upload(self, mock_get_backend):
         """A concurrent start while the G-code uploads sees the printer busy (no double start)."""

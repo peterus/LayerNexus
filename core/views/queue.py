@@ -35,14 +35,11 @@ from core.services.printer_backend import (
 from core.services.queue import (
     MOVE_DIRECTIONS,
     QUEUE_EXECUTION_ORDER,
-    PrintStartError,
     QueueReorderError,
     ReviewStateError,
     move_queue_entry,
-    next_waiting_entry,
     review_queue_entry,
     start_next_for_printer,
-    start_print_for_queue_entry,
 )
 
 logger = logging.getLogger(__name__)
@@ -360,34 +357,19 @@ class RunAllQueuesView(PrinterControlMixin, View):
         errors = 0
 
         for printer in printers:
-            # Check printer is free
-            busy = PrintQueue.objects.filter(
-                printer=printer,
-                status__in=[
-                    PrintQueue.STATUS_PRINTING,
-                    PrintQueue.STATUS_AWAITING_REVIEW,
-                ],
-            ).exists()
-            if busy:
-                skipped_busy += 1
-                continue
-
-            # Next waiting entry in execution order (priority + manual position)
-            entry = next_waiting_entry(printer)
-            if not entry:
-                skipped_empty += 1
-                continue
-
-            if not entry.plate.gcode_file:
-                logger.warning("Queue entry %s has no G-code file, skipping.", entry.pk)
-                skipped_empty += 1
-                continue
-
-            try:
-                start_print_for_queue_entry(entry)
+            # Same rules (and entry claim) as Run Next and the printer's Start button.
+            result = start_next_for_printer(printer)
+            if result.outcome == "started":
                 started += 1
-            except (PrintStartError, PrinterError) as exc:
-                logger.exception("Failed to start print on %s: %s", printer.name, exc)
+            elif result.outcome == "busy":
+                skipped_busy += 1
+            elif result.outcome == "no_gcode":
+                logger.warning("Queue entry %s has no G-code file, skipping.", result.entry.pk)
+                skipped_empty += 1
+            elif result.outcome == "empty":
+                skipped_empty += 1
+            else:
+                logger.error("Failed to start print on %s: %s", printer.name, result.error)
                 errors += 1
 
         parts = []

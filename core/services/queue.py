@@ -91,11 +91,11 @@ class StartResult:
 
     Attributes:
         outcome: ``"started"``, ``"busy"``, ``"empty"``, ``"not_next"``,
-            ``"not_configured"`` or ``"error"``.
+            ``"no_gcode"``, ``"not_configured"`` or ``"error"``.
         entry: The started entry (``"started"``), or the entry that would have
             been started (``"not_next"``, ``"error"``).
         busy_entry: The printing / awaiting-review entry for ``"busy"``.
-        error: User-facing error text for ``"error"``.
+        error: User-facing error text for ``"error"`` and ``"no_gcode"``.
     """
 
     outcome: str
@@ -280,6 +280,12 @@ def start_next_for_printer(printer: PrinterProfile, *, expected_entry_pk: int | 
             return StartResult(outcome="empty")
         if expected_entry_pk is not None and entry.pk != expected_entry_pk:
             return StartResult(outcome="not_next", entry=entry)
+        if not entry.plate.gcode_file:
+            return StartResult(
+                outcome="no_gcode",
+                entry=entry,
+                error=f"No G-code file for plate {entry.plate.plate_number}. Slice the job first.",
+            )
         # Claim the entry before releasing the lock: a concurrent start (web
         # Run Next vs. the printer's Start button) then sees the printer as
         # busy instead of uploading and starting the same entry twice.
@@ -296,9 +302,9 @@ def start_next_for_printer(printer: PrinterProfile, *, expected_entry_pk: int | 
         _release_claim(entry)
         logger.exception("Failed to run queue entry %s: %s", entry.pk, exc)
         return StartResult(outcome="error", entry=entry, error=PRINTER_ERROR_MESSAGE)
-    except BaseException:
-        _release_claim(entry)
-        raise
+    # Any other exception is deliberately not caught: it can come from the DB
+    # saves *after* the printer accepted the start, and releasing the claim
+    # then would allow a second start of a print that is already running.
     return StartResult(outcome="started", entry=entry)
 
 
