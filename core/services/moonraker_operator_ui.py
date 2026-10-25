@@ -31,6 +31,9 @@ from django.db import connection
 from core.models import PrinterProfile, PrintQueue
 from core.services.moonraker import MoonrakerClient, MoonrakerError
 from core.services.operator_dialog import (
+    DIALOG_TITLE,
+    DialogButton,
+    Dismiss,
     OperatorAction,
     OperatorDialog,
     Review,
@@ -68,6 +71,13 @@ BUTTON_STYLES = ("primary", "secondary", "info", "warning", "error")
 _FORBIDDEN_CHARS = re.compile(r'["\\;#*|{}]')
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 _WHITESPACE = re.compile(r"\s+")
+
+#: Shown when handling a button press raised unexpectedly.
+ACTION_FAILED_DIALOG = OperatorDialog(
+    title=DIALOG_TITLE,
+    lines=("Action failed", "See the LayerNexus worker log for details."),
+    buttons=(DialogButton("Close", Dismiss(), "secondary"),),
+)
 
 _RESPONSE_RE = re.compile(
     rf"^{RESPONSE_PREFIX} (?:"
@@ -270,6 +280,8 @@ class MoonrakerOperatorUI:
                 dialog = await sync_to_async(_handle_action_in_thread, thread_sensitive=False)(self.printer, action)
             except Exception:  # noqa: BLE001 - one failing action must not kill the printer task
                 logger.exception("Operator action %r from printer %s failed", action, self.printer.name)
+                # The macro already closed the prompt: never fail silently on the printer.
+                await self.show(ACTION_FAILED_DIALOG)
                 return
             if dialog is None:
                 # The macro already closed the prompt on the printer.

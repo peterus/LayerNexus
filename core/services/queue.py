@@ -8,13 +8,13 @@ both ``RunNextQueueView`` and ``RunAllQueuesView`` without duplication.
 import logging
 import re
 from dataclasses import dataclass
-from datetime import timedelta
 
 from django.db import transaction
 from django.db.models import QuerySet
 from django.utils import timezone
 
 from core.models import PrinterProfile, PrintJob, PrintJobPlate, PrintQueue
+from core.models.queue import START_CLAIM_TIMEOUT
 from core.services.printer_backend import PrinterError, get_printer_backend
 
 logger = logging.getLogger(__name__)
@@ -46,11 +46,6 @@ __all__ = [
 #: list, ``RunNextQueueView``/``RunAllQueuesView`` and ``move_queue_entry`` all
 #: use this so the displayed order always equals the processing order.
 QUEUE_EXECUTION_ORDER = ("-priority", "position", "added_at", "pk")
-
-#: How long a start claim (``PrintQueue.start_claimed_at``) keeps the printer
-#: busy.  Longer than the G-code upload + start timeouts; a claim left behind
-#: by a crashed process expires after this.
-START_CLAIM_TIMEOUT = timedelta(minutes=10)
 
 #: Accepted ``direction`` values for :func:`move_queue_entry`.
 MOVE_DIRECTIONS = ("up", "down", "top", "bottom")
@@ -174,10 +169,7 @@ def busy_entry_for_printer(printer: PrinterProfile | int) -> PrintQueue | None:
     busy = entries.filter(status__in=[PrintQueue.STATUS_PRINTING, PrintQueue.STATUS_AWAITING_REVIEW]).first()
     if busy is not None:
         return busy
-    return entries.filter(
-        status=PrintQueue.STATUS_WAITING,
-        start_claimed_at__gte=timezone.now() - START_CLAIM_TIMEOUT,
-    ).first()
+    return entries.filter(PrintQueue.active_start_claim_q()).first()
 
 
 def queue_entry_status_label(entry: PrintQueue) -> str:

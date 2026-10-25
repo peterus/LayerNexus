@@ -231,10 +231,13 @@ class PrintQueueDeleteView(QueueDequeueMixin, DeleteView):
             # time, but a printer worker could flip the row to printing /
             # awaiting_review before we delete it.  Delete conditionally on the
             # status so a live entry can never be removed by a Designer.
-            deleted, _ = PrintQueue.objects.filter(
-                pk=self.object.pk,
-                status=PrintQueue.STATUS_WAITING,
-            ).delete()
+            # A waiting entry whose print start is in progress (G-code upload)
+            # is about to become printing, so it is protected the same way.
+            deleted, _ = (
+                PrintQueue.objects.filter(pk=self.object.pk, status=PrintQueue.STATUS_WAITING)
+                .exclude(PrintQueue.active_start_claim_q())
+                .delete()
+            )
             if not deleted:
                 raise Http404("Queue entry is no longer waiting.")
             messages.success(self.request, "Removed from queue.")

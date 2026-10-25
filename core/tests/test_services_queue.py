@@ -433,3 +433,20 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
         self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
         self.assertIsNone(entry.started_at)
         self.assertIsNone(entry.start_claimed_at)
+
+
+class IsPrinterBusyClaimTests(_QueueServiceTestBase):
+    """PrintQueue.is_printer_busy (list view) honours an unexpired start claim."""
+
+    def test_claim_makes_printer_busy_until_expired(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        claimed = self._entry(self.plate1, PrintQueue.STATUS_WAITING, start_claimed_at=timezone.now())
+        other = self._entry(self.plate2, PrintQueue.STATUS_WAITING)
+        self.assertTrue(claimed.is_printer_busy)
+        self.assertTrue(other.is_printer_busy)
+
+        PrintQueue.objects.filter(pk=claimed.pk).update(start_claimed_at=timezone.now() - timedelta(minutes=11))
+        self.assertFalse(other.is_printer_busy)

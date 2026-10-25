@@ -401,7 +401,9 @@ class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
         ):
             await ui.on_gcode_response(["LN MENU"])
             await ui.wait_idle()
-        self.client_mock.run_gcode.assert_not_called()
+        # The macro already closed the prompt, so the operator must see why nothing happened.
+        self.assertEqual(len(self._scripts()), 1)
+        self.assertIn("Action failed", self._scripts()[0])
 
     async def test_close_if_stale_closes_after_web_review(self):
         from core.services.moonraker_operator_ui import END_PROMPT_SCRIPT

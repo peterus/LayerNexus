@@ -227,3 +227,21 @@ class QueueEntryReviewRaceTests(TestDataMixin, TestCase):
 
         self.assertRedirects(resp, reverse("core:printqueue_list"))
         self.assertIn("This queue entry has already been reviewed.", [str(m) for m in resp.context["messages"]])
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class PrintQueueDeleteStartClaimTests(_RBACTestBase):
+    """A Designer cannot dequeue a waiting entry whose print start (G-code upload) is in progress."""
+
+    def test_designer_cannot_delete_claimed_entry(self):
+        from django.utils import timezone
+
+        job = PrintJob.objects.create(name="Claim Job", status=PrintJob.STATUS_SLICED, created_by=self.admin_user)
+        plate = PrintJobPlate.objects.create(print_job=job, plate_number=1)
+        entry = PrintQueue.objects.create(plate=plate, printer=self.printer, start_claimed_at=timezone.now())
+        self.client.login(username="designer_user", password="testpass123")
+
+        resp = self.client.post(reverse("core:printqueue_delete", args=[entry.pk]))
+
+        self.assertEqual(resp.status_code, 404)
+        self.assertTrue(PrintQueue.objects.filter(pk=entry.pk).exists())
