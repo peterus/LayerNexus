@@ -39,7 +39,7 @@
 
           <h5 class="border-bottom pb-2 mb-3 mt-4"><i class="bi bi-wifi me-2"></i>Connection Settings</h5>
           {% for field in form %}
-          {% if field.name == 'moonraker_url' or field.name == 'moonraker_api_key' %}
+          {% if field.name == 'moonraker_url' or field.name == 'moonraker_api_key' or field.name == 'operator_prompts_enabled' %}
             {% include "core/includes/_form_field.html" with field=field %}
           {% endif %}
           {% endfor %}
