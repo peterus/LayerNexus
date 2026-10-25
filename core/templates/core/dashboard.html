@@ -187,12 +187,11 @@
     <div class="table-responsive">
       <table class="table table-sm table-hover align-middle mb-0">
         <thead>
-          <tr><th>#</th><th>Job / Plate</th><th>Printer</th><th>Priority</th><th>Status</th></tr>
+          <tr><th>Job / Plate</th><th>Printer</th><th>Priority</th><th>Status</th></tr>
         </thead>
         <tbody>
           {% for entry in queue_entries %}
           <tr>
-            <td>{{ entry.position }}</td>
             <td>
               {% if entry.plate and entry.print_job %}
               <a href="{% url 'core:printjob_detail' entry.print_job.pk %}" class="text-decoration-none">{{ entry.print_job }}</a>

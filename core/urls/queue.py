@@ -7,6 +7,7 @@ from core.views import (
     PrintQueueCreateView,
     PrintQueueDeleteView,
     PrintQueueListView,
+    PrintQueueMoveView,
     QueueCheckPrinterStatusView,
     QueueEntryReviewView,
     RunAllQueuesView,
@@ -20,6 +21,11 @@ urlpatterns = [
         "queue/<int:pk>/delete/",
         PrintQueueDeleteView.as_view(),
         name="printqueue_delete",
+    ),
+    path(
+        "queue/<int:pk>/move/",
+        PrintQueueMoveView.as_view(),
+        name="printqueue_move",
     ),
     path(
         "queue/run/<int:printer_pk>/",
