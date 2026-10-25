@@ -20,6 +20,7 @@ from core.services.queue import (
     ReviewStateError,
     busy_entry_for_printer,
     next_waiting_entry,
+    queue_entry_status_label,
     review_queue_entry,
     start_next_for_printer,
 )
@@ -171,7 +172,7 @@ def review_dialog(entry: PrintQueue) -> OperatorDialog:
 
 
 def _busy_line(entry: PrintQueue) -> str:
-    return f"{entry.get_status_display()}: {_job_label(entry.plate.print_job)}, plate {entry.plate.plate_number}"
+    return f"{queue_entry_status_label(entry)}: {_job_label(entry.plate.print_job)}, plate {entry.plate.plate_number}"
 
 
 def next_job_dialog(printer: PrinterProfile, header_lines: tuple[str, ...] = ()) -> OperatorDialog:

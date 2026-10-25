@@ -92,6 +92,11 @@ class PrintQueue(models.Model):
         default="",
         help_text="Last error reported by the printer backend (if any)",
     )
+    start_claimed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set while a print start (G-code upload) is in progress; the printer counts as busy meanwhile",
+    )
 
     class Meta:
         ordering = ["-priority", "position", "added_at"]

@@ -38,6 +38,7 @@ from core.services.queue import (
     QueueReorderError,
     ReviewStateError,
     move_queue_entry,
+    queue_entry_status_label,
     review_queue_entry,
     start_next_for_printer,
 )
@@ -320,7 +321,7 @@ class RunNextQueueView(PrinterControlMixin, View):
             messages.error(request, "No Moonraker URL configured for this printer.")
         elif result.outcome == "busy":
             busy_entry = result.busy_entry
-            status_label = busy_entry.get_status_display()
+            status_label = queue_entry_status_label(busy_entry)
             messages.warning(
                 request,
                 f'Printer "{printer.name}" is busy ({status_label}: '

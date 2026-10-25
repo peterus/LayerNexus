@@ -8,6 +8,7 @@ both ``RunNextQueueView`` and ``RunAllQueuesView`` without duplication.
 import logging
 import re
 from dataclasses import dataclass
+from datetime import timedelta
 
 from django.db import transaction
 from django.db.models import QuerySet
@@ -25,7 +26,9 @@ __all__ = [
     "QueueMoveResult",
     "ReviewResult",
     "StartResult",
+    "START_CLAIM_TIMEOUT",
     "busy_entry_for_printer",
+    "queue_entry_status_label",
     "move_queue_entry",
     "next_waiting_entry",
     "ordered_waiting_entries",
@@ -43,6 +46,11 @@ __all__ = [
 #: list, ``RunNextQueueView``/``RunAllQueuesView`` and ``move_queue_entry`` all
 #: use this so the displayed order always equals the processing order.
 QUEUE_EXECUTION_ORDER = ("-priority", "position", "added_at", "pk")
+
+#: How long a start claim (``PrintQueue.start_claimed_at``) keeps the printer
+#: busy.  Longer than the G-code upload + start timeouts; a claim left behind
+#: by a crashed process expires after this.
+START_CLAIM_TIMEOUT = timedelta(minutes=10)
 
 #: Accepted ``direction`` values for :func:`move_queue_entry`.
 MOVE_DIRECTIONS = ("up", "down", "top", "bottom")
@@ -150,22 +158,33 @@ def next_waiting_entry(printer: PrinterProfile) -> PrintQueue | None:
 
 
 def busy_entry_for_printer(printer: PrinterProfile | int) -> PrintQueue | None:
-    """Return the entry that keeps ``printer`` busy (printing or awaiting review).
+    """Return the entry that keeps ``printer`` busy.
+
+    A printer is busy while an entry is printing or awaiting review, or while
+    a print start for one of its waiting entries is in progress (recent
+    ``start_claimed_at``).
 
     Args:
         printer: The printer (or its primary key) to check.
 
     Returns:
-        The printing / awaiting-review entry, or ``None`` if the printer is free.
+        The busy-making entry, or ``None`` if the printer is free.
     """
-    return (
-        PrintQueue.objects.filter(
-            printer=printer,
-            status__in=[PrintQueue.STATUS_PRINTING, PrintQueue.STATUS_AWAITING_REVIEW],
-        )
-        .select_related("plate__print_job")
-        .first()
-    )
+    entries = PrintQueue.objects.filter(printer=printer).select_related("plate__print_job")
+    busy = entries.filter(status__in=[PrintQueue.STATUS_PRINTING, PrintQueue.STATUS_AWAITING_REVIEW]).first()
+    if busy is not None:
+        return busy
+    return entries.filter(
+        status=PrintQueue.STATUS_WAITING,
+        start_claimed_at__gte=timezone.now() - START_CLAIM_TIMEOUT,
+    ).first()
+
+
+def queue_entry_status_label(entry: PrintQueue) -> str:
+    """Return a display label for a busy entry ("Starting" for a claimed waiting entry)."""
+    if entry.status == PrintQueue.STATUS_WAITING and entry.start_claimed_at is not None:
+        return "Starting"
+    return entry.get_status_display()
 
 
 def review_queue_entry(entry_pk: int, passed: bool, *, printer_pk: int | None = None) -> ReviewResult:
@@ -289,11 +308,11 @@ def start_next_for_printer(printer: PrinterProfile, *, expected_entry_pk: int | 
                 error=f"No G-code file for plate {entry.plate.plate_number}. Slice the job first.",
             )
         # Claim the entry before releasing the lock: a concurrent start (web
-        # Run Next vs. the printer's Start button) then sees the printer as
-        # busy instead of uploading and starting the same entry twice.
-        PrintQueue.objects.filter(pk=entry.pk, status=PrintQueue.STATUS_WAITING).update(
-            status=PrintQueue.STATUS_PRINTING, started_at=timezone.now()
-        )
+        # Run Next / Run All vs. the printer's Start button) then sees the
+        # printer as busy instead of uploading and starting the same entry
+        # twice.  The entry itself stays ``waiting`` until the printer has
+        # accepted the start, so status sync and Cancel never see it early.
+        PrintQueue.objects.filter(pk=entry.pk).update(start_claimed_at=timezone.now())
 
     try:
         remote_filename = upload_and_start_print(entry)
@@ -309,17 +328,24 @@ def start_next_for_printer(printer: PrinterProfile, *, expected_entry_pk: int | 
         # on disk): hand the entry back to the queue.
         _release_claim(entry)
         raise
-    # The printer accepted the start; from here on the claim must never be
+    # The printer accepted the start; from here on the claim must not be
     # released, even if recording it fails, or the print could start twice.
-    mark_queue_entry_started(entry, remote_filename)
+    try:
+        mark_queue_entry_started(entry, remote_filename)
+    except Exception:
+        logger.exception(
+            "Print %s started on printer %s but recording it for queue entry %s failed",
+            remote_filename,
+            printer.name,
+            entry.pk,
+        )
+        raise
     return StartResult(outcome="started", entry=entry)
 
 
 def _release_claim(entry: PrintQueue) -> None:
-    """Put an entry claimed by :func:`start_next_for_printer` back to waiting after a failed start."""
-    PrintQueue.objects.filter(pk=entry.pk, status=PrintQueue.STATUS_PRINTING).update(
-        status=PrintQueue.STATUS_WAITING, started_at=None
-    )
+    """Drop the start claim of an entry after a start that never reached the printer."""
+    PrintQueue.objects.filter(pk=entry.pk).update(start_claimed_at=None)
 
 
 def move_queue_entry(
@@ -476,7 +502,8 @@ def mark_queue_entry_started(entry: PrintQueue, remote_filename: str) -> None:
     # Update queue entry
     entry.status = PrintQueue.STATUS_PRINTING
     entry.started_at = timezone.now()
-    entry.save(update_fields=["status", "started_at"])
+    entry.start_claimed_at = None
+    entry.save(update_fields=["status", "started_at", "start_claimed_at"])
 
     # Update plate status
     plate.status = PrintJobPlate.STATUS_PRINTING

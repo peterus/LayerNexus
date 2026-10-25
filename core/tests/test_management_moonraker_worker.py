@@ -293,17 +293,6 @@ class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
         await _handle_event_for_printer(self.printer, self._finished_event(), self._ui())
         self.client_mock.run_gcode.assert_not_called()
 
-    async def test_claimed_entry_during_upload_is_ignored(self):
-        """A claimed entry whose plate is not printing yet is not ended by the previous print's state."""
-        from core.models import PrintJobPlate
-
-        await sync_to_async(PrintJobPlate.objects.filter(pk=self.plate.pk).update)(status="waiting")
-        event = {"method": "notify_status_update", "params": [{"print_stats": {"state": "standby"}}]}
-        await _handle_event_for_printer(self.printer, event, self._ui())
-        entry = await self._refresh(self.entry)
-        self.assertEqual(entry.status, "printing")
-        self.client_mock.run_gcode.assert_not_called()
-
     async def test_progress_update_shows_no_dialog(self):
         event = {"method": "notify_status_update", "params": [{"virtual_sdcard": {"progress": 0.5}}]}
         await _handle_event_for_printer(self.printer, event, self._ui())

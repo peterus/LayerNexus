@@ -379,6 +379,38 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
         self.assertEqual(concurrent[0].outcome, "busy")
         self.assertEqual(concurrent[0].busy_entry.pk, entry.pk)
         mock_get_backend.return_value.start_print.assert_called_once()
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, PrintQueue.STATUS_PRINTING)
+        self.assertIsNone(entry.start_claimed_at)
+
+    def test_claimed_entry_stays_waiting_during_upload(self, mock_get_backend):
+        """During the upload the entry is still waiting (no early Cancel / status sync), only claimed."""
+        from core.services.queue import queue_entry_status_label
+
+        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        seen: list = []
+
+        def upload(*args, **kwargs):
+            seen.append(PrintQueue.objects.get(pk=entry.pk))
+
+        mock_get_backend.return_value.upload_gcode.side_effect = upload
+        start_next_for_printer(self.printer)
+        self.assertEqual(seen[0].status, PrintQueue.STATUS_WAITING)
+        self.assertIsNotNone(seen[0].start_claimed_at)
+        self.assertEqual(queue_entry_status_label(seen[0]), "Starting")
+
+    def test_expired_claim_does_not_block(self, mock_get_backend):
+        """A claim left behind by a crashed process expires."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        entry = self._entry(
+            self.plate1, PrintQueue.STATUS_WAITING, start_claimed_at=timezone.now() - timedelta(minutes=11)
+        )
+        result = start_next_for_printer(self.printer)
+        self.assertEqual(result.outcome, "started")
+        self.assertEqual(result.entry.pk, entry.pk)
 
     def test_start_next_failure_releases_claim(self, mock_get_backend):
         mock_get_backend.return_value.start_print.side_effect = MoonrakerError("busy")
@@ -388,6 +420,7 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
         entry.refresh_from_db()
         self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
         self.assertIsNone(entry.started_at)
+        self.assertIsNone(entry.start_claimed_at)
 
     def test_start_next_unexpected_error_before_start_releases_claim(self, mock_get_backend):
         """A non-printer error before the printer accepted the start hands the entry back."""
@@ -399,3 +432,4 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
         entry.refresh_from_db()
         self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
         self.assertIsNone(entry.started_at)
+        self.assertIsNone(entry.start_claimed_at)
