@@ -20,7 +20,7 @@
     <div class="col-6 col-md-2">
       <label class="form-label small mb-1" id="filter-status-label">Status</label>
       <div class="dropdown">
-        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle w-100 text-start" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" aria-labelledby="filter-status-label">{{ status_summary }}</button>
+        <button type="button" id="filter-status-btn" class="btn btn-sm btn-outline-secondary dropdown-toggle w-100 text-start" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" aria-labelledby="filter-status-label filter-status-btn">{{ status_summary }}</button>
         <ul class="dropdown-menu w-100 px-2">
           {% for value, label in status_choices %}
           <li class="form-check">
@@ -34,7 +34,7 @@
     <div class="col-6 col-md-2">
       <label class="form-label small mb-1" id="filter-printer-label">Printer</label>
       <div class="dropdown">
-        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle w-100 text-start" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" aria-labelledby="filter-printer-label">{{ printer_summary }}</button>
+        <button type="button" id="filter-printer-btn" class="btn btn-sm btn-outline-secondary dropdown-toggle w-100 text-start" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" aria-labelledby="filter-printer-label filter-printer-btn">{{ printer_summary }}</button>
         <ul class="dropdown-menu w-100 px-2">
           {% for p in printers %}
           <li class="form-check">
@@ -48,7 +48,7 @@
     <div class="col-6 col-md-2">
       <label class="form-label small mb-1" id="filter-project-label">Project</label>
       <div class="dropdown">
-        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle w-100 text-start" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" aria-labelledby="filter-project-label">{{ project_summary }}</button>
+        <button type="button" id="filter-project-btn" class="btn btn-sm btn-outline-secondary dropdown-toggle w-100 text-start" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" aria-labelledby="filter-project-label filter-project-btn">{{ project_summary }}</button>
         <ul class="dropdown-menu w-100 px-2">
           {% for pr in projects %}
           <li class="form-check">

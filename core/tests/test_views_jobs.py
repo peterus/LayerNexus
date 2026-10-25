@@ -712,10 +712,17 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
         self.assertRedirects(resp, f"{self.url}?status=draft", fetch_redirect_response=False)
         self.assertEqual(self.client.get(resp.url).status_code, 200)
 
-    def test_page_alone_keeps_saved_filters(self):
+    def test_page_alone_keeps_saved_filters_but_drops_stale_page(self):
         self.client.get(self.url, {"status": "draft"})
         resp = self.client.get(self.url, {"page": 2})
-        self.assertRedirects(resp, f"{self.url}?page=2&status=draft", fetch_redirect_response=False)
+        self.assertRedirects(resp, f"{self.url}?status=draft", fetch_redirect_response=False)
+        self.assertEqual(self.client.get(resp.url).status_code, 200)
+
+    def test_filter_buttons_expose_selection_to_screen_readers(self):
+        html = self.client.get(self.url, {"status": "draft"}).content.decode()
+        for key in ("status", "printer", "project"):
+            self.assertIn(f'id="filter-{key}-btn"', html)
+            self.assertIn(f'aria-labelledby="filter-{key}-label filter-{key}-btn"', html)
 
     def test_reset_clears_saved_filters(self):
         self.client.get(self.url, {"status": "draft"})

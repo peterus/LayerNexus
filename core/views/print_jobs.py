@@ -78,7 +78,7 @@ class PrintJobListView(LoginRequiredMixin, ListView):
         """Remember the last filters per session and restore them on a bare visit.
 
         Explicit filter params are saved; ``?reset=1`` clears them; a request
-        without any filter param is redirected to the saved filters (``page`` is kept).
+        without any filter param is redirected to the saved filters (``page`` is dropped).
         """
         list_url = reverse("core:printjob_list")
         if "reset" in request.GET:
@@ -93,9 +93,8 @@ class PrintJobListView(LoginRequiredMixin, ListView):
         else:
             saved = self._saved_filters()
             if saved:
-                params = [("page", request.GET["page"])] if request.GET.get("page") else []
-                query = urlencode(params) + ("&" if params else "") + self._querystring(saved)
-                return redirect(f"{list_url}?{query}")
+                # Drop ``page``: it was computed for the unfiltered list and may not exist once filtered.
+                return redirect(f"{list_url}?{self._querystring(saved)}")
         return super().get(request, *args, **kwargs)
 
     def _saved_filters(self) -> dict[str, str | list[str]]:
