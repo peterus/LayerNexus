@@ -172,7 +172,8 @@ raw `request.user.is_staff` check.
 `DJANGO_SECRET_KEY` (required if `DEBUG=0`), `DEBUG`, `ALLOWED_HOSTS`,
 `CSRF_TRUSTED_ORIGINS`, `SPOOLMAN_URL`, `ORCASLICER_API_URL`, `ALLOW_REGISTRATION`,
 `DATABASE_PATH`, `DATABASE_TIMEOUT`, `LOG_LEVEL`, `WORKER_RELOAD_INTERVAL`, `SESSION_COOKIE_AGE`,
-`SESSION_SAVE_EVERY_REQUEST`. See `.env.example`. Document new vars there and in
+`SESSION_SAVE_EVERY_REQUEST`, `TIME_ZONE` (default `UTC`; prod `Europe/Vienna`),
+`SCHEDULED_START_MAX_LATENESS` (minutes, default 30). See `.env.example`. Document new vars there and in
 `docker-compose.yml`.
 
 ## CI gate (all must pass before merge)

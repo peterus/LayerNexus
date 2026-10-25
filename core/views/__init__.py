@@ -97,6 +97,7 @@ from .projects import (
 )
 from .queue import (
     CancelQueueEntryView,
+    CancelScheduledStartView,
     PrintQueueCreateView,
     PrintQueueDeleteView,
     PrintQueueListView,
@@ -105,6 +106,7 @@ from .queue import (
     QueueEntryReviewView,
     RunAllQueuesView,
     RunNextQueueView,
+    ScheduleQueueStartView,
 )
 from .shopping import (
     ProjectShoppingCartOrderedView,
@@ -118,6 +120,8 @@ __all__ = [
     "AdminDashboardView",
     "ApiTokenView",
     "CancelQueueEntryView",
+    "CancelScheduledStartView",
+    "ScheduleQueueStartView",
     "CostProfileUpdateView",
     "CreateJobsFromProjectView",
     "DashboardView",

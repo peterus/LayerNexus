@@ -3,11 +3,14 @@
 from typing import Any
 
 from django import forms
+from django.utils import timezone
 
 from core.models import PrintQueue
+from core.services.scheduled_start import MAX_SCHEDULE_AHEAD
 
 __all__ = [
     "PrintQueueForm",
+    "ScheduledStartForm",
 ]
 
 
@@ -45,3 +48,22 @@ class PrintQueueForm(forms.ModelForm):
                     f"'{job_mp.name}'. Please select a compatible printer."
                 )
         return cleaned
+
+
+class ScheduledStartForm(forms.Form):
+    """Form to schedule a one-shot queue start (``datetime-local`` input in the current time zone)."""
+
+    start_at = forms.DateTimeField(
+        input_formats=["%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S"],
+        widget=forms.DateTimeInput(attrs={"type": "datetime-local"}, format="%Y-%m-%dT%H:%M"),
+    )
+
+    def clean_start_at(self) -> Any:
+        """Require a start time in the future, at most 7 days ahead."""
+        start_at = self.cleaned_data["start_at"]
+        now = timezone.now()
+        if start_at <= now:
+            raise forms.ValidationError("The start time must be in the future.")
+        if start_at > now + MAX_SCHEDULE_AHEAD:
+            raise forms.ValidationError("The start time must be within the next 7 days.")
+        return start_at

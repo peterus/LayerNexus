@@ -39,6 +39,34 @@
     </form>
     {% endif %}
   </div>
+  {% with sched=group.grouper.scheduled_start last=group.grouper.last_scheduled_result %}
+  {% if sched or last or perms.core.can_control_printer %}
+  <div class="card-body border-bottom py-2 small">
+    {% if sched %}
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <span><i class="bi bi-alarm me-1"></i>Scheduled: {{ sched.start_at|date:"D Y-m-d H:i" }}</span>
+      {% if perms.core.can_control_printer %}
+      <form method="post" action="{% url 'core:scheduled_start_cancel' group.grouper.pk %}" class="d-inline">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-sm btn-outline-danger py-0">Cancel</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% if perms.core.can_control_printer %}
+    <form method="post" action="{% url 'core:scheduled_start_set' group.grouper.pk %}" class="d-flex flex-wrap align-items-center gap-2 {% if sched %}mt-1{% endif %}">
+      {% csrf_token %}
+      <label class="mb-0" for="start-at-{{ group.grouper.pk }}">{% if sched %}Reschedule{% else %}Schedule start{% endif %}:</label>
+      <input type="datetime-local" id="start-at-{{ group.grouper.pk }}" name="start_at" class="form-control form-control-sm w-auto" value="{{ default_schedule_start }}" required>
+      <button type="submit" class="btn btn-sm btn-outline-primary"><i class="bi bi-alarm me-1"></i>Schedule</button>
+    </form>
+    {% endif %}
+    {% if last %}
+    <div class="text-body-secondary mt-1">Last scheduled start ({{ last.start_at|date:"Y-m-d H:i" }}): {{ last.get_status_display }} — {{ last.result_message }}</div>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% endwith %}
   <div class="card-body p-0">
     <div class="table-responsive">
       <table class="table table-hover align-middle mb-0">

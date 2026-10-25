@@ -1,11 +1,12 @@
 """Print queue views for the LayerNexus application."""
 
 import logging
+from datetime import datetime, timedelta
 from typing import Any
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db.models import Case, IntegerField, Max, QuerySet, Value, When
+from django.db.models import Case, IntegerField, Max, OuterRef, QuerySet, Subquery, Value, When
 from django.http import (
     Http404,
     HttpRequest,
@@ -20,13 +21,14 @@ from django.utils import timezone
 from django.views import View
 from django.views.generic import CreateView, DeleteView, ListView
 
-from core.forms import PrintQueueForm
+from core.forms import PrintQueueForm, ScheduledStartForm
 from core.mixins import PrinterControlMixin, QueueDequeueMixin, QueueManageMixin
 from core.models import (
     PrinterProfile,
     PrintJob,
     PrintJobPlate,
     PrintQueue,
+    ScheduledQueueStart,
 )
 from core.services.printer_backend import (
     PrinterError,
@@ -42,6 +44,7 @@ from core.services.queue import (
     review_queue_entry,
     start_next_for_printer,
 )
+from core.services.scheduled_start import cancel_scheduled_start, schedule_start
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +58,16 @@ __all__ = [
     "QueueEntryReviewView",
     "QueueCheckPrinterStatusView",
     "CancelQueueEntryView",
+    "ScheduleQueueStartView",
+    "CancelScheduledStartView",
 ]
+
+
+def _next_morning(hour: int = 6) -> datetime:
+    """Return the next ``hour``:00 in the current time zone (today if still ahead, else tomorrow)."""
+    now = timezone.localtime()
+    target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    return target if target > now else target + timedelta(days=1)
 
 
 def _queueable_plates() -> QuerySet[PrintJobPlate]:
@@ -126,7 +138,36 @@ class PrintQueueListView(LoginRequiredMixin, ListView):
                 entry.can_move_down = rank < len(waiting)
         context["object_list"] = entries
         context[self.context_object_name] = entries
+        self._annotate_schedules(entries)
+        context["default_schedule_start"] = _next_morning().strftime("%Y-%m-%dT%H:%M")
         return context
+
+    @staticmethod
+    def _annotate_schedules(entries: list[PrintQueue]) -> None:
+        """Attach the pending schedule and the last result to each entry's printer."""
+        printer_ids = {entry.printer_id for entry in entries}
+        pending = {
+            row.printer_id: row
+            for row in ScheduledQueueStart.objects.filter(
+                printer_id__in=printer_ids, status=ScheduledQueueStart.STATUS_PENDING
+            )
+        }
+        latest_finished = (
+            ScheduledQueueStart.objects.filter(printer=OuterRef("pk"))
+            .exclude(status=ScheduledQueueStart.STATUS_PENDING)
+            .order_by("-executed_at", "-start_at")
+            .values("pk")[:1]
+        )
+        last_ids = (
+            PrinterProfile.objects.filter(pk__in=printer_ids)
+            .annotate(last_id=Subquery(latest_finished))
+            .exclude(last_id=None)
+            .values_list("last_id", flat=True)
+        )
+        last = {row.printer_id: row for row in ScheduledQueueStart.objects.filter(pk__in=list(last_ids))}
+        for entry in entries:
+            entry.printer.scheduled_start = pending.get(entry.printer_id)
+            entry.printer.last_scheduled_result = last.get(entry.printer_id)
 
 
 class PrintQueueCreateView(QueueManageMixin, CreateView):
@@ -541,4 +582,56 @@ class CancelQueueEntryView(PrinterControlMixin, View):
             request,
             f"{plate_label} on {printer.name} cancelled — please review.",
         )
+        return redirect("core:printqueue_list")
+
+
+class ScheduleQueueStartView(PrinterControlMixin, View):
+    """Schedule (or move) the one-shot start of the next queue job on a printer (POST only)."""
+
+    http_method_names = ["post"]
+
+    def post(self, request: HttpRequest, printer_pk: int) -> HttpResponse:
+        """Validate the start time and create or update the pending schedule.
+
+        Args:
+            request: The POST request carrying ``start_at``.
+            printer_pk: Primary key of the printer.
+
+        Returns:
+            A redirect to the queue list.
+        """
+        printer = get_object_or_404(PrinterProfile, pk=printer_pk)
+        form = ScheduledStartForm(request.POST)
+        if form.is_valid():
+            row = schedule_start(printer, form.cleaned_data["start_at"], request.user)
+            messages.success(
+                request,
+                f"Next job on {printer.name} will start at {timezone.localtime(row.start_at):%Y-%m-%d %H:%M}.",
+            )
+        else:
+            for error in form.errors.get("start_at", ["Invalid start time."]):
+                messages.error(request, error)
+        return redirect("core:printqueue_list")
+
+
+class CancelScheduledStartView(PrinterControlMixin, View):
+    """Cancel the pending scheduled start of a printer (POST only)."""
+
+    http_method_names = ["post"]
+
+    def post(self, request: HttpRequest, printer_pk: int) -> HttpResponse:
+        """Cancel the pending schedule, if any.
+
+        Args:
+            request: The POST request.
+            printer_pk: Primary key of the printer.
+
+        Returns:
+            A redirect to the queue list.
+        """
+        printer = get_object_or_404(PrinterProfile, pk=printer_pk)
+        if cancel_scheduled_start(printer):
+            messages.success(request, f"Scheduled start on {printer.name} cancelled.")
+        else:
+            messages.info(request, f"No scheduled start pending on {printer.name}.")
         return redirect("core:printqueue_list")

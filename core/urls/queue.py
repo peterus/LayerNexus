@@ -4,6 +4,7 @@ from django.urls import path
 
 from core.views import (
     CancelQueueEntryView,
+    CancelScheduledStartView,
     PrintQueueCreateView,
     PrintQueueDeleteView,
     PrintQueueListView,
@@ -12,6 +13,7 @@ from core.views import (
     QueueEntryReviewView,
     RunAllQueuesView,
     RunNextQueueView,
+    ScheduleQueueStartView,
 )
 
 urlpatterns = [
@@ -51,5 +53,15 @@ urlpatterns = [
         "queue/<int:pk>/cancel/",
         CancelQueueEntryView.as_view(),
         name="printqueue_cancel",
+    ),
+    path(
+        "queue/schedule/<int:printer_pk>/",
+        ScheduleQueueStartView.as_view(),
+        name="scheduled_start_set",
+    ),
+    path(
+        "queue/schedule/<int:printer_pk>/cancel/",
+        CancelScheduledStartView.as_view(),
+        name="scheduled_start_cancel",
     ),
 ]

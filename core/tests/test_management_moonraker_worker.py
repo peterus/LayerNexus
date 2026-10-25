@@ -459,3 +459,73 @@ class OperatorUIImportBoundaryTests(SimpleTestCase):
             and "moonraker_operator_ui" in path.read_text()
         }
         self.assertEqual(importers, {"management/commands/moonraker_worker.py"})
+
+
+class ScheduledStartLoopTests(IsolatedAsyncioTestCase):
+    """The worker's periodic hook delegates to run_due_scheduled_starts."""
+
+    async def test_loop_calls_service_until_stopped(self) -> None:
+        from core.management.commands.moonraker_worker import _scheduled_start_loop
+
+        stop = asyncio.Event()
+        calls = []
+
+        def fake_run() -> list:
+            calls.append(1)
+            stop.set()
+            return []
+
+        with patch("core.management.commands.moonraker_worker.run_due_scheduled_starts", fake_run):
+            await asyncio.wait_for(_scheduled_start_loop(stop, 0.01), timeout=5)
+        self.assertEqual(len(calls), 1)
+
+    async def test_loop_survives_service_error(self) -> None:
+        from core.management.commands.moonraker_worker import _scheduled_start_loop
+
+        stop = asyncio.Event()
+        calls = []
+
+        def flaky() -> list:
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("db locked")
+            stop.set()
+            return []
+
+        with patch("core.management.commands.moonraker_worker.run_due_scheduled_starts", flaky):
+            await asyncio.wait_for(_scheduled_start_loop(stop, 0.01), timeout=5)
+        self.assertEqual(len(calls), 2)
+
+
+class ScheduledStartThreadIsolationTests(IsolatedAsyncioTestCase):
+    """Scheduled starts must not occupy the shared sync thread of the status sync."""
+
+    async def test_loop_uses_non_thread_sensitive_executor(self) -> None:
+        import core.management.commands.moonraker_worker as worker
+
+        stop = asyncio.Event()
+        seen: dict = {}
+
+        def spy(func, **kwargs):
+            seen.update(kwargs)
+            stop.set()
+
+            async def runner():
+                return None
+
+            return runner
+
+        with patch.object(worker, "sync_to_async", spy):
+            await asyncio.wait_for(worker._scheduled_start_loop(stop, 0.01), timeout=5)
+        self.assertIs(seen.get("thread_sensitive"), False)
+
+    def test_isolated_runner_closes_connections(self) -> None:
+        import core.management.commands.moonraker_worker as worker
+
+        with (
+            patch.object(worker, "run_due_scheduled_starts") as run,
+            patch.object(worker.connections, "close_all") as close,
+        ):
+            worker._run_due_scheduled_starts_isolated()
+        run.assert_called_once_with()
+        close.assert_called_once_with()

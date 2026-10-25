@@ -156,3 +156,52 @@ class PrintQueue(models.Model):
         """Return True if this entry's printer has an active or unreviewed job, or a start in progress."""
         active = Q(status__in=[self.STATUS_PRINTING, self.STATUS_AWAITING_REVIEW]) & ~Q(pk=self.pk)
         return PrintQueue.objects.filter(active | self.active_start_claim_q(), printer=self.printer).exists()
+
+
+class ScheduledQueueStart(models.Model):
+    """One-shot, time-controlled start of the next queue job on a printer.
+
+    Created in the evening ("start tomorrow 06:00") and executed exactly once by
+    the worker; it is never recurring.  At most one ``pending`` row exists per
+    printer.
+    """
+
+    STATUS_PENDING = "pending"
+    STATUS_STARTED = "started"
+    STATUS_SKIPPED = "skipped"
+    STATUS_FAILED = "failed"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_STARTED, "Started"),
+        (STATUS_SKIPPED, "Skipped"),
+        (STATUS_FAILED, "Failed"),
+        (STATUS_CANCELLED, "Cancelled"),
+    ]
+
+    printer = models.ForeignKey("core.PrinterProfile", on_delete=models.CASCADE, related_name="scheduled_starts")
+    start_at = models.DateTimeField(help_text="When the next queue job should be started")
+    created_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="scheduled_queue_starts",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    executed_at = models.DateTimeField(null=True, blank=True, help_text="When the worker processed this schedule")
+    result_message = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["start_at"]
+        constraints = [
+            UniqueConstraint(
+                fields=["printer"],
+                condition=Q(status="pending"),
+                name="scheduledqueuestart_one_pending_per_printer",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Scheduled start on {self.printer} at {self.start_at:%Y-%m-%d %H:%M} [{self.status}]"

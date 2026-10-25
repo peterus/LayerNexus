@@ -18,6 +18,7 @@ from .models import (
     Project,
     ProjectDocument,
     ProjectHardware,
+    ScheduledQueueStart,
     SpoolmanFilamentMapping,
 )
 
@@ -190,6 +191,12 @@ class PrintQueueAdmin(admin.ModelAdmin):
     )
     list_filter = ("printer", "priority", "status")
     ordering = ["-priority", "position"]
+
+
+@admin.register(ScheduledQueueStart)
+class ScheduledQueueStartAdmin(admin.ModelAdmin):
+    list_display = ("printer", "start_at", "status", "executed_at", "created_by")
+    list_filter = ("printer", "status")
 
 
 @admin.register(FileVersion)

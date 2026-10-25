@@ -154,7 +154,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = "en-us"
 
-TIME_ZONE = "UTC"
+TIME_ZONE = os.environ.get("TIME_ZONE", "UTC")
 
 USE_I18N = True
 
@@ -331,3 +331,8 @@ class SecurityHeadersMiddleware:
         response = self.get_response(request)
         response.setdefault("Content-Security-Policy", BASELINE_CSP)
         return response
+
+
+# One-shot scheduled queue starts: a schedule that is overdue by more than this
+# many minutes (e.g. the worker was down) is skipped instead of started.
+SCHEDULED_START_MAX_LATENESS_MINUTES = int(os.environ.get("SCHEDULED_START_MAX_LATENESS", "30"))

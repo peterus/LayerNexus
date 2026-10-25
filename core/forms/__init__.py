@@ -40,6 +40,7 @@ from .projects import (
 )
 from .queue import (
     PrintQueueForm,
+    ScheduledStartForm,
 )
 
 __all__ = [
@@ -54,6 +55,7 @@ __all__ = [
     "PartForm",
     "PrintJobForm",
     "PrintQueueForm",
+    "ScheduledStartForm",
     "PrinterProfileForm",
     "ProfileUpdateForm",
     "ProjectComponentQuantityForm",
