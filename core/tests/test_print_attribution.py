@@ -70,6 +70,24 @@ class PrintedForContextTests(TestCase):
         PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_PRINTING)
         self.assertEqual(bolt.printed_quantity_for(a), 0)
 
+    def test_partially_completed_multi_plate_job_not_counted(self):
+        """A multi-plate job counts for the assembly only once every plate is completed."""
+        a = Project.objects.create(name="Truck A")
+        bolt = Part.objects.create(name="bolt")
+        job = PrintJob.objects.create(status="printing")
+        PrintJobPart.objects.create(print_job=job, part=bolt, quantity=4, target_assembly=a)
+        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
+        plate2 = PrintJobPlate.objects.create(print_job=job, plate_number=2, status=PrintJobPlate.STATUS_WAITING)
+        self.assertEqual(bolt.printed_quantity_for(a), 0)
+        self.assertEqual(bolt.printed_quantity_for_by_preset(a), {})
+        prefetched = Part.objects.prefetch_related("job_entries__print_job__plates").get(pk=bolt.pk)
+        self.assertEqual(prefetched.printed_quantity_for(a), 0)
+
+        plate2.status = PrintJobPlate.STATUS_COMPLETED
+        plate2.save(update_fields=["status"])
+        self.assertEqual(bolt.printed_quantity_for(a), 4)
+        self.assertEqual(bolt.printed_quantity_for_by_preset(a), {None: 4})
+
 
 class VariantProgressTests(TestCase):
     """``Project.variant_progress()`` (Task 3)."""
