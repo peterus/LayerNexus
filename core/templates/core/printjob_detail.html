@@ -137,9 +137,9 @@
                 {% if plate.gcode_file %}
                 <a href="{{ plate.gcode_file.url }}" class="btn btn-sm btn-outline-secondary flex-fill" title="Download G-code"><i class="bi bi-download me-1"></i>G-code</a>
                 {% endif %}
-                {% if plate.gcode_file and perms.core.can_manage_print_queue %}
+                {% if plate.gcode_file and perms.core.can_manage_print_queue %}{% if plate.status == 'waiting' or plate.status == 'failed' %}
                 <a href="{% url 'core:printqueue_create' %}?plate={{ plate.pk }}" class="btn btn-sm btn-outline-success flex-fill" title="Add to Queue"><i class="bi bi-list-ol me-1"></i>Queue</a>
-                {% endif %}
+                {% endif %}{% endif %}
               </div>
             </div>
           </div>

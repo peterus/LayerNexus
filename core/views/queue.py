@@ -5,7 +5,7 @@ from typing import Any
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db.models import Case, IntegerField, Max, Value, When
+from django.db.models import Case, IntegerField, Max, QuerySet, Value, When
 from django.http import (
     Http404,
     HttpRequest,
@@ -55,6 +55,28 @@ __all__ = [
     "QueueCheckPrinterStatusView",
     "CancelQueueEntryView",
 ]
+
+
+def _queueable_plates() -> QuerySet[PrintJobPlate]:
+    """Return plates that can be added to the print queue.
+
+    A plate is queueable while it is still waiting to be printed (or failed and
+    should be retried), has G-code, and is not already in the queue. The job may be ``sliced`` or already
+    ``printing`` — a multi-plate job switches to ``printing`` as soon as its
+    first plate starts, and its remaining plates must stay queueable.
+
+    Returns:
+        Queryset of queueable ``PrintJobPlate`` objects.
+    """
+    return (
+        PrintJobPlate.objects.filter(
+            status__in=[PrintJobPlate.STATUS_WAITING, PrintJobPlate.STATUS_FAILED],
+            print_job__status__in=[PrintJob.STATUS_SLICED, PrintJob.STATUS_PRINTING],
+            gcode_file__isnull=False,
+        )
+        .exclude(gcode_file="")
+        .exclude(queue_entries__isnull=False)
+    )
 
 
 class PrintQueueListView(LoginRequiredMixin, ListView):
@@ -119,26 +141,15 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
 
     def get_form(self, form_class=None):
         form = super().get_form(form_class)
-        # Only plates from sliced jobs that have G-code ready
-        form.fields["plate"].queryset = (
-            PrintJobPlate.objects.filter(
-                print_job__status=PrintJob.STATUS_SLICED,
-                gcode_file__isnull=False,
-            )
-            .exclude(gcode_file="")
-            .select_related("print_job")
-        )
+        form.fields["plate"].queryset = _queueable_plates().select_related("print_job")
 
         # Pre-select plate from query parameter
         plate_pk = self.request.GET.get("plate")
         if plate_pk:
             try:
-                selected_plate = PrintJobPlate.objects.get(
-                    pk=plate_pk,
-                    print_job__status=PrintJob.STATUS_SLICED,
-                )
+                selected_plate = _queueable_plates().get(pk=plate_pk)
                 form.fields["plate"].initial = selected_plate.pk
-            except PrintJobPlate.DoesNotExist:
+            except (PrintJobPlate.DoesNotExist, ValueError):
                 pass
 
         # All printers included
@@ -150,14 +161,7 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
         context = super().get_context_data(**kwargs)
 
         # Build a map: plate_pk -> [compatible printer PKs]
-        plates = (
-            PrintJobPlate.objects.filter(
-                print_job__status=PrintJob.STATUS_SLICED,
-                gcode_file__isnull=False,
-            )
-            .exclude(gcode_file="")
-            .select_related("print_job__machine_profile")
-        )
+        plates = _queueable_plates().select_related("print_job__machine_profile")
 
         printers = PrinterProfile.objects.all()
 

@@ -30,6 +30,87 @@ class PrintQueueViewTests(TestDataMixin, TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+class PrintQueueCreatePlateChoiceTests(TestDataMixin, TestCase):
+    """Which plates the "Add to Queue" form offers.
+
+    Regression: once plate 1 of a multi-plate job started printing, the job
+    switched to ``printing`` and the form (which only accepted plates of
+    ``sliced`` jobs) silently dropped plates 2..N, so they could never be queued.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.client = Client()
+        self.client.login(username="testuser", password="testpass123")
+        self.printer = PrinterProfile.objects.create(name="Test Printer", created_by=self.user)
+        self.job = PrintJob.objects.create(name="Multi", status=PrintJob.STATUS_SLICED, created_by=self.user)
+        self.plates = [
+            PrintJobPlate.objects.create(
+                print_job=self.job,
+                plate_number=n,
+                gcode_file=f"gcode_jobs/job_{self.job.pk}_plate_{n}.gcode",
+            )
+            for n in (1, 2, 3)
+        ]
+
+    def _offered_plate_pks(self) -> set[int]:
+        r = self.client.get(reverse("core:printqueue_create"))
+        self.assertEqual(r.status_code, 200)
+        return set(r.context["form"].fields["plate"].queryset.values_list("pk", flat=True))
+
+    def _start_plate(self, plate: PrintJobPlate) -> None:
+        """Mirror ``start_print_for_queue_entry``: plate, entry and job go to printing."""
+        PrintQueue.objects.create(plate=plate, printer=self.printer, status=PrintQueue.STATUS_PRINTING)
+        plate.status = PrintJobPlate.STATUS_PRINTING
+        plate.save(update_fields=["status"])
+        self.job.status = PrintJob.STATUS_PRINTING
+        self.job.save(update_fields=["status"])
+
+    def test_all_plates_of_sliced_job_offered(self):
+        self.assertEqual(self._offered_plate_pks(), {p.pk for p in self.plates})
+
+    def test_remaining_plates_offered_while_job_printing(self):
+        self._start_plate(self.plates[0])
+        self.assertEqual(self._offered_plate_pks(), {self.plates[1].pk, self.plates[2].pk})
+
+    def test_plate_2_preselected_while_job_printing(self):
+        self._start_plate(self.plates[0])
+        r = self.client.get(f"{reverse('core:printqueue_create')}?plate={self.plates[1].pk}")
+        self.assertEqual(r.context["form"].fields["plate"].initial, self.plates[1].pk)
+        self.assertIn(str(self.plates[1].pk), r.context["job_printer_map_json"])
+
+    def test_queue_plate_2_while_job_printing(self):
+        self._start_plate(self.plates[0])
+        r = self.client.post(
+            reverse("core:printqueue_create"),
+            {"plate": self.plates[1].pk, "printer": self.printer.pk, "priority": 3},
+        )
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(PrintQueue.objects.filter(plate=self.plates[1], status=PrintQueue.STATUS_WAITING).exists())
+
+    def test_already_queued_plate_not_offered(self):
+        PrintQueue.objects.create(plate=self.plates[0], printer=self.printer)
+        self.assertNotIn(self.plates[0].pk, self._offered_plate_pks())
+
+    def test_completed_plate_not_offered(self):
+        self.plates[0].status = PrintJobPlate.STATUS_COMPLETED
+        self.plates[0].save(update_fields=["status"])
+        self.assertNotIn(self.plates[0].pk, self._offered_plate_pks())
+
+    def test_failed_plate_offered_for_retry(self):
+        self._start_plate(self.plates[0])
+        PrintQueue.objects.filter(plate=self.plates[0]).delete()
+        self.plates[0].status = PrintJobPlate.STATUS_FAILED
+        self.plates[0].save(update_fields=["status"])
+        self.assertIn(self.plates[0].pk, self._offered_plate_pks())
+
+    def test_plates_of_cancelled_job_not_offered(self):
+        self.job.status = PrintJob.STATUS_CANCELLED
+        self.job.save(update_fields=["status"])
+        self.assertEqual(self._offered_plate_pks(), set())
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
 class PrintQueueDeleteStatusGuardTests(_RBACTestBase):
     """A Designer may only dequeue *waiting* entries.
 

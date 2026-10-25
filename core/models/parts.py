@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from django.db import models
-from django.db.models import Sum
+from django.db.models import QuerySet, Sum
 
 if TYPE_CHECKING:
     from core.models.orca_profiles import OrcaPrintPreset
+    from core.models.printing import PrintJob, PrintJobPart
     from core.models.projects import Project
 
 
@@ -32,6 +33,19 @@ def resolve_part_preset(part: Part, nearest_project: Project | None) -> Optional
     if nearest_project is not None and nearest_project.default_print_preset_id is not None:
         return nearest_project.default_print_preset
     return None
+
+
+def _job_fully_printed(job: PrintJob) -> bool:
+    """Return whether every plate of a job (from the prefetch cache) is completed.
+
+    Args:
+        job: Print job whose ``plates`` are already prefetched.
+
+    Returns:
+        ``True`` if the job has at least one plate and all of them are completed.
+    """
+    plates = job.plates.all()
+    return bool(plates) and all(plate.status == "completed" for plate in plates)
 
 
 class Part(models.Model):
@@ -243,10 +257,11 @@ class Part(models.Model):
     def printed_quantity(self) -> int:
         """Number of this part already printed, summed over completed print jobs.
 
-        Semantics: a print job counts as *printed* for this part as soon as it
-        has **at least one** plate in the ``completed`` state. Each qualifying
-        job contributes this part's job ``quantity`` exactly **once**, no matter
-        how many completed plates it has.
+        Semantics: a print job counts as *printed* for this part only once
+        **all** of its plates are ``completed`` (which part sits on which plate
+        is unknown, so a partially printed multi-plate job counts as nothing).
+        Each qualifying job contributes this part's job ``quantity`` exactly
+        **once**, no matter how many plates it has.
 
         Two evaluation paths keep this correct *and* efficient for every caller:
 
@@ -266,31 +281,63 @@ class Part(models.Model):
         Both paths count each job's ``quantity`` once — there is no plate join
         that fans the rows out.
         """
-        completed = "completed"
-        prefetched = getattr(self, "_prefetched_objects_cache", None)
-        if prefetched is not None and "job_entries" in prefetched:
-            entries = prefetched["job_entries"]
-            if all(
-                "print_job" in entry._state.fields_cache
-                and "plates" in getattr(entry.print_job, "_prefetched_objects_cache", {})
-                for entry in entries
-            ):
-                return sum(
-                    entry.quantity
-                    for entry in entries
-                    if any(plate.status == completed for plate in entry.print_job.plates.all())
-                )
+        entries = self._prefetched_job_entries()
+        if entries is not None:
+            return sum(entry.quantity for entry in entries if _job_fully_printed(entry.print_job))
 
-        completed_entry_pks = (
-            self.job_entries.filter(print_job__plates__status=completed).values_list("pk", flat=True).distinct()
-        )
+        completed_entry_pks = self._fully_printed_entry_pks()
         return self.job_entries.filter(pk__in=completed_entry_pks).aggregate(total=Sum("quantity"))["total"] or 0
+
+    def _prefetched_job_entries(self) -> list[PrintJobPart] | None:
+        """Return the prefetched job entries if the whole plate chain is cached.
+
+        Only returns entries when ``job_entries__print_job__plates`` is fully in the
+        instance cache, so callers can evaluate completion without any query. A
+        partial ``job_entries``-only prefetch returns ``None`` so it can never
+        silently fan out into a per-entry query.
+
+        Returns:
+            The cached ``PrintJobPart`` list, or ``None`` if not (fully) prefetched.
+        """
+        prefetched = getattr(self, "_prefetched_objects_cache", None)
+        if prefetched is None or "job_entries" not in prefetched:
+            return None
+        entries = prefetched["job_entries"]
+        if all(
+            "print_job" in entry._state.fields_cache
+            and "plates" in getattr(entry.print_job, "_prefetched_objects_cache", {})
+            for entry in entries
+        ):
+            return entries
+        return None
+
+    def _fully_printed_entry_pks(self, **filters: Any) -> QuerySet:
+        """Return PKs of this part's job entries whose job has all plates completed.
+
+        Evaluated lazily as an ``IN`` subquery by the callers, so the full aggregate
+        still costs a single query.
+
+        Args:
+            **filters: Extra ``job_entries`` filters (e.g. ``target_assembly``).
+
+        Returns:
+            Distinct ``values_list`` queryset of qualifying ``PrintJobPart`` PKs.
+        """
+        from core.models.printing import PrintJobPlate
+
+        unfinished_job_ids = PrintJobPlate.objects.exclude(status=PrintJobPlate.STATUS_COMPLETED).values("print_job_id")
+        return (
+            self.job_entries.filter(print_job__plates__status=PrintJobPlate.STATUS_COMPLETED, **filters)
+            .exclude(print_job_id__in=unfinished_job_ids)
+            .values_list("pk", flat=True)
+            .distinct()
+        )
 
     def printed_quantity_for(self, assembly: Project) -> int:
         """Completed-plate print quantity of this part attributed to ``assembly``.
 
-        Same completion rule as :attr:`printed_quantity` (a job counts once it has at
-        least one completed plate), but restricted to job entries whose
+        Same completion rule as :attr:`printed_quantity` (a job counts once all of its
+        plates are completed), but restricted to job entries whose
         ``target_assembly`` is ``assembly``. Unattributed entries (``target_assembly``
         is ``NULL``) are never counted here; they remain in the global
         :attr:`printed_quantity` only.
@@ -306,29 +353,17 @@ class Part(models.Model):
             assembly: The build context (top-level assembly project) to filter by.
 
         Returns:
-            Sum of attributed job-entry quantities that have at least one completed plate.
+            Sum of attributed job-entry quantities whose job has all plates completed.
         """
-        completed = "completed"
-        prefetched = getattr(self, "_prefetched_objects_cache", None)
-        if prefetched is not None and "job_entries" in prefetched:
-            entries = prefetched["job_entries"]
-            if all(
-                "print_job" in entry._state.fields_cache
-                and "plates" in getattr(entry.print_job, "_prefetched_objects_cache", {})
+        entries = self._prefetched_job_entries()
+        if entries is not None:
+            return sum(
+                entry.quantity
                 for entry in entries
-            ):
-                return sum(
-                    entry.quantity
-                    for entry in entries
-                    if entry.target_assembly_id == assembly.pk
-                    and any(plate.status == completed for plate in entry.print_job.plates.all())
-                )
+                if entry.target_assembly_id == assembly.pk and _job_fully_printed(entry.print_job)
+            )
 
-        completed_pks = (
-            self.job_entries.filter(target_assembly=assembly, print_job__plates__status=completed)
-            .values_list("pk", flat=True)
-            .distinct()
-        )
+        completed_pks = self._fully_printed_entry_pks(target_assembly=assembly)
         return self.job_entries.filter(pk__in=completed_pks).aggregate(total=Sum("quantity"))["total"] or 0
 
     def printed_quantity_for_by_preset(self, assembly: Project) -> dict[Optional[int], int]:
@@ -346,12 +381,7 @@ class Part(models.Model):
         Returns:
             ``{print_preset_id_or_None: quantity}`` over attributed, completed job entries.
         """
-        completed = "completed"
-        completed_pks = (
-            self.job_entries.filter(target_assembly=assembly, print_job__plates__status=completed)
-            .values_list("pk", flat=True)
-            .distinct()
-        )
+        completed_pks = self._fully_printed_entry_pks(target_assembly=assembly)
         rows = (
             self.job_entries.filter(pk__in=completed_pks)
             .values("print_job__print_preset")

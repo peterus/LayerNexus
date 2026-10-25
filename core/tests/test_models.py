@@ -131,13 +131,32 @@ class PartModelTests(TestDataMixin, TestCase):
         PrintJobPlate.objects.create(print_job=job, plate_number=3, status=PrintJobPlate.STATUS_COMPLETED)
         self.assertEqual(self.part.printed_quantity, 2)
 
-    def test_printed_quantity_counts_job_with_any_completed_plate(self):
-        """Semantics: a job counts as printed once at least one plate is completed."""
-        job = PrintJob.objects.create(status="completed", created_by=self.user)
+    def test_printed_quantity_ignores_partially_completed_job(self):
+        """Semantics: a job counts as printed only once ALL its plates are completed.
+
+        Which part sits on which plate is unknown, so a multi-plate job with an
+        unprinted plate must not report its parts as printed (regression: project
+        showed every part printed while plate 2 was still waiting).
+        """
+        job = PrintJob.objects.create(status="printing", created_by=self.user)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
+        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
+        plate2 = PrintJobPlate.objects.create(print_job=job, plate_number=2, status=PrintJobPlate.STATUS_WAITING)
+        self.assertEqual(self.part.printed_quantity, 0)
+
+        plate2.status = PrintJobPlate.STATUS_COMPLETED
+        plate2.save(update_fields=["status"])
+        self.assertEqual(self.part.printed_quantity, 2)
+
+    def test_printed_quantity_partial_job_prefetched_path(self):
+        """The prefetched (no-query) path applies the same all-plates rule."""
+        job = PrintJob.objects.create(status="printing", created_by=self.user)
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
         PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         PrintJobPlate.objects.create(print_job=job, plate_number=2, status=PrintJobPlate.STATUS_WAITING)
-        self.assertEqual(self.part.printed_quantity, 2)
+        part = Part.objects.prefetch_related("job_entries__print_job__plates").get(pk=self.part.pk)
+        with self.assertNumQueries(0):
+            self.assertEqual(part.printed_quantity, 0)
 
     def test_printed_quantity_no_n_plus_1_without_prefetch(self):
         """Without a prefetch, printed_quantity is a single query (no per-entry N+1)."""
