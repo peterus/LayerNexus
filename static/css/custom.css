@@ -21,6 +21,17 @@ body {
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
 }
 
+/* Cards containing dropdowns (e.g. list filter bars): no hover-lift, which would create a
+   stacking context per hover and flicker; stay above following cards so open menus overlay them. */
+.card.filter-bar {
+    position: relative;
+    z-index: 1020;
+}
+
+.card.filter-bar:hover {
+    transform: none;
+}
+
 /* Progress bar in project cards */
 .progress {
     height: 8px;

@@ -37,6 +37,11 @@ class PrintJobViewTests(TestDataMixin, TestCase):
         resp = self.client.get(reverse("core:printjob_list"))
         self.assertEqual(resp.status_code, 200)
 
+    def test_list_filter_bar_has_overlay_class(self):
+        """The filter bar opts out of the card hover-lift so its dropdowns overlay the table."""
+        resp = self.client.get(reverse("core:printjob_list"))
+        self.assertContains(resp, "card card-body filter-bar")
+
     def test_create_get(self):
         resp = self.client.get(reverse("core:printjob_create"))
         self.assertEqual(resp.status_code, 200)
