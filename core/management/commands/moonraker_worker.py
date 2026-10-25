@@ -12,6 +12,9 @@ Run with ``python manage.py moonraker_worker``.  The worker:
 3. For each printer, opens a persistent WebSocket to Moonraker,
    subscribes to print status objects, and feeds incoming
    notifications into :func:`core.services.printer_status_sync.apply_status_event`.
+4. For printers with ``operator_prompts_enabled``, shows operator dialogs
+   on the printer (review a finished plate, start the next job) and handles
+   the button presses (see :mod:`core.services.moonraker_operator_ui`).
 """
 
 from __future__ import annotations
@@ -28,6 +31,8 @@ from asgiref.sync import sync_to_async
 from django.core.management.base import BaseCommand
 
 from core.models import PrinterProfile, PrintQueue
+from core.services.moonraker import MoonrakerClient
+from core.services.moonraker_operator_ui import MoonrakerOperatorUI
 from core.services.moonraker_ws import MoonrakerWebSocketClient
 from core.services.printer_status_sync import apply_status_event
 
@@ -85,16 +90,51 @@ def _apply_event_sync(entry: PrintQueue, event: dict[str, Any]) -> None:
     apply_status_event(entry, event)
 
 
-async def _handle_event_for_printer(printer: PrinterProfile, event: dict[str, Any]) -> None:
+async def _handle_event_for_printer(
+    printer: PrinterProfile,
+    event: dict[str, Any],
+    ui: MoonrakerOperatorUI | None = None,
+) -> None:
+    """Route one Moonraker notification of ``printer``.
+
+    G-code responses go to the operator UI (if enabled) and never touch the
+    status sync; everything else updates the printing queue entry.  When an
+    entry transitions to ``awaiting_review`` the review dialog is shown.
+    """
+    if event.get("method") == "notify_gcode_response":
+        if ui is not None:
+            await ui.on_gcode_response(event.get("params") or [])
+        return
+
     entry = await _load_active_queue_entry(printer.pk)
     if entry is None:
         return
     await _apply_event_sync(entry, event)
+    if ui is not None and entry.status == PrintQueue.STATUS_AWAITING_REVIEW:
+        await ui.on_review_pending(entry.pk)
 
 
-async def _run_printer(printer: PrinterProfile) -> None:
+async def _close_stale_dialogs_loop(ui: MoonrakerOperatorUI, interval: float) -> None:
+    """Periodically close review dialogs whose entry was reviewed elsewhere."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await ui.close_if_stale()
+        except Exception:  # noqa: BLE001
+            logger.exception("Stale dialog check failed for printer %s", ui.printer.name)
+
+
+async def _run_printer(printer: PrinterProfile, stale_check_interval: float = DEFAULT_RELOAD_INTERVAL) -> None:
+    ui: MoonrakerOperatorUI | None = None
+    stale_task: asyncio.Task | None = None
+    if printer.operator_prompts_enabled:
+        ui = MoonrakerOperatorUI(printer, MoonrakerClient(printer.moonraker_url, printer.moonraker_api_key))
+        stale_task = asyncio.create_task(
+            _close_stale_dialogs_loop(ui, stale_check_interval), name=f"operator_stale_{printer.pk}"
+        )
+
     async def on_event(event: dict[str, Any]) -> None:
-        await _handle_event_for_printer(printer, event)
+        await _handle_event_for_printer(printer, event, ui)
 
     client = MoonrakerWebSocketClient(printer, on_event)
     try:
@@ -102,6 +142,13 @@ async def _run_printer(printer: PrinterProfile) -> None:
     except asyncio.CancelledError:
         logger.info("Worker task for printer %s cancelled", printer.name)
         raise
+    finally:
+        if stale_task is not None:
+            stale_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await stale_task
+        if ui is not None:
+            await ui.cancel_pending()
 
 
 class TaskGroupLike:
@@ -155,6 +202,7 @@ class _Supervisor:
 async def _reconcile_printers(
     active: dict[int, tuple[asyncio.Task, PrinterSnapshot]],
     task_group: Any,
+    stale_check_interval: float = DEFAULT_RELOAD_INTERVAL,
 ) -> dict[int, tuple[asyncio.Task, PrinterSnapshot]]:
     """Reconcile active WebSocket tasks against the current DB state.
 
@@ -213,7 +261,7 @@ async def _reconcile_printers(
         if printer is None:
             continue
         logger.info("Starting worker task for printer %s (%s)", printer.name, snap.moonraker_url)
-        task = task_group.create_task(_run_printer(printer), name=f"moonraker_ws_{pk}")
+        task = task_group.create_task(_run_printer(printer, stale_check_interval), name=f"moonraker_ws_{pk}")
         active[pk] = (task, snap)
 
     return active
@@ -227,7 +275,7 @@ async def _reconcile_loop(
 ) -> None:
     while not stop_event.is_set():
         try:
-            await _reconcile_printers(active, task_group)
+            await _reconcile_printers(active, task_group, interval)
         except Exception:  # noqa: BLE001
             logger.exception("Reconcile loop iteration failed")
         with contextlib.suppress(asyncio.TimeoutError):

@@ -368,3 +368,25 @@ class MoonrakerGetJobStatusTests(TestCase):
     def test_moonraker_error_is_printer_error(self):
         """MoonrakerError must extend PrinterError so views can catch uniformly."""
         self.assertTrue(issubclass(MoonrakerError, PrinterError))
+
+
+class MoonrakerRunGcodeTests(TestCase):
+    """Tests for MoonrakerClient.run_gcode()."""
+
+    @patch("requests.request")
+    def test_run_gcode_posts_script(self, mock_request):
+        mock_request.return_value.json.return_value = {"result": "ok"}
+        client = MoonrakerClient("http://printer:7125")
+
+        result = client.run_gcode("G28")
+
+        self.assertEqual(result, {"result": "ok"})
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], "POST")
+        self.assertEqual(args[1], "http://printer:7125/printer/gcode/script")
+        self.assertEqual(kwargs["json"], {"script": "G28"})
+
+    @patch("requests.request", side_effect=requests.ConnectionError("down"))
+    def test_run_gcode_connection_error(self, mock_request):
+        with self.assertRaises(MoonrakerError):
+            MoonrakerClient("http://printer:7125").run_gcode("G28")

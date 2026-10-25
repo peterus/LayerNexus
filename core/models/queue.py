@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from django.db import models
 from django.db.models import CheckConstraint, Index, Q, UniqueConstraint
+from django.utils import timezone
 
 if TYPE_CHECKING:
     from core.models.printing import PrintJob
+
+
+#: How long a start claim (``PrintQueue.start_claimed_at``) keeps the printer
+#: busy.  Longer than the G-code upload + start timeouts; a claim left behind
+#: by a crashed process expires after this.
+START_CLAIM_TIMEOUT = timedelta(minutes=10)
 
 
 class PrintQueue(models.Model):
@@ -92,6 +100,11 @@ class PrintQueue(models.Model):
         default="",
         help_text="Last error reported by the printer backend (if any)",
     )
+    start_claimed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set while a print start (G-code upload) is in progress; the printer counts as busy meanwhile",
+    )
 
     class Meta:
         ordering = ["-priority", "position", "added_at"]
@@ -133,14 +146,13 @@ class PrintQueue(models.Model):
             return self.plate.print_job
         return None
 
+    @classmethod
+    def active_start_claim_q(cls) -> Q:
+        """Return a filter for waiting entries whose print start is in progress (unexpired claim)."""
+        return Q(status=cls.STATUS_WAITING, start_claimed_at__gte=timezone.now() - START_CLAIM_TIMEOUT)
+
     @property
     def is_printer_busy(self) -> bool:
-        """Return True if this entry's printer has an active or unreviewed job."""
-        return (
-            PrintQueue.objects.filter(
-                printer=self.printer,
-                status__in=[self.STATUS_PRINTING, self.STATUS_AWAITING_REVIEW],
-            )
-            .exclude(pk=self.pk)
-            .exists()
-        )
+        """Return True if this entry's printer has an active or unreviewed job, or a start in progress."""
+        active = Q(status__in=[self.STATUS_PRINTING, self.STATUS_AWAITING_REVIEW]) & ~Q(pk=self.pk)
+        return PrintQueue.objects.filter(active | self.active_start_claim_q(), printer=self.printer).exists()

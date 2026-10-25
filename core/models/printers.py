@@ -68,6 +68,14 @@ class PrinterProfile(models.Model):
     # Klipper/Moonraker connection
     moonraker_url = models.URLField(blank=True, help_text="e.g. http://192.168.1.100:7125")
     moonraker_api_key = models.CharField(max_length=255, blank=True)
+    operator_prompts_enabled = models.BooleanField(
+        default=False,
+        verbose_name="Show operator dialogs on the printer",
+        help_text=(
+            "Show review / next-job dialogs on the printer's screen (KlipperScreen, Mainsail). "
+            "Requires the LayerNexus macros on the printer."
+        ),
+    )
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

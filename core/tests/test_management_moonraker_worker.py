@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
+from unittest.mock import MagicMock, patch
 
+from asgiref.sync import sync_to_async
 from django.contrib.auth.models import User
-from django.test import TransactionTestCase
+from django.test import SimpleTestCase, TransactionTestCase
 from django.utils import timezone
 
 from core.management.commands.moonraker_worker import (
+    _handle_event_for_printer,
     _reconcile_printers,
+    _run_printer,
     _Supervisor,
 )
 from core.models import PrinterProfile
@@ -215,3 +220,242 @@ class SupervisorTests(IsolatedAsyncioTestCase):
         await sup.cancel_all()
 
         self.assertTrue(task.cancelled())
+
+
+class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
+    """End-to-end worker handling of operator dialogs (Moonraker mocked)."""
+
+    def setUp(self):
+        super().setUp()
+        from core.models import PrintJob, PrintJobPlate, PrintQueue
+
+        self.user = User.objects.create_user(username="wt", password="x")
+        self.printer = PrinterProfile.objects.create(
+            name="P1",
+            moonraker_url="http://p1:7125",
+            operator_prompts_enabled=True,
+            created_by=self.user,
+        )
+        self.job = PrintJob.objects.create(name="Bracket", status=PrintJob.STATUS_PRINTING, created_by=self.user)
+        self.plate = PrintJobPlate.objects.create(
+            print_job=self.job,
+            plate_number=1,
+            status=PrintJobPlate.STATUS_PRINTING,
+            gcode_file="gcode_jobs/p1.gcode",
+        )
+        self.entry = PrintQueue.objects.create(
+            plate=self.plate,
+            printer=self.printer,
+            status=PrintQueue.STATUS_PRINTING,
+            started_at=timezone.now(),
+        )
+        self.client_mock = MagicMock()
+
+    def _ui(self, printer=None):
+        from core.services.moonraker_operator_ui import MoonrakerOperatorUI
+
+        return MoonrakerOperatorUI(printer or self.printer, self.client_mock)
+
+    @staticmethod
+    def _finished_event(status: str = "completed") -> dict:
+        return {
+            "method": "notify_history_changed",
+            "params": [{"action": "finished", "job": {"status": status}}],
+        }
+
+    def _scripts(self) -> list[str]:
+        return [c.args[0] for c in self.client_mock.run_gcode.call_args_list]
+
+    async def _refresh(self, obj):
+        await sync_to_async(obj.refresh_from_db)()
+        return obj
+
+    async def test_transition_shows_review_dialog(self):
+        await _handle_event_for_printer(self.printer, self._finished_event(), self._ui())
+        scripts = self._scripts()
+        self.assertEqual(len(scripts), 1)
+        self.assertIn(f"LN_REVIEW ENTRY={self.entry.pk} RESULT=PASS", scripts[0])
+        self.assertIn(f"LN_REVIEW ENTRY={self.entry.pk} RESULT=FAIL", scripts[0])
+
+    async def test_cancelled_print_shows_end_state(self):
+        await _handle_event_for_printer(self.printer, self._finished_event("cancelled"), self._ui())
+        self.assertIn("Ended: Printer reported: cancelled", self._scripts()[0])
+
+    async def test_no_prompt_when_flag_off(self):
+        # The worker builds no UI for printers without the flag.
+        await _handle_event_for_printer(self.printer, self._finished_event(), None)
+        entry = await self._refresh(self.entry)
+        self.assertEqual(entry.status, "awaiting_review")
+        self.client_mock.run_gcode.assert_not_called()
+
+    async def test_no_dialog_without_queue_entry(self):
+        await sync_to_async(self.entry.delete)()
+        await _handle_event_for_printer(self.printer, self._finished_event(), self._ui())
+        self.client_mock.run_gcode.assert_not_called()
+
+    async def test_progress_update_shows_no_dialog(self):
+        event = {"method": "notify_status_update", "params": [{"virtual_sdcard": {"progress": 0.5}}]}
+        await _handle_event_for_printer(self.printer, event, self._ui())
+        self.client_mock.run_gcode.assert_not_called()
+
+    @patch("core.services.queue.get_printer_backend")
+    async def test_gcode_response_pass_reviews_and_shows_next(self, mock_get_backend):
+        from core.models import PrintJobPlate
+
+        ui = self._ui()
+        await _handle_event_for_printer(self.printer, self._finished_event(), ui)
+        event = {"method": "notify_gcode_response", "params": [f"LN REVIEW ENTRY={self.entry.pk} RESULT=PASS"]}
+        await _handle_event_for_printer(self.printer, event, ui)
+        await ui.wait_idle()
+
+        plate = await self._refresh(self.plate)
+        self.assertEqual(plate.status, PrintJobPlate.STATUS_COMPLETED)
+        self.assertIn("Plate passed (1/1 plates done)", self._scripts()[-1])
+        self.assertIn("Queue empty", self._scripts()[-1])
+        mock_get_backend.assert_not_called()
+
+    @patch("core.services.queue.get_printer_backend")
+    async def test_gcode_response_start_next_starts_print(self, mock_get_backend):
+        from core.models import PrintQueue
+
+        await sync_to_async(self.entry.delete)()
+        entry = await sync_to_async(PrintQueue.objects.create)(plate=self.plate, printer=self.printer)
+        ui = self._ui()
+        event = {"method": "notify_gcode_response", "params": [f"LN NEXT ENTRY={entry.pk}"]}
+        await _handle_event_for_printer(self.printer, event, ui)
+        await ui.wait_idle()
+
+        entry = await self._refresh(entry)
+        self.assertEqual(entry.status, PrintQueue.STATUS_PRINTING)
+        mock_get_backend.return_value.start_print.assert_called_once()
+        self.assertIn("Started: Bracket, plate 1", self._scripts()[-1])
+
+    @patch("core.services.queue.get_printer_backend")
+    async def test_double_start_press_starts_once(self, mock_get_backend):
+        from core.models import PrintQueue
+
+        await sync_to_async(self.entry.delete)()
+        entry = await sync_to_async(PrintQueue.objects.create)(plate=self.plate, printer=self.printer)
+        ui = self._ui()
+        line = f"LN NEXT ENTRY={entry.pk}"
+        await ui.on_gcode_response([line])
+        await ui.on_gcode_response([line])
+        await ui.wait_idle()
+
+        mock_get_backend.return_value.start_print.assert_called_once()
+        self.assertIn("Already handled", self._scripts()[-1])
+
+    async def test_gcode_response_ignored_when_flag_off(self):
+        from core.models import PrintQueue
+
+        await sync_to_async(PrintQueue.objects.filter(pk=self.entry.pk).update)(status="awaiting_review")
+        event = {"method": "notify_gcode_response", "params": [f"LN REVIEW ENTRY={self.entry.pk} RESULT=PASS"]}
+        await _handle_event_for_printer(self.printer, event, None)
+        entry = await self._refresh(self.entry)
+        self.assertEqual(entry.status, "awaiting_review")
+
+    async def test_gcode_response_from_other_printer_is_rejected(self):
+        from core.models import PrintQueue
+
+        await sync_to_async(PrintQueue.objects.filter(pk=self.entry.pk).update)(status="awaiting_review")
+        other = await sync_to_async(PrinterProfile.objects.create)(
+            name="P2", moonraker_url="http://p2:7125", operator_prompts_enabled=True
+        )
+        ui = self._ui(other)
+        await ui.on_gcode_response([f"LN REVIEW ENTRY={self.entry.pk} RESULT=PASS"])
+        await ui.wait_idle()
+        entry = await self._refresh(self.entry)
+        self.assertEqual(entry.status, "awaiting_review")
+        self.assertIn("Already handled", self._scripts()[-1])
+
+    async def test_non_ln_gcode_response_is_ignored(self):
+        ui = self._ui()
+        handled = await ui.on_gcode_response(["// action:prompt_show", "echo: hello"])
+        self.assertFalse(handled)
+        self.client_mock.run_gcode.assert_not_called()
+
+    async def test_menu_shows_pending_review(self):
+        from core.models import PrintQueue
+
+        await sync_to_async(PrintQueue.objects.filter(pk=self.entry.pk).update)(status="awaiting_review")
+        ui = self._ui()
+        await ui.on_gcode_response(["LN MENU"])
+        await ui.wait_idle()
+        self.assertIn(f"LN_REVIEW ENTRY={self.entry.pk} RESULT=PASS", self._scripts()[-1])
+        self.assertEqual(ui.open_review_pk, self.entry.pk)
+
+    async def test_prompt_send_failure_is_logged(self):
+        from core.services.moonraker import MoonrakerError
+
+        self.client_mock.run_gcode.side_effect = MoonrakerError("Unknown command: RESPOND")
+        with self.assertLogs("core.services.moonraker_operator_ui", level="WARNING"):
+            await _handle_event_for_printer(self.printer, self._finished_event(), self._ui())
+        entry = await self._refresh(self.entry)
+        self.assertEqual(entry.status, "awaiting_review")
+
+    async def test_failing_action_is_logged_not_raised(self):
+        ui = self._ui()
+        with (
+            patch("core.services.moonraker_operator_ui.handle_action", side_effect=RuntimeError("boom")),
+            self.assertLogs("core.services.moonraker_operator_ui", level="ERROR"),
+        ):
+            await ui.on_gcode_response(["LN MENU"])
+            await ui.wait_idle()
+        # The macro already closed the prompt, so the operator must see why nothing happened.
+        self.assertEqual(len(self._scripts()), 1)
+        self.assertIn("Action failed", self._scripts()[0])
+
+    async def test_close_if_stale_closes_after_web_review(self):
+        from core.services.moonraker_operator_ui import END_PROMPT_SCRIPT
+        from core.services.queue import review_queue_entry
+
+        ui = self._ui()
+        await _handle_event_for_printer(self.printer, self._finished_event(), ui)
+        await ui.close_if_stale()
+        self.assertEqual(len(self._scripts()), 1)  # still awaiting review -> left open
+
+        await sync_to_async(review_queue_entry)(self.entry.pk, True)
+        await ui.close_if_stale()
+        self.assertEqual(self._scripts()[-1], END_PROMPT_SCRIPT)
+        self.assertIsNone(ui.open_review_pk)
+
+        await ui.close_if_stale()
+        self.assertEqual(len(self._scripts()), 2)  # closed only once
+
+    async def test_run_printer_builds_ui_only_when_enabled(self):
+        captured: dict = {}
+
+        class FakeWS:
+            def __init__(self, printer, on_event):
+                captured["on_event"] = on_event
+
+            async def run(self):
+                await captured["on_event"](OperatorDialogWorkerTests._finished_event())
+
+        for enabled, expected_calls in ((False, 0), (True, 1)):
+            with self.subTest(enabled=enabled):
+                from core.models import PrintQueue
+
+                await sync_to_async(PrintQueue.objects.filter(pk=self.entry.pk).update)(status="printing")
+                self.printer.operator_prompts_enabled = enabled
+                with (
+                    patch("core.management.commands.moonraker_worker.MoonrakerWebSocketClient", FakeWS),
+                    patch("core.management.commands.moonraker_worker.MoonrakerClient") as client_cls,
+                ):
+                    await _run_printer(self.printer, stale_check_interval=3600)
+                self.assertEqual(client_cls.return_value.run_gcode.call_count, expected_calls)
+
+
+class OperatorUIImportBoundaryTests(SimpleTestCase):
+    """Moonraker/Klipper-specific UI code must only be imported by the worker."""
+
+    def test_only_worker_imports_operator_ui(self):
+        core_dir = Path(__file__).resolve().parent.parent
+        importers = {
+            path.relative_to(core_dir).as_posix()
+            for path in core_dir.rglob("*.py")
+            if "tests" not in path.parts
+            and path.name != "moonraker_operator_ui.py"
+            and "moonraker_operator_ui" in path.read_text()
+        }
+        self.assertEqual(importers, {"management/commands/moonraker_worker.py"})

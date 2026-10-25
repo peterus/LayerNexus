@@ -253,8 +253,8 @@ class PrintQueueMoveViewTests(_QueueFixtureMixin, _RBACTestBase):
         msgs = [str(m) for m in self.client.get(reverse("core:printqueue_list")).context["messages"]]
         self.assertFalse(any("Priority changed" in m for m in msgs), msgs)
 
-    @mock.patch("core.views.queue.start_print_for_queue_entry")
-    def test_run_all_starts_manually_reordered_entry(self, mock_start):
+    @mock.patch("core.services.queue.get_printer_backend")
+    def test_run_all_starts_manually_reordered_entry(self, mock_get_backend):
         self.printer.moonraker_url = "http://printer:7125"
         self.printer.save()
         low = self._make_entry(self.printer, position=3, priority=1)
@@ -263,8 +263,9 @@ class PrintQueueMoveViewTests(_QueueFixtureMixin, _RBACTestBase):
         self.client.login(username="admin_user", password="testpass123")
         self._move(low, position="1")
         self.client.post(reverse("core:run_all_queues"))
-        mock_start.assert_called_once()
-        self.assertEqual(mock_start.call_args.args[0].pk, low.pk)
+        mock_get_backend.return_value.start_print.assert_called_once()
+        low.refresh_from_db()
+        self.assertEqual(low.status, PrintQueue.STATUS_PRINTING)
 
     def test_failed_retry_requeues_first_in_priority_group(self):
         """A failed print goes back to the front of its priority group, not an arbitrary rank."""
@@ -277,16 +278,19 @@ class PrintQueueMoveViewTests(_QueueFixtureMixin, _RBACTestBase):
         self.assertEqual(self.b.status, PrintQueue.STATUS_WAITING)
         self.assertEqual(self._order(self.printer), [self.b.pk, c.pk, self.a.pk])
 
-    @mock.patch("core.views.queue.start_print_for_queue_entry")
-    def test_run_next_starts_manually_reordered_entry(self, mock_start):
+    @mock.patch("core.services.queue.get_printer_backend")
+    def test_run_next_starts_manually_reordered_entry(self, mock_get_backend):
         self.printer.moonraker_url = "http://printer:7125"
         self.printer.save()
         low_first = self._make_entry(self.printer, position=3, priority=1)
+        low_first.plate.gcode_file = "gcode/test.gcode"
+        low_first.plate.save()
         self.client.login(username="admin_user", password="testpass123")
         self._move(low_first, position="1")
         self.client.post(reverse("core:run_queue", args=[self.printer.pk]))
-        mock_start.assert_called_once()
-        self.assertEqual(mock_start.call_args.args[0].pk, low_first.pk)
+        mock_get_backend.return_value.start_print.assert_called_once()
+        low_first.refresh_from_db()
+        self.assertEqual(low_first.status, PrintQueue.STATUS_PRINTING)
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])

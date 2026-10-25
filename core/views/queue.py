@@ -35,11 +35,12 @@ from core.services.printer_backend import (
 from core.services.queue import (
     MOVE_DIRECTIONS,
     QUEUE_EXECUTION_ORDER,
-    PrintStartError,
     QueueReorderError,
+    ReviewStateError,
     move_queue_entry,
-    next_waiting_entry,
-    start_print_for_queue_entry,
+    queue_entry_status_label,
+    review_queue_entry,
+    start_next_for_printer,
 )
 
 logger = logging.getLogger(__name__)
@@ -230,10 +231,13 @@ class PrintQueueDeleteView(QueueDequeueMixin, DeleteView):
             # time, but a printer worker could flip the row to printing /
             # awaiting_review before we delete it.  Delete conditionally on the
             # status so a live entry can never be removed by a Designer.
-            deleted, _ = PrintQueue.objects.filter(
-                pk=self.object.pk,
-                status=PrintQueue.STATUS_WAITING,
-            ).delete()
+            # A waiting entry whose print start is in progress (G-code upload)
+            # is about to become printing, so it is protected the same way.
+            deleted, _ = (
+                PrintQueue.objects.filter(pk=self.object.pk, status=PrintQueue.STATUS_WAITING)
+                .exclude(PrintQueue.active_start_claim_q())
+                .delete()
+            )
             if not deleted:
                 raise Http404("Queue entry is no longer waiting.")
             messages.success(self.request, "Removed from queue.")
@@ -314,44 +318,28 @@ class RunNextQueueView(PrinterControlMixin, View):
 
     def post(self, request: HttpRequest, printer_pk: int) -> HttpResponse:
         printer = get_object_or_404(PrinterProfile, pk=printer_pk)
-        if not printer.moonraker_url:
-            messages.error(request, "No Moonraker URL configured for this printer.")
-            return redirect("core:printqueue_list")
+        result = start_next_for_printer(printer)
 
-        # Check that the printer is free
-        busy_entry = PrintQueue.objects.filter(
-            printer=printer,
-            status__in=[PrintQueue.STATUS_PRINTING, PrintQueue.STATUS_AWAITING_REVIEW],
-        ).first()
-        if busy_entry:
-            status_label = busy_entry.get_status_display()
+        if result.outcome == "not_configured":
+            messages.error(request, "No Moonraker URL configured for this printer.")
+        elif result.outcome == "busy":
+            busy_entry = result.busy_entry
+            status_label = queue_entry_status_label(busy_entry)
             messages.warning(
                 request,
                 f'Printer "{printer.name}" is busy ({status_label}: '
                 f'plate {busy_entry.plate.plate_number} of "{busy_entry.print_job}").',
             )
-            return redirect("core:printqueue_list")
-
-        # Next waiting entry in execution order (priority + manual position)
-        entry = next_waiting_entry(printer)
-
-        if not entry:
+        elif result.outcome == "empty":
             messages.warning(request, "No waiting jobs in the queue for this printer.")
-            return redirect("core:printqueue_list")
-
-        try:
-            start_print_for_queue_entry(entry)
-            plate = entry.plate
-            job = plate.print_job
+        elif result.outcome == "started":
+            plate = result.entry.plate
             messages.success(
                 request,
-                f'Started printing plate {plate.plate_number} of "{job}" on {printer.name}.',
+                f'Started printing plate {plate.plate_number} of "{plate.print_job}" on {printer.name}.',
             )
-        except PrintStartError as exc:
-            messages.error(request, str(exc))
-        except PrinterError as exc:
-            logger.exception("Failed to run queue entry %s: %s", entry.pk, exc)
-            messages.error(request, "Failed to start print. Please check the printer connection and try again.")
+        else:
+            messages.error(request, result.error)
 
         return redirect("core:printqueue_list")
 
@@ -373,34 +361,19 @@ class RunAllQueuesView(PrinterControlMixin, View):
         errors = 0
 
         for printer in printers:
-            # Check printer is free
-            busy = PrintQueue.objects.filter(
-                printer=printer,
-                status__in=[
-                    PrintQueue.STATUS_PRINTING,
-                    PrintQueue.STATUS_AWAITING_REVIEW,
-                ],
-            ).exists()
-            if busy:
-                skipped_busy += 1
-                continue
-
-            # Next waiting entry in execution order (priority + manual position)
-            entry = next_waiting_entry(printer)
-            if not entry:
-                skipped_empty += 1
-                continue
-
-            if not entry.plate.gcode_file:
-                logger.warning("Queue entry %s has no G-code file, skipping.", entry.pk)
-                skipped_empty += 1
-                continue
-
-            try:
-                start_print_for_queue_entry(entry)
+            # Same rules (and entry claim) as Run Next and the printer's Start button.
+            result = start_next_for_printer(printer)
+            if result.outcome == "started":
                 started += 1
-            except (PrintStartError, PrinterError) as exc:
-                logger.exception("Failed to start print on %s: %s", printer.name, exc)
+            elif result.outcome == "busy":
+                skipped_busy += 1
+            elif result.outcome == "no_gcode":
+                logger.warning("Queue entry %s has no G-code file, skipping.", result.entry.pk)
+                skipped_empty += 1
+            elif result.outcome == "empty":
+                skipped_empty += 1
+            else:
+                logger.error("Failed to start print on %s: %s", printer.name, result.error)
                 errors += 1
 
         parts = []
@@ -461,66 +434,32 @@ class QueueEntryReviewView(PrinterControlMixin, View):
         """Process pass or fail action."""
         entry = self._get_entry(request, pk)
         action = request.POST.get("action", "")
-        plate = entry.plate
-        job = plate.print_job
-        plate_label = f"Plate {plate.plate_number} of '{job}'"
+        if action not in ("pass", "fail"):
+            messages.error(request, "Invalid action.")
+            return redirect("core:printqueue_list")
 
-        if action == "pass":
-            # Success -- mark plate as completed, remove queue entry
-            plate.status = PrintJobPlate.STATUS_COMPLETED
-            plate.completed_at = timezone.now()
-            plate.save(update_fields=["status", "completed_at"])
-            entry.delete()
+        try:
+            result = review_queue_entry(entry.pk, action == "pass")
+        except ReviewStateError:
+            # Reviewed concurrently (e.g. on the printer) since the page loaded.
+            messages.warning(request, "This queue entry has already been reviewed.")
+            return redirect("core:printqueue_list")
 
-            # Check if all plates of the job are completed
-            if job.all_plates_completed:
-                job.status = PrintJob.STATUS_COMPLETED
-                job.completed_at = timezone.now()
-                job.save(update_fields=["status", "completed_at"])
-
+        if result.outcome == "passed":
             messages.success(
                 request,
-                f"{plate_label} passed! "
-                f"({job.plates.filter(status=PrintJobPlate.STATUS_COMPLETED).count()}"
-                f"/{job.plate_count} plates completed)",
+                f"{result.plate_label} passed! ({result.plates_completed}/{result.plate_count} plates completed)",
             )
-
-        elif action == "fail":
-            entry.retry_count += 1
-            if entry.retry_count >= entry.max_retries:
-                plate.status = PrintJobPlate.STATUS_FAILED
-                plate.save(update_fields=["status"])
-                entry.delete()
-                messages.error(
-                    request,
-                    f"{plate_label} failed and max retries ({entry.max_retries}) exceeded — removed from queue.",
-                )
-            else:
-                entry.status = PrintQueue.STATUS_WAITING
-                entry.started_at = None
-                entry.completed_at = None
-                # Waiting positions are renumbered 1..n by manual reordering, so
-                # a stale position would land the retry at an arbitrary rank.
-                # Position 0 puts it first within its priority group (it was
-                # the entry being printed, i.e. it was next in line).
-                entry.position = 0
-                entry.save(
-                    update_fields=[
-                        "status",
-                        "retry_count",
-                        "started_at",
-                        "completed_at",
-                        "position",
-                    ]
-                )
-                plate.status = PrintJobPlate.STATUS_WAITING
-                plate.save(update_fields=["status"])
-                messages.warning(
-                    request,
-                    f"{plate_label} failed — requeued (retry {entry.retry_count}/{entry.max_retries}).",
-                )
+        elif result.outcome == "discarded":
+            messages.error(
+                request,
+                f"{result.plate_label} failed and max retries ({result.max_retries}) exceeded — removed from queue.",
+            )
         else:
-            messages.error(request, "Invalid action.")
+            messages.warning(
+                request,
+                f"{result.plate_label} failed — requeued (retry {result.retry_count}/{result.max_retries}).",
+            )
 
         return redirect("core:printqueue_list")
 

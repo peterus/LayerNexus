@@ -21,6 +21,7 @@ class PrinterProfileForm(forms.ModelForm):
             "orca_machine_profile",
             "moonraker_url",
             "moonraker_api_key",
+            "operator_prompts_enabled",
         ]
         widgets = {
             "description": forms.Textarea(attrs={"rows": 3}),

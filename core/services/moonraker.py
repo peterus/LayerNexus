@@ -160,6 +160,20 @@ class MoonrakerClient:
             json={"filename": filename},
         )
 
+    def run_gcode(self, script: str) -> dict:
+        """Run a G-code script on the printer (``printer.gcode.script``).
+
+        Args:
+            script: One or more newline-separated G-code commands.
+
+        Returns:
+            Moonraker response.
+
+        Raises:
+            MoonrakerError: If the request fails or Klipper rejects the script.
+        """
+        return self._request("POST", "printer/gcode/script", json={"script": script})
+
     def get_job_status(self) -> NormalizedJobStatus:
         """Get the current print job status with normalized fields.
 
