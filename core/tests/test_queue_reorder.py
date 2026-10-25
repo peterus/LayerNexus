@@ -277,7 +277,7 @@ class PrintQueueMoveViewTests(_QueueFixtureMixin, _RBACTestBase):
         self.assertEqual(self.b.status, PrintQueue.STATUS_WAITING)
         self.assertEqual(self._order(self.printer), [self.b.pk, c.pk, self.a.pk])
 
-    @mock.patch("core.views.queue.start_print_for_queue_entry")
+    @mock.patch("core.services.queue.start_print_for_queue_entry")
     def test_run_next_starts_manually_reordered_entry(self, mock_start):
         self.printer.moonraker_url = "http://printer:7125"
         self.printer.save()

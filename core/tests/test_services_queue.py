@@ -6,7 +6,13 @@ from django.test import TestCase
 
 from core.models import PrintJob, PrintJobPlate, PrintQueue
 from core.services.moonraker import MoonrakerError
-from core.services.queue import PrintStartError, start_print_for_queue_entry
+from core.services.queue import (
+    PrintStartError,
+    ReviewStateError,
+    review_queue_entry,
+    start_next_for_printer,
+    start_print_for_queue_entry,
+)
 from core.tests.mixins import TestDataMixin
 
 
@@ -149,3 +155,178 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
         entry_save.assert_called_once()
         plate_save.assert_called_once()
         job_save.assert_called_once()
+
+
+class _QueueServiceTestBase(TestDataMixin, TestCase):
+    """Shared fixtures: one job with two plates queued on a Moonraker printer."""
+
+    def setUp(self):
+        super().setUp()
+        self.printer.moonraker_url = "http://printer:7125"
+        self.printer.save()
+        self.job = PrintJob.objects.create(name="Bracket", status=PrintJob.STATUS_PRINTING, created_by=self.user)
+        self.plate1 = PrintJobPlate.objects.create(
+            print_job=self.job,
+            plate_number=1,
+            status=PrintJobPlate.STATUS_PRINTING,
+            gcode_file="gcode_jobs/p1.gcode",
+        )
+        self.plate2 = PrintJobPlate.objects.create(
+            print_job=self.job,
+            plate_number=2,
+            status=PrintJobPlate.STATUS_WAITING,
+            gcode_file="gcode_jobs/p2.gcode",
+        )
+
+    def _entry(self, plate: PrintJobPlate, status: str, **kwargs) -> PrintQueue:
+        return PrintQueue.objects.create(plate=plate, printer=self.printer, status=status, **kwargs)
+
+
+class ReviewQueueEntryTests(_QueueServiceTestBase):
+    """Tests for review_queue_entry()."""
+
+    def test_pass_completes_plate_and_deletes_entry(self):
+        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
+        result = review_queue_entry(entry.pk, True)
+        self.assertEqual(result.outcome, "passed")
+        self.assertEqual(result.plates_completed, 1)
+        self.assertEqual(result.plate_count, 2)
+        self.assertEqual(result.plate_label, "Plate 1 of 'Bracket (Printing)'")
+        self.plate1.refresh_from_db()
+        self.assertEqual(self.plate1.status, PrintJobPlate.STATUS_COMPLETED)
+        self.assertIsNotNone(self.plate1.completed_at)
+        self.assertFalse(PrintQueue.objects.filter(pk=entry.pk).exists())
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.status, PrintJob.STATUS_PRINTING)
+
+    def test_pass_last_plate_completes_job(self):
+        self.plate2.status = PrintJobPlate.STATUS_COMPLETED
+        self.plate2.save()
+        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
+        result = review_queue_entry(entry.pk, True)
+        self.assertEqual(result.plates_completed, 2)
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.status, PrintJob.STATUS_COMPLETED)
+        self.assertIsNotNone(self.job.completed_at)
+
+    def test_fail_requeues_with_position_zero(self):
+        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW, position=5)
+        result = review_queue_entry(entry.pk, False)
+        self.assertEqual(result.outcome, "requeued")
+        self.assertEqual((result.retry_count, result.max_retries), (1, 3))
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
+        self.assertEqual(entry.retry_count, 1)
+        self.assertEqual(entry.position, 0)
+        self.assertIsNone(entry.started_at)
+        self.plate1.refresh_from_db()
+        self.assertEqual(self.plate1.status, PrintJobPlate.STATUS_WAITING)
+
+    def test_fail_at_max_retries_discards(self):
+        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW, retry_count=2, max_retries=3)
+        result = review_queue_entry(entry.pk, False)
+        self.assertEqual(result.outcome, "discarded")
+        self.assertEqual(result.max_retries, 3)
+        self.plate1.refresh_from_db()
+        self.assertEqual(self.plate1.status, PrintJobPlate.STATUS_FAILED)
+        self.assertFalse(PrintQueue.objects.filter(pk=entry.pk).exists())
+
+    def test_not_awaiting_review_raises(self):
+        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        with self.assertRaises(ReviewStateError):
+            review_queue_entry(entry.pk, True)
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
+
+    def test_missing_entry_raises(self):
+        with self.assertRaises(ReviewStateError):
+            review_queue_entry(999999, True)
+
+    def test_other_printer_raises(self):
+        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
+        with self.assertRaises(ReviewStateError):
+            review_queue_entry(entry.pk, True, printer_pk=self.other_printer.pk)
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, PrintQueue.STATUS_AWAITING_REVIEW)
+
+    def test_matching_printer_is_accepted(self):
+        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
+        result = review_queue_entry(entry.pk, True, printer_pk=self.printer.pk)
+        self.assertEqual(result.outcome, "passed")
+
+
+@patch("core.services.queue.get_printer_backend")
+class StartNextForPrinterTests(_QueueServiceTestBase):
+    """Tests for start_next_for_printer()."""
+
+    def setUp(self):
+        super().setUp()
+        self.plate1.status = PrintJobPlate.STATUS_WAITING
+        self.plate1.save()
+
+    def test_start_next_starts_first_waiting(self, mock_get_backend):
+        first = self._entry(self.plate1, PrintQueue.STATUS_WAITING, position=1)
+        self._entry(self.plate2, PrintQueue.STATUS_WAITING, position=2)
+        result = start_next_for_printer(self.printer)
+        self.assertEqual(result.outcome, "started")
+        self.assertEqual(result.entry.pk, first.pk)
+        mock_get_backend.return_value.start_print.assert_called_once()
+        first.refresh_from_db()
+        self.assertEqual(first.status, PrintQueue.STATUS_PRINTING)
+
+    def test_start_next_with_matching_expected_entry(self, mock_get_backend):
+        first = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        result = start_next_for_printer(self.printer, expected_entry_pk=first.pk)
+        self.assertEqual(result.outcome, "started")
+
+    def test_start_next_busy(self, mock_get_backend):
+        for busy_status in (PrintQueue.STATUS_PRINTING, PrintQueue.STATUS_AWAITING_REVIEW):
+            with self.subTest(busy_status=busy_status):
+                PrintQueue.objects.all().delete()
+                busy = self._entry(self.plate1, busy_status)
+                self._entry(self.plate2, PrintQueue.STATUS_WAITING)
+                result = start_next_for_printer(self.printer)
+                self.assertEqual(result.outcome, "busy")
+                self.assertEqual(result.busy_entry.pk, busy.pk)
+        mock_get_backend.return_value.start_print.assert_not_called()
+
+    def test_start_next_empty(self, mock_get_backend):
+        result = start_next_for_printer(self.printer)
+        self.assertEqual(result.outcome, "empty")
+        self.assertIsNone(result.entry)
+        mock_get_backend.assert_not_called()
+
+    def test_start_next_not_next(self, mock_get_backend):
+        self._entry(self.plate1, PrintQueue.STATUS_WAITING, position=1)
+        second = self._entry(self.plate2, PrintQueue.STATUS_WAITING, position=2)
+        result = start_next_for_printer(self.printer, expected_entry_pk=second.pk)
+        self.assertEqual(result.outcome, "not_next")
+        mock_get_backend.return_value.start_print.assert_not_called()
+        second.refresh_from_db()
+        self.assertEqual(second.status, PrintQueue.STATUS_WAITING)
+
+    def test_start_next_not_configured(self, mock_get_backend):
+        self.printer.moonraker_url = ""
+        self.printer.save()
+        self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        result = start_next_for_printer(self.printer)
+        self.assertEqual(result.outcome, "not_configured")
+        mock_get_backend.assert_not_called()
+
+    def test_start_next_printer_error(self, mock_get_backend):
+        mock_get_backend.return_value.upload_gcode.side_effect = MoonrakerError("Connection refused")
+        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        with self.assertLogs("core.services.queue", level="ERROR"):
+            result = start_next_for_printer(self.printer)
+        self.assertEqual(result.outcome, "error")
+        self.assertEqual(result.error, "Failed to start print. Please check the printer connection and try again.")
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
+
+    def test_start_next_print_start_error(self, mock_get_backend):
+        self.plate1.gcode_file = ""
+        self.plate1.save()
+        self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        result = start_next_for_printer(self.printer)
+        self.assertEqual(result.outcome, "error")
+        self.assertIn("No G-code file", result.error)
