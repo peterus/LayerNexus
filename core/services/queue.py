@@ -280,15 +280,33 @@ def start_next_for_printer(printer: PrinterProfile, *, expected_entry_pk: int | 
             return StartResult(outcome="empty")
         if expected_entry_pk is not None and entry.pk != expected_entry_pk:
             return StartResult(outcome="not_next", entry=entry)
+        # Claim the entry before releasing the lock: a concurrent start (web
+        # Run Next vs. the printer's Start button) then sees the printer as
+        # busy instead of uploading and starting the same entry twice.
+        PrintQueue.objects.filter(pk=entry.pk, status=PrintQueue.STATUS_WAITING).update(
+            status=PrintQueue.STATUS_PRINTING, started_at=timezone.now()
+        )
 
     try:
         start_print_for_queue_entry(entry)
     except PrintStartError as exc:
+        _release_claim(entry)
         return StartResult(outcome="error", entry=entry, error=str(exc))
     except PrinterError as exc:
+        _release_claim(entry)
         logger.exception("Failed to run queue entry %s: %s", entry.pk, exc)
         return StartResult(outcome="error", entry=entry, error=PRINTER_ERROR_MESSAGE)
+    except BaseException:
+        _release_claim(entry)
+        raise
     return StartResult(outcome="started", entry=entry)
+
+
+def _release_claim(entry: PrintQueue) -> None:
+    """Put an entry claimed by :func:`start_next_for_printer` back to waiting after a failed start."""
+    PrintQueue.objects.filter(pk=entry.pk, status=PrintQueue.STATUS_PRINTING).update(
+        status=PrintQueue.STATUS_WAITING, started_at=None
+    )
 
 
 def move_queue_entry(

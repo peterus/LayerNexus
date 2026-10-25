@@ -109,6 +109,11 @@ class OperatorDialog:
 
 CLOSE_BUTTON = DialogButton("Close", Dismiss(), "secondary")
 
+#: Buttons of an "Already handled" dialog.  A stale press (e.g. on a second
+#: screen) replaces the dialog that is currently valid, so offer to bring the
+#: current one back.
+STALE_BUTTONS = (DialogButton("Show current", ShowMenu(), "primary"), CLOSE_BUTTON)
+
 
 def _job_label(job: PrintJob) -> str:
     """Return the job's name (without the status suffix of ``str(job)``)."""
@@ -240,7 +245,7 @@ def _handle_review(printer: PrinterProfile, action: Review) -> OperatorDialog:
         result = review_queue_entry(action.entry_pk, action.passed, printer_pk=printer.pk)
     except ReviewStateError as exc:
         logger.info("Review of queue entry %s from printer %s ignored: %s", action.entry_pk, printer.name, exc)
-        return _info_dialog(ALREADY_HANDLED)
+        return _info_dialog(ALREADY_HANDLED, buttons=STALE_BUTTONS)
     line = _review_result_line(
         result.outcome,
         result.plates_completed,
@@ -256,15 +261,11 @@ def _handle_start(printer: PrinterProfile, action: StartNext) -> OperatorDialog:
         plate = result.entry.plate
         return _info_dialog(f"Started: {_job_label(plate.print_job)}, plate {plate.plate_number}")
     if result.outcome == "busy":
-        return _info_dialog(ALREADY_HANDLED, "Printer busy", _busy_line(result.busy_entry))
+        return _info_dialog(ALREADY_HANDLED, "Printer busy", _busy_line(result.busy_entry), buttons=STALE_BUTTONS)
     if result.outcome == "empty":
-        return _info_dialog(ALREADY_HANDLED, "Queue empty")
+        return _info_dialog(ALREADY_HANDLED, "Queue empty", buttons=STALE_BUTTONS)
     if result.outcome == "not_next":
-        return _info_dialog(
-            ALREADY_HANDLED,
-            "The queue has changed.",
-            buttons=(DialogButton("Show next", ShowMenu(), "primary"), CLOSE_BUTTON),
-        )
+        return _info_dialog(ALREADY_HANDLED, "The queue has changed.", buttons=STALE_BUTTONS)
     if result.outcome == "not_configured":
         return _info_dialog("Start failed", "No printer connection configured.")
     return _info_dialog("Start failed", result.error)

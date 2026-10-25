@@ -208,3 +208,22 @@ class PrintQueueDeleteStatusGuardTests(_RBACTestBase):
 
         self.assertEqual(resp.status_code, 404)
         self.assertTrue(PrintQueue.objects.filter(pk=entry.pk, status=PrintQueue.STATUS_PRINTING).exists())
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class QueueEntryReviewRaceTests(TestDataMixin, TestCase):
+    """The web review loses a race against a review done on the printer."""
+
+    def test_already_reviewed_concurrently_shows_warning(self):
+        from core.services.queue import ReviewStateError
+
+        job = PrintJob.objects.create(name="Race", status=PrintJob.STATUS_PRINTING, created_by=self.user)
+        plate = PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_PRINTING)
+        entry = PrintQueue.objects.create(plate=plate, printer=self.printer, status=PrintQueue.STATUS_AWAITING_REVIEW)
+        self.client.login(username="testuser", password="testpass123")
+
+        with mock.patch("core.views.queue.review_queue_entry", side_effect=ReviewStateError("gone")):
+            resp = self.client.post(reverse("core:printqueue_review", args=[entry.pk]), {"action": "pass"}, follow=True)
+
+        self.assertRedirects(resp, reverse("core:printqueue_list"))
+        self.assertIn("This queue entry has already been reviewed.", [str(m) for m in resp.context["messages"]])

@@ -92,7 +92,11 @@ def sanitize_prompt_text(text: str, max_len: int = 80) -> str:
     Returns:
         The sanitised text.
     """
-    ascii_text = unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode("ascii")
+    decomposed = unicodedata.normalize("NFKD", str(text))
+    # Drop accents ("a" + combining diaeresis -> "a"); other non-ASCII characters
+    # (CJK, Cyrillic, "ß", …) become "?" so a name never sanitises to nothing.
+    without_marks = "".join(char for char in decomposed if not unicodedata.combining(char))
+    ascii_text = without_marks.encode("ascii", "replace").decode("ascii")
     ascii_text = _CONTROL_CHARS.sub(" ", ascii_text)
     ascii_text = _FORBIDDEN_CHARS.sub("", ascii_text)
     ascii_text = _WHITESPACE.sub(" ", ascii_text).strip()

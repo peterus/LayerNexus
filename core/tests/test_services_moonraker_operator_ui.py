@@ -75,7 +75,11 @@ class SanitizeTests(SimpleTestCase):
         self.assertEqual(cleaned, "Bracket v2 3 x y a b c")
 
     def test_sanitize_umlauts(self):
-        self.assertEqual(sanitize_prompt_text("Gehäuse für Größe"), "Gehause fur Groe")
+        self.assertEqual(sanitize_prompt_text("Gehäuse für Größe"), "Gehause fur Gro?e")
+
+    def test_sanitize_non_latin_keeps_placeholder(self):
+        self.assertEqual(sanitize_prompt_text("支架 v2"), "?? v2")
+        self.assertEqual(sanitize_prompt_text("Кронштейн"), "?????????")
 
     def test_sanitize_truncates(self):
         cleaned = sanitize_prompt_text("x" * 200, max_len=20)

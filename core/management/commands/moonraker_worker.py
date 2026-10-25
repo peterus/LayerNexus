@@ -202,6 +202,7 @@ class _Supervisor:
 async def _reconcile_printers(
     active: dict[int, tuple[asyncio.Task, PrinterSnapshot]],
     task_group: Any,
+    stale_check_interval: float = DEFAULT_RELOAD_INTERVAL,
 ) -> dict[int, tuple[asyncio.Task, PrinterSnapshot]]:
     """Reconcile active WebSocket tasks against the current DB state.
 
@@ -260,7 +261,7 @@ async def _reconcile_printers(
         if printer is None:
             continue
         logger.info("Starting worker task for printer %s (%s)", printer.name, snap.moonraker_url)
-        task = task_group.create_task(_run_printer(printer), name=f"moonraker_ws_{pk}")
+        task = task_group.create_task(_run_printer(printer, stale_check_interval), name=f"moonraker_ws_{pk}")
         active[pk] = (task, snap)
 
     return active
@@ -274,7 +275,7 @@ async def _reconcile_loop(
 ) -> None:
     while not stop_event.is_set():
         try:
-            await _reconcile_printers(active, task_group)
+            await _reconcile_printers(active, task_group, interval)
         except Exception:  # noqa: BLE001
             logger.exception("Reconcile loop iteration failed")
         with contextlib.suppress(asyncio.TimeoutError):

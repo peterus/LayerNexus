@@ -173,7 +173,7 @@ class HandleActionTests(_DialogTestBase):
         dialog = handle_action(self.printer, Review(entry.pk, False))
 
         self.assertEqual(dialog.lines[0], "Already handled")
-        self.assertEqual(_actions(dialog), [Dismiss()])
+        self.assertEqual(_actions(dialog), [ShowMenu(), Dismiss()])
         self.plate1.refresh_from_db()
         self.assertEqual(self.plate1.status, PrintJobPlate.STATUS_COMPLETED)
         self.assertEqual(self.plate1.completed_at, completed_at)
@@ -217,6 +217,7 @@ class HandleActionTests(_DialogTestBase):
         entry = self._entry(self.plate2, PrintQueue.STATUS_WAITING)
         dialog = handle_action(self.printer, StartNext(entry.pk))
         self.assertEqual(dialog.lines[:2], ("Already handled", "Printer busy"))
+        self.assertIn(ShowMenu(), _actions(dialog))
         mock_get_backend.assert_not_called()
 
     def test_handle_start_next_empty(self, mock_get_backend):

@@ -330,3 +330,28 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
         result = start_next_for_printer(self.printer)
         self.assertEqual(result.outcome, "error")
         self.assertIn("No G-code file", result.error)
+
+    def test_start_next_claims_entry_during_upload(self, mock_get_backend):
+        """A concurrent start while the G-code uploads sees the printer busy (no double start)."""
+        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        concurrent: list = []
+
+        def upload(*args, **kwargs):
+            concurrent.append(start_next_for_printer(self.printer))
+
+        mock_get_backend.return_value.upload_gcode.side_effect = upload
+        result = start_next_for_printer(self.printer, expected_entry_pk=entry.pk)
+
+        self.assertEqual(result.outcome, "started")
+        self.assertEqual(concurrent[0].outcome, "busy")
+        self.assertEqual(concurrent[0].busy_entry.pk, entry.pk)
+        mock_get_backend.return_value.start_print.assert_called_once()
+
+    def test_start_next_failure_releases_claim(self, mock_get_backend):
+        mock_get_backend.return_value.start_print.side_effect = MoonrakerError("busy")
+        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        with self.assertLogs("core.services.queue", level="ERROR"):
+            start_next_for_printer(self.printer)
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
+        self.assertIsNone(entry.started_at)
