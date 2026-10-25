@@ -76,5 +76,6 @@ LayerNexus tracks each print job through its lifecycle:
 
 ## Next Steps
 
+- [Review plates and start the next job on the printer's touchscreen](klipperscreen.md)
 - [Track filament with Spoolman](spoolman.md)
 - [Manage the print queue](../user-guide/printing.md)
