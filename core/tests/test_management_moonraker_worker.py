@@ -459,3 +459,39 @@ class OperatorUIImportBoundaryTests(SimpleTestCase):
             and "moonraker_operator_ui" in path.read_text()
         }
         self.assertEqual(importers, {"management/commands/moonraker_worker.py"})
+
+
+class ScheduledStartLoopTests(IsolatedAsyncioTestCase):
+    """The worker's periodic hook delegates to run_due_scheduled_starts."""
+
+    async def test_loop_calls_service_until_stopped(self) -> None:
+        from core.management.commands.moonraker_worker import _scheduled_start_loop
+
+        stop = asyncio.Event()
+        calls = []
+
+        def fake_run() -> list:
+            calls.append(1)
+            stop.set()
+            return []
+
+        with patch("core.management.commands.moonraker_worker.run_due_scheduled_starts", fake_run):
+            await asyncio.wait_for(_scheduled_start_loop(stop, 0.01), timeout=5)
+        self.assertEqual(len(calls), 1)
+
+    async def test_loop_survives_service_error(self) -> None:
+        from core.management.commands.moonraker_worker import _scheduled_start_loop
+
+        stop = asyncio.Event()
+        calls = []
+
+        def flaky() -> list:
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("db locked")
+            stop.set()
+            return []
+
+        with patch("core.management.commands.moonraker_worker.run_due_scheduled_starts", flaky):
+            await asyncio.wait_for(_scheduled_start_loop(stop, 0.01), timeout=5)
+        self.assertEqual(len(calls), 2)

@@ -35,10 +35,14 @@ from core.services.moonraker import MoonrakerClient
 from core.services.moonraker_operator_ui import MoonrakerOperatorUI
 from core.services.moonraker_ws import MoonrakerWebSocketClient
 from core.services.printer_status_sync import apply_status_event
+from core.services.scheduled_start import run_due_scheduled_starts
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_RELOAD_INTERVAL = 10.0
+
+#: Seconds between checks for due scheduled queue starts.
+SCHEDULED_START_INTERVAL = 30.0
 
 
 @dataclass(frozen=True)
@@ -282,6 +286,17 @@ async def _reconcile_loop(
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
 
 
+async def _scheduled_start_loop(stop_event: asyncio.Event, interval: float) -> None:
+    """Periodically execute due one-shot scheduled queue starts."""
+    while not stop_event.is_set():
+        try:
+            await sync_to_async(run_due_scheduled_starts)()
+        except Exception:  # noqa: BLE001
+            logger.exception("Scheduled start check failed")
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+
+
 async def _main(reload_interval: float) -> None:
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -303,11 +318,16 @@ async def _main(reload_interval: float) -> None:
         _reconcile_loop(supervisor, active, reload_interval, stop_event),
         name="moonraker_reconciler",
     )
+    scheduler = supervisor.create_task(
+        _scheduled_start_loop(stop_event, SCHEDULED_START_INTERVAL),
+        name="scheduled_queue_starts",
+    )
     try:
         await stop_event.wait()
     finally:
         logger.info("Shutdown signal received, stopping worker")
         reconciler.cancel()
+        scheduler.cancel()
         await supervisor.cancel_all()
 
 
