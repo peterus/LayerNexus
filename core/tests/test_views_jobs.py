@@ -7,6 +7,7 @@ from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from core.models import (
+    OrcaMachineProfile,
     OrcaPrintPreset,
     Part,
     PrinterProfile,
@@ -800,3 +801,81 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
         with CaptureQueriesContext(connection) as large:
             self.client.get(self.url)
         self.assertEqual(len(small), len(large))
+
+
+class JobBedDimensionsTests(TestDataMixin, TestCase):
+    """The G-code preview receives the real bed size of the slicing machine profile."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def _machine(self, area: list[str], height: str = "300") -> OrcaMachineProfile:
+        return OrcaMachineProfile.objects.create(
+            name="Big",
+            orca_name="Big",
+            state=OrcaMachineProfile.STATE_RESOLVED,
+            instantiation=True,
+            settings={"printable_area": area, "printable_height": height},
+        )
+
+    def _job_with_plate(self, **kwargs) -> PrintJob:
+        job = PrintJob.objects.create(name="J", created_by=self.user, **kwargs)
+        PrintJobPlate.objects.create(
+            print_job=job,
+            plate_number=1,
+            gcode_file=SimpleUploadedFile("p.gcode", b"G1 X1 Y1\n"),
+        )
+        return job
+
+    def test_bed_dimensions_from_machine_profile(self):
+        job = self._job_with_plate(machine_profile=self._machine(["0x0", "350x0", "350x300", "0x300"]))
+        self.assertEqual(job.bed_dimensions, (350.0, 300.0, 300.0))
+        resp = self.client.get(reverse("core:printjob_detail", args=[job.pk]))
+        self.assertContains(resp, 'data-bed-x="350"')
+        self.assertContains(resp, 'data-bed-y="300"')
+        self.assertContains(resp, 'data-bed-z="300"')
+
+    def test_bed_dimensions_fall_back_to_printer(self):
+        machine = self._machine(["0x0", "220x0", "220x220", "0x220"], "250")
+        printer = PrinterProfile.objects.create(name="P", orca_machine_profile=machine)
+        job = self._job_with_plate(printer=printer)
+        self.assertEqual(job.bed_dimensions, (220.0, 220.0, 250.0))
+
+    def test_bed_dimensions_without_profile_is_none(self):
+        job = self._job_with_plate()
+        self.assertIsNone(job.bed_dimensions)
+        resp = self.client.get(reverse("core:printjob_detail", args=[job.pk]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, "data-bed-x")
+
+    def test_bed_dimensions_incomplete_profile_is_none(self):
+        machine = OrcaMachineProfile.objects.create(
+            name="Empty", orca_name="Empty", state=OrcaMachineProfile.STATE_RESOLVED, instantiation=True
+        )
+        job = self._job_with_plate(machine_profile=machine)
+        self.assertIsNone(job.bed_dimensions)
+
+    def test_bed_dimensions_missing_height_defaults_to_256(self):
+        machine = OrcaMachineProfile.objects.create(
+            name="NoZ",
+            orca_name="NoZ",
+            state=OrcaMachineProfile.STATE_RESOLVED,
+            instantiation=True,
+            settings={"printable_area": ["0x0", "200x0", "200x180", "0x180"]},
+        )
+        job = PrintJob.objects.create(name="J", machine_profile=machine)
+        self.assertEqual(job.bed_dimensions, (200.0, 180.0, 256.0))
+
+    def test_bed_dimensions_machine_without_bed_falls_through_to_printer(self):
+        empty = OrcaMachineProfile.objects.create(
+            name="Empty", orca_name="Empty", state=OrcaMachineProfile.STATE_RESOLVED, instantiation=True
+        )
+        machine = self._machine(["0x0", "220x0", "220x220", "0x220"], "250")
+        printer = PrinterProfile.objects.create(name="P", orca_machine_profile=machine)
+        job = PrintJob.objects.create(name="J", machine_profile=empty, printer=printer)
+        self.assertEqual(job.bed_dimensions, (220.0, 220.0, 250.0))
+
+    def test_bed_dimensions_malformed_area_is_none(self):
+        job = PrintJob.objects.create(name="J", machine_profile=self._machine(["abc", "def"]))
+        self.assertIsNone(job.bed_dimensions)

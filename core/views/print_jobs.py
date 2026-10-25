@@ -233,13 +233,16 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
     context_object_name = "job"
 
     def get_queryset(self):
-        return PrintJob.objects.prefetch_related("job_parts__part", "plates")
+        return PrintJob.objects.select_related("machine_profile", "printer__orca_machine_profile").prefetch_related(
+            "job_parts__part", "plates"
+        )
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         job = self.object
         context["job_parts"] = job.job_parts.select_related("part")
         context["plates"] = job.plates.all()
+        context["bed_dimensions"] = job.bed_dimensions
         has_parts = job.job_parts.exists()
         parts_valid = has_parts and all(jp.part.stl_file for jp in job.job_parts.select_related("part"))
         has_machine = job.machine_profile is not None

@@ -16,12 +16,23 @@ function initGCodePreview(containerOrId, gcodeUrl) {
   var dark = document.documentElement.getAttribute("data-bs-theme") === "dark"
     || window.matchMedia("(prefers-color-scheme: dark)").matches;
 
+  var DEFAULT_BED = 256;
+  function readDim(name) {
+    var v = parseFloat(canvas.getAttribute(name));
+    return isFinite(v) && v > 0 ? v : DEFAULT_BED;
+  }
+  var bedX = readDim("data-bed-x");
+  var bedY = readDim("data-bed-y");
+  var bedZ = readDim("data-bed-z");
+  /* Default camera [0, 400, 450] was tuned for a 256 mm bed; scale with the largest bed edge. */
+  var camScale = Math.max(bedX, bedY) / DEFAULT_BED;
+
   var preview = GCodePreview.init({
     canvas: canvas,
     extrusionColor: dark ? "#44bbff" : "#007bff",
     backgroundColor: dark ? "#212529" : "#f8f9fa",
-    buildVolume: { x: 256, y: 256, z: 256 },
-    initialCameraPosition: [0, 400, 450],
+    buildVolume: { x: bedX, y: bedY, z: bedZ },
+    initialCameraPosition: [0, 400 * camScale, 450 * camScale],
     lineWidth: 2,
     renderExtrusion: true,
     renderTravel: false,
