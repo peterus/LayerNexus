@@ -11,11 +11,53 @@
   {% endif %}
 </div>
 
+<form method="get" class="card card-body shadow-sm mb-3" role="search" aria-label="Filter print jobs">
+  <div class="row g-2 align-items-end">
+    <div class="col-12 col-md-4">
+      <label for="filter-q" class="form-label small mb-1">Search</label>
+      <input type="search" id="filter-q" name="q" value="{{ q }}" class="form-control form-control-sm" placeholder="Job or part name">
+    </div>
+    <div class="col-6 col-md-2">
+      <label for="filter-status" class="form-label small mb-1">Status</label>
+      <select id="filter-status" name="status" class="form-select form-select-sm">
+        <option value="">All</option>
+        {% for value, label in status_choices %}
+        <option value="{{ value }}"{% if value == status %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-6 col-md-2">
+      <label for="filter-printer" class="form-label small mb-1">Printer</label>
+      <select id="filter-printer" name="printer" class="form-select form-select-sm">
+        <option value="">All</option>
+        {% for p in printers %}
+        <option value="{{ p.pk }}"{% if printer == p.pk|stringformat:"d" %} selected{% endif %}>{{ p.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-12 col-md-2">
+      <label for="filter-project" class="form-label small mb-1">Project</label>
+      <select id="filter-project" name="project" class="form-select form-select-sm">
+        <option value="">All</option>
+        {% for pr in projects %}
+        <option value="{{ pr.pk }}"{% if project == pr.pk|stringformat:"d" %} selected{% endif %}>{{ pr.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-12 col-md-2 d-flex gap-2">
+      <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-funnel me-1"></i>Filter</button>
+      {% if filters_active %}
+      <a href="{% url 'core:printjob_list' %}" class="btn btn-sm btn-outline-secondary">Reset</a>
+      {% endif %}
+    </div>
+  </div>
+</form>
+
 {% if print_jobs %}
 <div class="card shadow-sm">
   <div class="table-responsive">
     <table class="table table-hover align-middle mb-0">
-      <thead class="table-light">
+      <thead>
         <tr>
           <th>Job</th>
           <th>Parts</th>
@@ -36,18 +78,19 @@
           </td>
           <td>
             <small>
-              {% for label in job.parts_list %}{{ label }}{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}
+              {% for jp in job.job_parts.all %}{{ jp.part.name }} ×{{ jp.quantity }}{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}
             </small>
           </td>
           <td>
             {% if job.machine_profile %}
             <a href="{% url 'core:orcamachineprofile_detail' job.machine_profile.pk %}" class="text-decoration-none">{{ job.machine_profile.name }}</a>
             {% else %}—{% endif %}
+            {% if job.printer %}<div><small class="text-body-secondary"><i class="bi bi-printer me-1"></i>{{ job.printer.name }}</small></div>{% endif %}
           </td>
           <td>
             {% include "core/includes/_job_status_badge.html" with status=job.status display=job.get_status_display %}
           </td>
-          <td class="text-center">{{ job.plate_count }}</td>
+          <td class="text-center"><span class="badge bg-secondary-subtle text-secondary-emphasis">{{ job.plate_count }}</span></td>
           <td class="text-end"><small>{% if job.filament_used_grams %}{{ job.filament_used_grams|floatformat:1 }}&nbsp;g{% else %}—{% endif %}</small></td>
           <td class="text-end"><small>{% if job.print_time_estimate %}{{ job.print_time_estimate|duration_format }}{% else %}—{% endif %}</small></td>
           <td><small class="text-body-secondary">{{ job.created_at|timesince }} ago</small></td>
@@ -67,6 +110,29 @@
       </tbody>
     </table>
   </div>
+</div>
+
+{% if is_paginated %}
+<nav aria-label="Print jobs pagination" class="mt-3">
+  <ul class="pagination">
+    {% if page_obj.has_previous %}
+    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}{% if filter_querystring %}&{{ filter_querystring }}{% endif %}">Previous</a></li>
+    {% else %}
+    <li class="page-item disabled"><span class="page-link">Previous</span></li>
+    {% endif %}
+    <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
+    {% if page_obj.has_next %}
+    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}{% if filter_querystring %}&{{ filter_querystring }}{% endif %}">Next</a></li>
+    {% else %}
+    <li class="page-item disabled"><span class="page-link">Next</span></li>
+    {% endif %}
+  </ul>
+</nav>
+{% endif %}
+{% elif filters_active %}
+<div class="text-center py-5 text-body-secondary">
+  <i class="bi bi-search display-4"></i>
+  <p class="mt-2">No print jobs match the current filters.</p>
 </div>
 {% else %}
 <div class="text-center py-5">
