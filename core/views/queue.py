@@ -244,7 +244,8 @@ class PrintQueueMoveView(QueueManageMixin, View):
 
     Accepts either ``direction`` (``up``/``down``/``top``/``bottom``) or a
     1-based target ``position`` among the printer's waiting entries.  Entries
-    that are printing or awaiting review are fixed and rejected with 400.
+    that are printing or awaiting review are fixed: the move is refused and
+    the user is redirected back with a warning.  Malformed input yields 400.
     See :func:`core.services.queue.move_queue_entry` for the priority rules.
     """
 
@@ -258,8 +259,8 @@ class PrintQueueMoveView(QueueManageMixin, View):
             pk: Primary key of the queue entry to move.
 
         Returns:
-            A redirect to the queue list, or 400 for invalid input / an entry
-            that is not waiting.
+            A redirect to the queue list (with a warning if the entry is no
+            longer waiting), or 400 for a malformed direction/position.
 
         Raises:
             Http404: If the queue entry does not exist.
@@ -283,7 +284,10 @@ class PrintQueueMoveView(QueueManageMixin, View):
         except PrintQueue.DoesNotExist as exc:
             raise Http404("Queue entry not found.") from exc
         except QueueReorderError as exc:
-            return HttpResponseBadRequest(str(exc))
+            # Parameters were valid, so this is the entry having left the
+            # ``waiting`` state since the page was rendered (stale UI race).
+            messages.warning(request, str(exc))
+            return redirect("core:printqueue_list")
 
         entry = result.entry
         label = f"Plate {entry.plate.plate_number} of '{entry.print_job}'" if entry.plate else "Queue entry"

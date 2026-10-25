@@ -19,6 +19,7 @@ from core.services.printer_backend import get_printer_backend
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "MOVE_DIRECTIONS",
     "QUEUE_EXECUTION_ORDER",
     "QueueMoveResult",
     "move_queue_entry",

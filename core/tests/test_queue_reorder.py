@@ -210,13 +210,16 @@ class PrintQueueMoveViewTests(_QueueFixtureMixin, _RBACTestBase):
         resp = self.client.get(reverse("core:printqueue_move", args=[self.b.pk]))
         self.assertEqual(resp.status_code, 405)
 
-    def test_printing_entry_rejected_with_400(self):
+    def test_printing_entry_refused_with_warning(self):
         printing = self._make_entry(self.printer, status=PrintQueue.STATUS_PRINTING, position=3)
         self.client.login(username="admin_user", password="testpass123")
         resp = self._move(printing, direction="up")
-        self.assertEqual(resp.status_code, 400)
+        self.assertRedirects(resp, reverse("core:printqueue_list"), fetch_redirect_response=False)
         printing.refresh_from_db()
         self.assertEqual(printing.position, 3)
+        self.assertEqual(self._order(self.printer), [self.a.pk, self.b.pk])
+        msgs = [str(m) for m in self.client.get(reverse("core:printqueue_list")).context["messages"]]
+        self.assertIn("Only waiting queue entries can be reordered.", msgs)
 
     def test_invalid_direction_400(self):
         self.client.login(username="designer_user", password="testpass123")
