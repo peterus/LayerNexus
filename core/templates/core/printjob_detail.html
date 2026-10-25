@@ -108,7 +108,7 @@
             <div class="card h-100 border{% if plate.status == 'completed' %}-success{% elif plate.status == 'failed' %}-danger{% elif plate.status == 'printing' %}-primary{% endif %}">
               {% if plate.gcode_file %}
               <div class="card-img-top position-relative" style="height: 320px; background: var(--bs-tertiary-bg);">
-                <canvas class="gcode-preview-canvas w-100 h-100" data-gcode-url="{{ plate.gcode_file.url }}"{% if job.bed_dimensions %} data-bed-x="{{ job.bed_dimensions.0|floatformat:"-2" }}" data-bed-y="{{ job.bed_dimensions.1|floatformat:"-2" }}" data-bed-z="{{ job.bed_dimensions.2|floatformat:"-2" }}"{% endif %} style="display:block;"></canvas>
+                <canvas class="gcode-preview-canvas w-100 h-100" data-gcode-url="{{ plate.gcode_file.url }}"{% if bed_dimensions %} data-bed-x="{{ bed_dimensions.0|floatformat:"-2" }}" data-bed-y="{{ bed_dimensions.1|floatformat:"-2" }}" data-bed-z="{{ bed_dimensions.2|floatformat:"-2" }}"{% endif %} style="display:block;"></canvas>
                 <div class="gcode-loading position-absolute top-50 start-50 translate-middle text-body-secondary">
                   <div class="spinner-border spinner-border-sm me-1" role="status"></div>
                   <small>Loading preview…</small>

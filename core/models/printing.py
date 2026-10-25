@@ -124,7 +124,9 @@ class PrintJob(models.Model):
 
         Uses the job's machine profile and falls back to the assigned printer.
         A source only counts if it defines both bed X and Y; a missing
-        printable height defaults to 256 mm.
+        printable height defaults to 256 mm. The size is the extent of
+        ``printable_area`` (max - min); an origin offset (e.g. a bed centred on 0)
+        is not modelled.
 
         Returns:
             ``(x, y, z)`` or ``None`` if no source provides a bed size.

@@ -855,3 +855,27 @@ class JobBedDimensionsTests(TestDataMixin, TestCase):
         )
         job = self._job_with_plate(machine_profile=machine)
         self.assertIsNone(job.bed_dimensions)
+
+    def test_bed_dimensions_missing_height_defaults_to_256(self):
+        machine = OrcaMachineProfile.objects.create(
+            name="NoZ",
+            orca_name="NoZ",
+            state=OrcaMachineProfile.STATE_RESOLVED,
+            instantiation=True,
+            settings={"printable_area": ["0x0", "200x0", "200x180", "0x180"]},
+        )
+        job = PrintJob.objects.create(name="J", machine_profile=machine)
+        self.assertEqual(job.bed_dimensions, (200.0, 180.0, 256.0))
+
+    def test_bed_dimensions_machine_without_bed_falls_through_to_printer(self):
+        empty = OrcaMachineProfile.objects.create(
+            name="Empty", orca_name="Empty", state=OrcaMachineProfile.STATE_RESOLVED, instantiation=True
+        )
+        machine = self._machine(["0x0", "220x0", "220x220", "0x220"], "250")
+        printer = PrinterProfile.objects.create(name="P", orca_machine_profile=machine)
+        job = PrintJob.objects.create(name="J", machine_profile=empty, printer=printer)
+        self.assertEqual(job.bed_dimensions, (220.0, 220.0, 250.0))
+
+    def test_bed_dimensions_malformed_area_is_none(self):
+        job = PrintJob.objects.create(name="J", machine_profile=self._machine(["abc", "def"]))
+        self.assertIsNone(job.bed_dimensions)
