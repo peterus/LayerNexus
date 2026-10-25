@@ -29,6 +29,7 @@ from typing import Any
 
 from asgiref.sync import sync_to_async
 from django.core.management.base import BaseCommand
+from django.db import connections
 
 from core.models import PrinterProfile, PrintQueue
 from core.services.moonraker import MoonrakerClient
@@ -286,11 +287,23 @@ async def _reconcile_loop(
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
 
 
+def _run_due_scheduled_starts_isolated() -> None:
+    """Run due scheduled starts on a private DB connection, closed afterwards.
+
+    Runs in its own worker thread (``thread_sensitive=False``) so a slow G-code
+    upload does not block the shared sync thread used by the status sync.
+    """
+    try:
+        run_due_scheduled_starts()
+    finally:
+        connections.close_all()
+
+
 async def _scheduled_start_loop(stop_event: asyncio.Event, interval: float) -> None:
     """Periodically execute due one-shot scheduled queue starts."""
     while not stop_event.is_set():
         try:
-            await sync_to_async(run_due_scheduled_starts)()
+            await sync_to_async(_run_due_scheduled_starts_isolated, thread_sensitive=False)()
         except Exception:  # noqa: BLE001
             logger.exception("Scheduled start check failed")
         with contextlib.suppress(asyncio.TimeoutError):

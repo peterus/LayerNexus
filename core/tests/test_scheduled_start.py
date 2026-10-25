@@ -257,3 +257,77 @@ class ScheduledStartListUiTests(_RBACTestBase):
         self.client.login(username="operator_user", password="testpass123")
         html = self.client.get(reverse("core:printqueue_list")).content.decode()
         self.assertIn("Skipped: printer busy", html)
+
+
+class ScheduledStartEdgeTests(TestCase):
+    """Claim race, lateness boundary and the default morning helper."""
+
+    def setUp(self) -> None:
+        self.printer = PrinterProfile.objects.create(name="P1")
+        self.now = timezone.now()
+
+    @override_settings(SCHEDULED_START_MAX_LATENESS_MINUTES=30)
+    @mock.patch("core.services.scheduled_start.start_next_for_printer")
+    def test_lateness_boundary_is_inclusive(self, start: mock.Mock) -> None:
+        start.return_value = StartResult(outcome="started")
+        row = ScheduledQueueStart.objects.create(printer=self.printer, start_at=self.now - timedelta(minutes=30))
+        run_due_scheduled_starts(self.now)
+        row.refresh_from_db()
+        self.assertEqual(row.status, ScheduledQueueStart.STATUS_STARTED)
+
+    @mock.patch("core.services.scheduled_start.start_next_for_printer")
+    def test_reschedule_between_read_and_claim_is_not_executed(self, start: mock.Mock) -> None:
+        row = ScheduledQueueStart.objects.create(printer=self.printer, start_at=self.now - timedelta(minutes=1))
+        future = self.now + timedelta(hours=5)
+        real_select = ScheduledQueueStart.objects.filter
+
+        def reschedule_after_read(*args, **kwargs):
+            qs = real_select(*args, **kwargs)
+            if kwargs.get("status") == ScheduledQueueStart.STATUS_PENDING and "start_at__lte" in kwargs:
+                list(qs)  # the due read happens first
+                ScheduledQueueStart.objects.filter(pk=row.pk).update(start_at=future)
+            return qs
+
+        with mock.patch.object(ScheduledQueueStart.objects, "filter", side_effect=reschedule_after_read):
+            run_due_scheduled_starts(self.now)
+        start.assert_not_called()
+        row.refresh_from_db()
+        self.assertEqual(row.status, ScheduledQueueStart.STATUS_PENDING)
+        self.assertEqual(row.start_at, future)
+
+    def test_next_morning_before_and_after_six(self) -> None:
+        from datetime import datetime
+        from datetime import timezone as dt_tz
+
+        from core.views.queue import _next_morning
+
+        for hour, expected_day in ((5, 25), (7, 26)):
+            with self.subTest(hour=hour):
+                fake = datetime(2026, 10, 25, hour, 30, tzinfo=dt_tz.utc)
+                with mock.patch("core.views.queue.timezone.localtime", return_value=fake):
+                    result = _next_morning()
+                self.assertEqual((result.day, result.hour, result.minute), (expected_day, 6, 0))
+
+    def test_list_context_picks_latest_finished_only(self) -> None:
+        from core.models import PrintJob, PrintJobPlate, PrintQueue
+
+        job = PrintJob.objects.create(name="J", status=PrintJob.STATUS_SLICED)
+        plate = PrintJobPlate.objects.create(print_job=job, plate_number=1)
+        PrintQueue.objects.create(plate=plate, printer=self.printer)
+        for days, msg in ((3, "old"), (1, "newest")):
+            ScheduledQueueStart.objects.create(
+                printer=self.printer,
+                start_at=self.now - timedelta(days=days),
+                executed_at=self.now - timedelta(days=days),
+                status=ScheduledQueueStart.STATUS_SKIPPED,
+                result_message=msg,
+            )
+        from django.contrib.auth.models import User
+
+        User.objects.create_superuser("su", password="x")
+        self.client.login(username="su", password="x")
+        with override_settings(ALLOWED_HOSTS=["testserver"]):
+            html = self.client.get(reverse("core:printqueue_list")).content.decode()
+        self.assertIn("newest", html)
+        self.assertNotIn(">old<", html)
+        self.assertNotIn("— old", html)

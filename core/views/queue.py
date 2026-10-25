@@ -6,7 +6,7 @@ from typing import Any
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db.models import Case, IntegerField, Max, QuerySet, Value, When
+from django.db.models import Case, IntegerField, Max, OuterRef, QuerySet, Subquery, Value, When
 from django.http import (
     Http404,
     HttpRequest,
@@ -146,14 +146,25 @@ class PrintQueueListView(LoginRequiredMixin, ListView):
     def _annotate_schedules(entries: list[PrintQueue]) -> None:
         """Attach the pending schedule and the last result to each entry's printer."""
         printer_ids = {entry.printer_id for entry in entries}
-        pending: dict[int, ScheduledQueueStart] = {}
-        last: dict[int, ScheduledQueueStart] = {}
-        rows = ScheduledQueueStart.objects.filter(printer_id__in=printer_ids).order_by("-executed_at", "-start_at")
-        for row in rows:
-            if row.status == ScheduledQueueStart.STATUS_PENDING:
-                pending[row.printer_id] = row
-            elif row.printer_id not in last:
-                last[row.printer_id] = row
+        pending = {
+            row.printer_id: row
+            for row in ScheduledQueueStart.objects.filter(
+                printer_id__in=printer_ids, status=ScheduledQueueStart.STATUS_PENDING
+            )
+        }
+        latest_finished = (
+            ScheduledQueueStart.objects.filter(printer=OuterRef("pk"))
+            .exclude(status=ScheduledQueueStart.STATUS_PENDING)
+            .order_by("-executed_at", "-start_at")
+            .values("pk")[:1]
+        )
+        last_ids = (
+            PrinterProfile.objects.filter(pk__in=printer_ids)
+            .annotate(last_id=Subquery(latest_finished))
+            .exclude(last_id=None)
+            .values_list("last_id", flat=True)
+        )
+        last = {row.printer_id: row for row in ScheduledQueueStart.objects.filter(pk__in=list(last_ids))}
         for entry in entries:
             entry.printer.scheduled_start = pending.get(entry.printer_id)
             entry.printer.last_scheduled_result = last.get(entry.printer_id)

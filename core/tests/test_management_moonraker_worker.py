@@ -495,3 +495,37 @@ class ScheduledStartLoopTests(IsolatedAsyncioTestCase):
         with patch("core.management.commands.moonraker_worker.run_due_scheduled_starts", flaky):
             await asyncio.wait_for(_scheduled_start_loop(stop, 0.01), timeout=5)
         self.assertEqual(len(calls), 2)
+
+
+class ScheduledStartThreadIsolationTests(IsolatedAsyncioTestCase):
+    """Scheduled starts must not occupy the shared sync thread of the status sync."""
+
+    async def test_loop_uses_non_thread_sensitive_executor(self) -> None:
+        import core.management.commands.moonraker_worker as worker
+
+        stop = asyncio.Event()
+        seen: dict = {}
+
+        def spy(func, **kwargs):
+            seen.update(kwargs)
+            stop.set()
+
+            async def runner():
+                return None
+
+            return runner
+
+        with patch.object(worker, "sync_to_async", spy):
+            await asyncio.wait_for(worker._scheduled_start_loop(stop, 0.01), timeout=5)
+        self.assertIs(seen.get("thread_sensitive"), False)
+
+    def test_isolated_runner_closes_connections(self) -> None:
+        import core.management.commands.moonraker_worker as worker
+
+        with (
+            patch.object(worker, "run_due_scheduled_starts") as run,
+            patch.object(worker.connections, "close_all") as close,
+        ):
+            worker._run_due_scheduled_starts_isolated()
+        run.assert_called_once_with()
+        close.assert_called_once_with()

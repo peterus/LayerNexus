@@ -85,10 +85,19 @@ def run_due_scheduled_starts(now: datetime | None = None) -> list[ScheduledQueue
     due = ScheduledQueueStart.objects.filter(status=ScheduledQueueStart.STATUS_PENDING, start_at__lte=now)
     for row in due.select_related("printer"):
         late = now - row.start_at > max_lateness
-        claimed = ScheduledQueueStart.objects.filter(pk=row.pk, status=ScheduledQueueStart.STATUS_PENDING).update(
+        # Also match ``start_at``: a reschedule between the read above and this
+        # claim must not execute the row with the stale time.
+        claimed = ScheduledQueueStart.objects.filter(
+            pk=row.pk, status=ScheduledQueueStart.STATUS_PENDING, start_at=row.start_at
+        ).update(
             status=ScheduledQueueStart.STATUS_SKIPPED if late else ScheduledQueueStart.STATUS_STARTED,
             executed_at=now,
-            result_message="Skipped: missed (overdue, e.g. worker was down)" if late else "Starting...",
+            # Overwritten with the real outcome; stays only if the worker dies mid-start.
+            result_message=(
+                "Skipped: missed (overdue, e.g. worker was down)"
+                if late
+                else "Start attempted; outcome unknown (worker interrupted?)"
+            ),
         )
         if not claimed:
             continue
