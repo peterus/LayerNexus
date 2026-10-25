@@ -4,8 +4,15 @@ import logging
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db.models import Max
-from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
+from django.db.models import Case, IntegerField, Max, Value, When
+from django.http import (
+    Http404,
+    HttpRequest,
+    HttpResponse,
+    HttpResponseBadRequest,
+    HttpResponseRedirect,
+    JsonResponse,
+)
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.utils import timezone
@@ -24,7 +31,15 @@ from core.services.printer_backend import (
     PrinterError,
     get_printer_backend,
 )
-from core.services.queue import PrintStartError, start_print_for_queue_entry
+from core.services.queue import (
+    MOVE_DIRECTIONS,
+    QUEUE_EXECUTION_ORDER,
+    PrintStartError,
+    QueueReorderError,
+    move_queue_entry,
+    next_waiting_entry,
+    start_print_for_queue_entry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +47,7 @@ __all__ = [
     "PrintQueueListView",
     "PrintQueueCreateView",
     "PrintQueueDeleteView",
+    "PrintQueueMoveView",
     "RunNextQueueView",
     "RunAllQueuesView",
     "QueueEntryReviewView",
@@ -41,7 +57,14 @@ __all__ = [
 
 
 class PrintQueueListView(LoginRequiredMixin, ListView):
-    """Show the print queue for all printers."""
+    """Show the print queue for all printers.
+
+    Per printer, active entries (printing / awaiting review) come first,
+    followed by the waiting entries in their actual execution order
+    (``QUEUE_EXECUTION_ORDER``).  Waiting entries get a 1-based
+    ``queue_rank`` and ``can_move_up`` / ``can_move_down`` flags for the
+    reorder controls.
+    """
 
     model = PrintQueue
     template_name = "core/printqueue_list.html"
@@ -51,8 +74,35 @@ class PrintQueueListView(LoginRequiredMixin, ListView):
         return (
             PrintQueue.objects.filter()
             .select_related("plate__print_job", "printer")
-            .order_by("printer__name", "-priority", "position", "added_at")
+            .annotate(
+                is_waiting=Case(
+                    When(status=PrintQueue.STATUS_WAITING, then=Value(1)),
+                    default=Value(0),
+                    output_field=IntegerField(),
+                )
+            )
+            .order_by("printer__name", "printer_id", "is_waiting", *QUEUE_EXECUTION_ORDER)
         )
+
+    def get_context_data(self, **kwargs):
+        """Annotate waiting entries with their queue rank and move flags."""
+        context = super().get_context_data(**kwargs)
+        entries = list(context["object_list"])
+        waiting_by_printer: dict[int, list[PrintQueue]] = {}
+        for entry in entries:
+            entry.queue_rank = None
+            entry.can_move_up = False
+            entry.can_move_down = False
+            if entry.status == PrintQueue.STATUS_WAITING:
+                waiting_by_printer.setdefault(entry.printer_id, []).append(entry)
+        for waiting in waiting_by_printer.values():
+            for rank, entry in enumerate(waiting, start=1):
+                entry.queue_rank = rank
+                entry.can_move_up = rank > 1
+                entry.can_move_down = rank < len(waiting)
+        context["object_list"] = entries
+        context[self.context_object_name] = entries
+        return context
 
 
 class PrintQueueCreateView(QueueManageMixin, CreateView):
@@ -188,6 +238,42 @@ class PrintQueueDeleteView(QueueDequeueMixin, DeleteView):
         return super().form_valid(form)
 
 
+class PrintQueueMoveView(QueueManageMixin, View):
+    """Reorder a waiting queue entry within its printer's queue (POST only).
+
+    Accepts either ``direction`` (``up``/``down``/``top``/``bottom``) or a
+    1-based target ``position`` among the printer's waiting entries.  Entries
+    that are printing or awaiting review are fixed and rejected with 400.
+    See :func:`core.services.queue.move_queue_entry` for the priority rules.
+    """
+
+    http_method_names = ["post"]
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        direction = request.POST.get("direction") or None
+        target_index = None
+        if direction is None:
+            raw_position = request.POST.get("position", "")
+            try:
+                position = int(raw_position)
+            except ValueError:
+                return HttpResponseBadRequest("A direction or a valid position is required.")
+            if position < 1:
+                return HttpResponseBadRequest("Position must be 1 or greater.")
+            target_index = position - 1
+        elif direction not in MOVE_DIRECTIONS:
+            return HttpResponseBadRequest("Invalid direction.")
+
+        try:
+            move_queue_entry(pk, direction=direction, target_index=target_index)
+        except PrintQueue.DoesNotExist as exc:
+            raise Http404("Queue entry not found.") from exc
+        except QueueReorderError as exc:
+            return HttpResponseBadRequest(str(exc))
+
+        return redirect("core:printqueue_list")
+
+
 class RunNextQueueView(PrinterControlMixin, View):
     """Run the next waiting print on a specific printer.
 
@@ -215,16 +301,8 @@ class RunNextQueueView(PrinterControlMixin, View):
             )
             return redirect("core:printqueue_list")
 
-        # Get the highest-priority waiting entry
-        entry = (
-            PrintQueue.objects.filter(
-                printer=printer,
-                status=PrintQueue.STATUS_WAITING,
-            )
-            .order_by("-priority", "position", "added_at")
-            .select_related("plate__print_job")
-            .first()
-        )
+        # Next waiting entry in execution order (priority + manual position)
+        entry = next_waiting_entry(printer)
 
         if not entry:
             messages.warning(request, "No waiting jobs in the queue for this printer.")
@@ -276,16 +354,8 @@ class RunAllQueuesView(PrinterControlMixin, View):
                 skipped_busy += 1
                 continue
 
-            # Next waiting entry
-            entry = (
-                PrintQueue.objects.filter(
-                    printer=printer,
-                    status=PrintQueue.STATUS_WAITING,
-                )
-                .order_by("-priority", "position", "added_at")
-                .select_related("plate__print_job")
-                .first()
-            )
+            # Next waiting entry in execution order (priority + manual position)
+            entry = next_waiting_entry(printer)
             if not entry:
                 skipped_empty += 1
                 continue

@@ -46,7 +46,7 @@
         <tbody>
         {% for entry in group.list %}
         <tr data-entry-pk="{{ entry.pk }}" data-entry-status="{{ entry.status }}">
-          <td>{{ entry.position }}</td>
+          <td>{% if entry.queue_rank %}{{ entry.queue_rank }}{% else %}<i class="bi bi-lock text-body-secondary" title="Active entries cannot be reordered"></i>{% endif %}</td>
           <td><a href="{% url 'core:printjob_detail' entry.print_job.pk %}">{{ entry.print_job }}</a></td>
           <td>Plate {{ entry.plate.plate_number }}</td>
           <td class="text-end"><small>{% if entry.plate.filament_used_grams %}{{ entry.plate.filament_used_grams|floatformat:1 }}&nbsp;g{% else %}—{% endif %}</small></td>
@@ -68,6 +68,15 @@
           </td>
           <td>{{ entry.added_at|date:"Y-m-d H:i" }}</td>
           <td class="text-nowrap">
+            {% if entry.status == 'waiting' and perms.core.can_manage_print_queue %}
+              <form method="post" action="{% url 'core:printqueue_move' entry.pk %}" class="d-inline">
+                {% csrf_token %}
+                <div class="btn-group btn-group-sm me-1" role="group" aria-label="Reorder">
+                  <button type="submit" name="direction" value="up" class="btn btn-outline-secondary" title="Move up" aria-label="Move up" {% if not entry.can_move_up %}disabled{% endif %}><i class="bi bi-arrow-up"></i></button>
+                  <button type="submit" name="direction" value="down" class="btn btn-outline-secondary" title="Move down" aria-label="Move down" {% if not entry.can_move_down %}disabled{% endif %}><i class="bi bi-arrow-down"></i></button>
+                </div>
+              </form>
+            {% endif %}
             {% if entry.status == 'awaiting_review' and perms.core.can_control_printer %}
               <a href="{% url 'core:printqueue_review' entry.pk %}" class="btn btn-sm btn-warning">
                 <i class="bi bi-clipboard-check me-1"></i>Review
