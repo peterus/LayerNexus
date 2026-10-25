@@ -119,6 +119,28 @@ class PrintJob(models.Model):
         return self.job_parts.aggregate(total=Sum("quantity"))["total"] or 0
 
     @property
+    def bed_dimensions(self) -> tuple[float, float, float] | None:
+        """Build volume (x, y, z in mm) of the machine this job is sliced for.
+
+        Uses the job's machine profile and falls back to the assigned printer.
+        A source only counts if it defines both bed X and Y; a missing
+        printable height defaults to 256 mm.
+
+        Returns:
+            ``(x, y, z)`` or ``None`` if no source provides a bed size.
+        """
+        sources = (self.machine_profile, self.printer)
+        for source in sources:
+            if source is None:
+                continue
+            x, y, z = source.bed_size_x, source.bed_size_y, getattr(source, "bed_size_z", None)
+            if z is None:
+                z = getattr(source, "printable_height", None)
+            if x and y and x > 0 and y > 0:
+                return (float(x), float(y), float(z) if z and z > 0 else 256.0)
+        return None
+
+    @property
     def parts_list(self) -> list[str]:
         """Human-readable list of part names with quantities."""
         return [f"{jp.part.name} ×{jp.quantity}" for jp in self.job_parts.select_related("part")]
