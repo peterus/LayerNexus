@@ -18,36 +18,54 @@
       <input type="search" id="filter-q" name="q" value="{{ q }}" class="form-control form-control-sm" placeholder="Job or part name">
     </div>
     <div class="col-6 col-md-2">
-      <label for="filter-status" class="form-label small mb-1">Status</label>
-      <select id="filter-status" name="status" class="form-select form-select-sm">
-        <option value="">All</option>
-        {% for value, label in status_choices %}
-        <option value="{{ value }}"{% if value == status %} selected{% endif %}>{{ label }}</option>
-        {% endfor %}
-      </select>
+      <label class="form-label small mb-1" id="filter-status-label">Status</label>
+      <div class="dropdown">
+        <button type="button" id="filter-status-btn" class="btn btn-sm btn-outline-secondary dropdown-toggle w-100 text-start" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" aria-labelledby="filter-status-label filter-status-btn">{{ status_summary }}</button>
+        <ul class="dropdown-menu w-100 px-2">
+          {% for value, label in status_choices %}
+          <li class="form-check">
+            <input class="form-check-input" type="checkbox" name="status" value="{{ value }}" id="filter-status-{{ value }}"{% if value in status %} checked{% endif %}>
+            <label class="form-check-label w-100" for="filter-status-{{ value }}">{{ label }}</label>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
     </div>
     <div class="col-6 col-md-2">
-      <label for="filter-printer" class="form-label small mb-1">Printer</label>
-      <select id="filter-printer" name="printer" class="form-select form-select-sm">
-        <option value="">All</option>
-        {% for p in printers %}
-        <option value="{{ p.pk }}"{% if printer == p.pk|stringformat:"d" %} selected{% endif %}>{{ p.name }}</option>
-        {% endfor %}
-      </select>
+      <label class="form-label small mb-1" id="filter-printer-label">Printer</label>
+      <div class="dropdown">
+        <button type="button" id="filter-printer-btn" class="btn btn-sm btn-outline-secondary dropdown-toggle w-100 text-start" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" aria-labelledby="filter-printer-label filter-printer-btn">{{ printer_summary }}</button>
+        <ul class="dropdown-menu w-100 px-2">
+          {% for p in printers %}
+          <li class="form-check">
+            <input class="form-check-input" type="checkbox" name="printer" value="{{ p.pk }}" id="filter-printer-{{ p.pk }}"{% if p.pk|stringformat:"d" in printer %} checked{% endif %}>
+            <label class="form-check-label w-100" for="filter-printer-{{ p.pk }}">{{ p.name }}</label>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
     </div>
-    <div class="col-12 col-md-2">
-      <label for="filter-project" class="form-label small mb-1">Project</label>
-      <select id="filter-project" name="project" class="form-select form-select-sm">
-        <option value="">All</option>
-        {% for pr in projects %}
-        <option value="{{ pr.pk }}"{% if project == pr.pk|stringformat:"d" %} selected{% endif %}>{{ pr.name }}</option>
-        {% endfor %}
-      </select>
+    <div class="col-6 col-md-2">
+      <label class="form-label small mb-1" id="filter-project-label">Project</label>
+      <div class="dropdown">
+        <button type="button" id="filter-project-btn" class="btn btn-sm btn-outline-secondary dropdown-toggle w-100 text-start" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" aria-labelledby="filter-project-label filter-project-btn">{{ project_summary }}</button>
+        <ul class="dropdown-menu w-100 px-2">
+          {% for pr in projects %}
+          <li class="form-check">
+            <input class="form-check-input" type="checkbox" name="project" value="{{ pr.pk }}" id="filter-project-{{ pr.pk }}"{% if pr.pk|stringformat:"d" in project %} checked{% endif %}>
+            <label class="form-check-label w-100" for="filter-project-{{ pr.pk }}">{{ pr.name }}</label>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
     </div>
     <div class="col-12 col-md-2 d-flex gap-2">
       <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-funnel me-1"></i>Filter</button>
       {% if filters_active %}
-      <a href="{% url 'core:printjob_list' %}" class="btn btn-sm btn-outline-secondary">Reset</a>
+      <a href="{% url 'core:printjob_list' %}?reset=1" class="btn btn-sm btn-outline-secondary">Reset</a>
+      {% endif %}
+      {% if show_hide_completed %}
+      <a href="?{{ hide_completed_querystring }}" class="btn btn-sm btn-outline-secondary text-nowrap">Hide completed</a>
       {% endif %}
     </div>
   </div>
@@ -116,13 +134,13 @@
 <nav aria-label="Print jobs pagination" class="mt-3">
   <ul class="pagination">
     {% if page_obj.has_previous %}
-    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}{% if filter_querystring %}&{{ filter_querystring }}{% endif %}">Previous</a></li>
+    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}{% if filter_querystring %}&amp;{{ filter_querystring }}{% endif %}">Previous</a></li>
     {% else %}
     <li class="page-item disabled"><span class="page-link">Previous</span></li>
     {% endif %}
     <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
     {% if page_obj.has_next %}
-    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}{% if filter_querystring %}&{{ filter_querystring }}{% endif %}">Next</a></li>
+    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}{% if filter_querystring %}&amp;{{ filter_querystring }}{% endif %}">Next</a></li>
     {% else %}
     <li class="page-item disabled"><span class="page-link">Next</span></li>
     {% endif %}

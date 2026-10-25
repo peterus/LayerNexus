@@ -1,14 +1,17 @@
 """Print job views for the LayerNexus application."""
 
 import logging
+import re
 from collections import defaultdict
+from collections.abc import Iterable
+from typing import Any
 from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db import transaction
+from django.db import models, transaction
 from django.db.models import Q, QuerySet
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse, QueryDict
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.views import View
@@ -28,6 +31,9 @@ from core.models import (
 from core.services.slicing_worker import _start_orcaslicer_worker
 
 logger = logging.getLogger(__name__)
+
+# Plain ASCII digits, bounded so int() and the SQLite integer binding cannot overflow.
+_PK_RE = re.compile(r"[0-9]{1,18}")
 
 __all__ = [
     "PrintJobListView",
@@ -54,9 +60,10 @@ class _IncompatiblePartError(Exception):
 class PrintJobListView(LoginRequiredMixin, ListView):
     """List print jobs with server-side filtering and pagination.
 
-    Supported GET params: ``q`` (job or part name), ``status``, ``printer``
-    (pk) and ``project`` (pk of the assembly a job contributes to).
-    Invalid values are ignored.  Newest jobs come first.
+    Supported GET params: ``q`` (job or part name) plus the repeatable
+    multi-select params ``status``, ``printer`` (pk) and ``project`` (pk of the
+    assembly a job contributes to).  Nothing selected means no filter; invalid
+    values are ignored.  Newest jobs come first.
     """
 
     model = PrintJob
@@ -64,24 +71,72 @@ class PrintJobListView(LoginRequiredMixin, ListView):
     context_object_name = "print_jobs"
     paginate_by = 25
 
-    @staticmethod
-    def _numeric(value: str) -> str:
-        """Return the stripped value if it is a plain integer, else an empty string."""
-        value = value.strip()
-        return value if value.isdigit() else ""
+    session_key = "printjob_list_filters"
+    filter_keys = ("q", "status", "printer", "project")
 
-    def _filters(self) -> dict[str, str]:
+    def get(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+        """Remember the last filters per session and restore them on a bare visit.
+
+        Explicit filter params are saved; ``?reset=1`` clears them; a request
+        without any filter param is redirected to the saved filters (``page`` is dropped).
+        """
+        list_url = reverse("core:printjob_list")
+        if "reset" in request.GET:
+            request.session.pop(self.session_key, None)
+            return redirect(list_url)
+        if any(key in request.GET for key in self.filter_keys):
+            filters = self._filters()
+            if any(filters.values()):
+                request.session[self.session_key] = filters
+            else:
+                request.session.pop(self.session_key, None)
+        else:
+            saved = self._saved_filters()
+            if saved:
+                # Drop ``page``: it was computed for the unfiltered list and may not exist once filtered.
+                return redirect(f"{list_url}?{self._querystring(saved)}")
+        return super().get(request, *args, **kwargs)
+
+    def _saved_filters(self) -> dict[str, str | list[str]]:
+        """Return the session-saved filters, silently dropping values that are no longer valid."""
+        saved = self.request.session.get(self.session_key)
+        if not isinstance(saved, dict):
+            return {}
+        params = QueryDict(mutable=True)
+        for key in self.filter_keys:
+            value = saved.get(key)
+            params.setlist(key, [value] if isinstance(value, str) else [v for v in value or [] if isinstance(v, str)])
+        filters = self._sanitize(params)
+        filters["printer"] = self._existing(PrinterProfile, filters["printer"])
+        filters["project"] = self._existing(Project, filters["project"])
+        return filters if any(filters.values()) else {}
+
+    @staticmethod
+    def _existing(model: type[models.Model], pks: list[str]) -> list[str]:
+        """Return the pks (as strings, in order) that still exist for ``model``."""
+        if not pks:
+            return []
+        found = {str(pk) for pk in model.objects.filter(pk__in=[int(pk) for pk in pks]).values_list("pk", flat=True)}
+        return [pk for pk in pks if pk in found]
+
+    def _filters(self) -> dict[str, str | list[str]]:
         """Return the sanitized filter values from the query string."""
-        params = self.request.GET
-        status = params.get("status", "").strip()
-        if status not in dict(PrintJob.STATUS_CHOICES):
-            status = ""
+        return self._sanitize(self.request.GET)
+
+    def _sanitize(self, params: QueryDict) -> dict[str, str | list[str]]:
+        """Sanitize raw filter params (a QueryDict) into validated values."""
+        valid_status = dict(PrintJob.STATUS_CHOICES)
         return {
             "q": params.get("q", "").strip(),
-            "status": status,
-            "printer": self._numeric(params.get("printer", "")),
-            "project": self._numeric(params.get("project", "")),
+            "status": self._unique(v.strip() for v in params.getlist("status") if v.strip() in valid_status),
+            "printer": self._unique(v.strip() for v in params.getlist("printer") if _PK_RE.fullmatch(v.strip())),
+            "project": self._unique(v.strip() for v in params.getlist("project") if _PK_RE.fullmatch(v.strip())),
         }
+
+    @staticmethod
+    def _unique(values: Iterable[str]) -> list[str]:
+        """Return the values de-duplicated, preserving order."""
+        return list(dict.fromkeys(values))
 
     def get_queryset(self) -> QuerySet:
         """Return the filtered, newest-first queryset."""
@@ -94,12 +149,27 @@ class PrintJobListView(LoginRequiredMixin, ListView):
                 Q(name__icontains=filters["q"]) | Q(job_parts__part__name__icontains=filters["q"])
             )
         if filters["status"]:
-            queryset = queryset.filter(status=filters["status"])
+            queryset = queryset.filter(status__in=filters["status"])
         if filters["printer"]:
-            queryset = queryset.filter(printer_id=int(filters["printer"]))
+            queryset = queryset.filter(printer_id__in=[int(v) for v in filters["printer"]])
         if filters["project"]:
-            queryset = queryset.filter(job_parts__target_assembly_id=int(filters["project"]))
+            queryset = queryset.filter(job_parts__target_assembly_id__in=[int(v) for v in filters["project"]])
         return queryset.distinct().order_by("-created_at", "-pk")
+
+    @staticmethod
+    def _querystring(filters: dict[str, str | list[str]]) -> str:
+        """Encode filters (repeating multi-value keys) for links that must keep them."""
+        pairs = []
+        for key, value in filters.items():
+            for item in [value] if isinstance(value, str) else value:
+                if item:
+                    pairs.append((key, item))
+        return urlencode(pairs)
+
+    @staticmethod
+    def _summary(selected: list[str], all_label: str) -> str:
+        """Return the dropdown button label for a multi-select filter."""
+        return f"{len(selected)} selected" if selected else all_label
 
     def get_context_data(self, **kwargs) -> dict:
         """Add filter values, filter options and a pagination query string."""
@@ -109,8 +179,15 @@ class PrintJobListView(LoginRequiredMixin, ListView):
         context["status_choices"] = PrintJob.STATUS_CHOICES
         context["printers"] = PrinterProfile.objects.order_by("name")
         context["projects"] = Project.objects.filter(attributed_job_parts__isnull=False).distinct().order_by("name")
+        context["status_summary"] = self._summary(filters["status"], "All statuses")
+        context["printer_summary"] = self._summary(filters["printer"], "All printers")
+        context["project_summary"] = self._summary(filters["project"], "All projects")
         context["filters_active"] = any(filters.values())
-        context["filter_querystring"] = urlencode({key: value for key, value in filters.items() if value})
+        context["filter_querystring"] = self._querystring(filters)
+        shown = filters["status"] or [value for value, _label in PrintJob.STATUS_CHOICES]
+        hide_completed = [s for s in shown if s != PrintJob.STATUS_COMPLETED]
+        context["show_hide_completed"] = PrintJob.STATUS_COMPLETED in shown and bool(hide_completed)
+        context["hide_completed_querystring"] = self._querystring({**filters, "status": hide_completed})
         return context
 
 

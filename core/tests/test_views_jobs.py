@@ -2,11 +2,20 @@
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
-from django.test import TestCase, override_settings
+from django.test import Client, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
-from core.models import OrcaPrintPreset, Part, PrintJob, PrintJobPart, PrintJobPlate, ProjectPart
+from core.models import (
+    OrcaPrintPreset,
+    Part,
+    PrinterProfile,
+    PrintJob,
+    PrintJobPart,
+    PrintJobPlate,
+    Project,
+    ProjectPart,
+)
 from core.tests.mixins import TestDataMixin
 
 
@@ -627,9 +636,150 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
             PrintJob.objects.create(name=f"Bulk {i}", status=PrintJob.STATUS_FAILED)
         resp = self.client.get(self.url, {"status": "failed"})
         self.assertEqual(len(resp.context["print_jobs"]), 25)
-        self.assertContains(resp, "page=2&status=failed")
+        self.assertContains(resp, "page=2&amp;status=failed")
         page2 = self.client.get(self.url, {"status": "failed", "page": 2})
         self.assertEqual(len(page2.context["print_jobs"]), 5)
+
+    def test_multi_status(self):
+        self.assertEqual(self._jobs(status=["draft", "completed"]), [self.job_b, self.job_a])
+        self.assertEqual(self._jobs(status=["draft", "failed"]), [self.job_a])
+
+    def test_multi_status_ignores_invalid_values(self):
+        self.assertEqual(self._jobs(status=["bogus", "draft"]), [self.job_a])
+        self.assertEqual(len(self._jobs(status=["bogus", ""])), 2)
+
+    def test_multi_project(self):
+        other_project = Project.objects.create(name="Other", created_by=self.user)
+        job_c = PrintJob.objects.create(name="Gamma", status=PrintJob.STATUS_DRAFT)
+        PrintJobPart.objects.create(print_job=job_c, part=self.part, quantity=1, target_assembly=other_project)
+        self.assertEqual(self._jobs(project=[self.project.pk, other_project.pk]), [job_c, self.job_a])
+        self.assertEqual(self._jobs(project=[other_project.pk, "abc"]), [job_c])
+
+    def test_multi_printer(self):
+        other_printer = PrinterProfile.objects.create(name="Second", created_by=self.user)
+        job_c = PrintJob.objects.create(name="Gamma", printer=other_printer)
+        self.assertEqual(self._jobs(printer=[self.printer.pk, other_printer.pk]), [job_c, self.job_a])
+
+    def test_multi_combined(self):
+        self.assertEqual(self._jobs(status=["draft", "completed"], project=[self.project.pk]), [self.job_a])
+
+    def test_multi_project_no_duplicates(self):
+        PrintJobPart.objects.create(
+            print_job=self.job_a, part=self.other_part, quantity=1, target_assembly=self.project
+        )
+        self.assertEqual(self._jobs(project=[self.project.pk]), [self.job_a])
+
+    def test_pagination_keeps_multi_params(self):
+        for i in range(30):
+            PrintJob.objects.create(name=f"Bulk {i}", status=PrintJob.STATUS_FAILED)
+        resp = self.client.get(self.url, {"status": ["failed", "draft"]})
+        self.assertContains(resp, "page=2&amp;status=failed&amp;status=draft")
+
+    def test_checked_state_rendered(self):
+        resp = self.client.get(self.url, {"status": ["draft", "failed"], "project": [self.project.pk]})
+        html = resp.content.decode()
+        self.assertRegex(html, r'name="status" value="draft"[^>]*checked')
+        self.assertRegex(html, r'name="status" value="failed"[^>]*checked')
+        self.assertNotRegex(html, r'name="status" value="completed"[^>]*checked')
+        self.assertRegex(html, rf'name="project" value="{self.project.pk}"[^>]*checked')
+        self.assertContains(resp, "2 selected")
+        self.assertContains(resp, "1 selected")
+
+    def test_nothing_checked_shows_all(self):
+        resp = self.client.get(self.url)
+        self.assertNotRegex(resp.content.decode(), r'name="status" value="[a-z]+"[^>]*checked')
+        self.assertContains(resp, "All statuses")
+
+    def test_hide_completed_shortcut(self):
+        resp = self.client.get(self.url)
+        self.assertContains(resp, "Hide completed")
+        jobs = self._jobs(status=[v for v, _ in PrintJob.STATUS_CHOICES if v != PrintJob.STATUS_COMPLETED])
+        self.assertEqual(jobs, [self.job_a])
+        self.assertNotContains(self.client.get(self.url, {"status": "draft"}), "Hide completed")
+
+    def test_filters_remembered_across_requests(self):
+        self.client.get(self.url, {"status": ["draft", "failed"], "q": "alp"})
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 302)
+        followed = self.client.get(self.url, follow=True)
+        self.assertEqual(followed.context["status"], ["draft", "failed"])
+        self.assertEqual(followed.context["q"], "alp")
+        self.assertEqual(list(followed.context["print_jobs"]), [self.job_a])
+
+    def test_redirect_url_carries_params_and_does_not_loop(self):
+        self.client.get(self.url, {"status": "draft"})
+        resp = self.client.get(self.url)
+        self.assertRedirects(resp, f"{self.url}?status=draft", fetch_redirect_response=False)
+        self.assertEqual(self.client.get(resp.url).status_code, 200)
+
+    def test_page_alone_keeps_saved_filters_but_drops_stale_page(self):
+        self.client.get(self.url, {"status": "draft"})
+        resp = self.client.get(self.url, {"page": 2})
+        self.assertRedirects(resp, f"{self.url}?status=draft", fetch_redirect_response=False)
+        self.assertEqual(self.client.get(resp.url).status_code, 200)
+
+    def test_filter_buttons_expose_selection_to_screen_readers(self):
+        html = self.client.get(self.url, {"status": "draft"}).content.decode()
+        for key in ("status", "printer", "project"):
+            self.assertIn(f'id="filter-{key}-btn"', html)
+            self.assertIn(f'aria-labelledby="filter-{key}-label filter-{key}-btn"', html)
+
+    def test_reset_clears_saved_filters(self):
+        self.client.get(self.url, {"status": "draft"})
+        resp = self.client.get(self.url, {"reset": 1})
+        self.assertRedirects(resp, self.url, fetch_redirect_response=False)
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+        self.assertEqual(len(self._jobs()), 2)
+
+    def test_explicit_empty_submit_clears_saved_filters(self):
+        self.client.get(self.url, {"status": "draft"})
+        self.client.get(self.url, {"q": ""})
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+
+    def test_new_params_override_saved(self):
+        self.client.get(self.url, {"status": "draft"})
+        self.assertEqual(self._jobs(status="completed"), [self.job_b])
+        self.assertRedirects(self.client.get(self.url), f"{self.url}?status=completed", fetch_redirect_response=False)
+
+    def test_saved_deleted_project_and_printer_discarded(self):
+        other_printer = PrinterProfile.objects.create(name="Gone", created_by=self.user)
+        self.client.get(self.url, {"printer": [self.printer.pk, other_printer.pk]})
+        other_printer.delete()
+        resp = self.client.get(self.url)
+        self.assertRedirects(resp, f"{self.url}?printer={self.printer.pk}", fetch_redirect_response=False)
+        self.client.get(self.url, {"printer": self.printer.pk})
+        self.printer.delete()
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+
+    def test_saved_deleted_project_discarded(self):
+        other_project = Project.objects.create(name="Gone", created_by=self.user)
+        self.client.get(self.url, {"project": [self.project.pk, other_project.pk]})
+        other_project.delete()
+        resp = self.client.get(self.url)
+        self.assertRedirects(resp, f"{self.url}?project={self.project.pk}", fetch_redirect_response=False)
+
+    def test_saved_filters_are_isolated_between_sessions(self):
+        self.client.get(self.url, {"status": "draft"})
+        other = Client()
+        other.login(username="otheruser", password="otherpass123")
+        self.assertEqual(other.get(self.url).status_code, 200)
+        self.assertEqual(self.client.get(self.url).status_code, 302)
+
+    def test_unicode_digit_and_oversized_ids_ignored(self):
+        for value in ("\u00b2", "9" * 30, "-1"):
+            for key in ("printer", "project"):
+                resp = self.client.get(self.url, {key: value})
+                self.assertEqual(resp.status_code, 200, (key, value))
+                self.assertEqual(len(resp.context["print_jobs"]), 2)
+
+    def test_saved_oversized_ids_ignored(self):
+        session = self.client.session
+        session["printjob_list_filters"] = {"printer": ["9" * 30], "project": ["\u00b2"], "status": [], "q": ""}
+        session.save()
+        self.assertEqual(self.client.get(self.url).status_code, 200)
+
+    def test_reset_link_rendered(self):
+        self.assertContains(self.client.get(self.url, {"status": "draft"}), "?reset=1")
 
     def test_no_table_light_header(self):
         resp = self.client.get(self.url)
