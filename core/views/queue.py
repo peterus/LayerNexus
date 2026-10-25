@@ -1,6 +1,7 @@
 """Print queue views for the LayerNexus application."""
 
 import logging
+from typing import Any
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
@@ -84,7 +85,7 @@ class PrintQueueListView(LoginRequiredMixin, ListView):
             .order_by("printer__name", "printer_id", "is_waiting", *QUEUE_EXECUTION_ORDER)
         )
 
-    def get_context_data(self, **kwargs):
+    def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
         """Annotate waiting entries with their queue rank and move flags."""
         context = super().get_context_data(**kwargs)
         entries = list(context["object_list"])
@@ -250,6 +251,19 @@ class PrintQueueMoveView(QueueManageMixin, View):
     http_method_names = ["post"]
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Validate the move parameters, move the entry and redirect to the list.
+
+        Args:
+            request: The POST request carrying ``direction`` or ``position``.
+            pk: Primary key of the queue entry to move.
+
+        Returns:
+            A redirect to the queue list, or 400 for invalid input / an entry
+            that is not waiting.
+
+        Raises:
+            Http404: If the queue entry does not exist.
+        """
         direction = request.POST.get("direction") or None
         target_index = None
         if direction is None:
@@ -265,12 +279,21 @@ class PrintQueueMoveView(QueueManageMixin, View):
             return HttpResponseBadRequest("Invalid direction.")
 
         try:
-            move_queue_entry(pk, direction=direction, target_index=target_index)
+            result = move_queue_entry(pk, direction=direction, target_index=target_index)
         except PrintQueue.DoesNotExist as exc:
             raise Http404("Queue entry not found.") from exc
         except QueueReorderError as exc:
             return HttpResponseBadRequest(str(exc))
 
+        entry = result.entry
+        label = f"Plate {entry.plate.plate_number} of '{entry.print_job}'" if entry.plate else "Queue entry"
+        messages.success(request, f"Moved {label} on {entry.printer.name}.")
+        if result.priority_changed:
+            old_label = dict(PrintQueue.PRIORITY_CHOICES).get(result.previous_priority, result.previous_priority)
+            messages.info(
+                request,
+                f"Priority changed from {old_label} to {entry.get_priority_display()} to match its new position.",
+            )
         return redirect("core:printqueue_list")
 
 
@@ -468,12 +491,18 @@ class QueueEntryReviewView(PrinterControlMixin, View):
                 entry.status = PrintQueue.STATUS_WAITING
                 entry.started_at = None
                 entry.completed_at = None
+                # Waiting positions are renumbered 1..n by manual reordering, so
+                # a stale position would land the retry at an arbitrary rank.
+                # Position 0 puts it first within its priority group (it was
+                # the entry being printed, i.e. it was next in line).
+                entry.position = 0
                 entry.save(
                     update_fields=[
                         "status",
                         "retry_count",
                         "started_at",
                         "completed_at",
+                        "position",
                     ]
                 )
                 plate.status = PrintJobPlate.STATUS_WAITING

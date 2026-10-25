@@ -7,6 +7,7 @@ both ``RunNextQueueView`` and ``RunAllQueuesView`` without duplication.
 
 import logging
 import re
+from dataclasses import dataclass
 
 from django.db import transaction
 from django.db.models import QuerySet
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "QUEUE_EXECUTION_ORDER",
+    "QueueMoveResult",
     "move_queue_entry",
     "next_waiting_entry",
     "ordered_waiting_entries",
@@ -42,6 +44,24 @@ class PrintStartError(Exception):
 
 class QueueReorderError(Exception):
     """Raised when a queue entry cannot be moved (not waiting / bad input)."""
+
+
+@dataclass(frozen=True)
+class QueueMoveResult:
+    """Outcome of :func:`move_queue_entry`.
+
+    Attributes:
+        entry: The moved (refreshed) queue entry.
+        previous_priority: The entry's priority before the move.
+    """
+
+    entry: PrintQueue
+    previous_priority: int
+
+    @property
+    def priority_changed(self) -> bool:
+        """Return True if the move adopted a neighbour's priority."""
+        return self.entry.priority != self.previous_priority
 
 
 def ordered_waiting_entries(printer: PrinterProfile | int) -> QuerySet[PrintQueue]:
@@ -74,7 +94,7 @@ def move_queue_entry(
     *,
     direction: str | None = None,
     target_index: int | None = None,
-) -> PrintQueue:
+) -> QueueMoveResult:
     """Move a waiting queue entry within its printer's queue.
 
     Only ``waiting`` entries can be moved; ``printing`` and ``awaiting_review``
@@ -96,7 +116,8 @@ def move_queue_entry(
             not given.
 
     Returns:
-        The moved (refreshed) ``PrintQueue`` entry.
+        A :class:`QueueMoveResult` with the moved (refreshed) entry and its
+        priority before the move.
 
     Raises:
         PrintQueue.DoesNotExist: If no entry with ``entry_pk`` exists.
@@ -130,6 +151,7 @@ def move_queue_entry(
         target = max(0, min(target, last))
 
         moved = waiting.pop(current)
+        previous_priority = moved.priority
         waiting.insert(target, moved)
 
         # Adopt the neighbours' priority boundary so ``-priority`` ordering
@@ -145,7 +167,7 @@ def move_queue_entry(
 
     logger.info("Moved queue entry %s to index %s on printer %s", entry.pk, target, entry.printer_id)
     moved.refresh_from_db()
-    return moved
+    return QueueMoveResult(entry=moved, previous_priority=previous_priority)
 
 
 def start_print_for_queue_entry(entry: PrintQueue) -> str:

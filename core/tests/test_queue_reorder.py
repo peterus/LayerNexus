@@ -135,6 +135,32 @@ class MoveQueueEntryServiceTests(_QueueFixtureMixin, _RBACTestBase):
         with self.assertRaises(PrintQueue.DoesNotExist):
             move_queue_entry(999999, direction="up")
 
+    def test_move_top_and_bottom(self):
+        move_queue_entry(self.c.pk, direction="top")
+        self.assertEqual(self._order(self.printer), [self.c.pk, self.a.pk, self.b.pk])
+        move_queue_entry(self.c.pk, direction="bottom")
+        self.assertEqual(self._order(self.printer), [self.a.pk, self.b.pk, self.c.pk])
+
+    def test_move_top_across_priority_groups_adopts_highest(self):
+        PrintQueue.objects.filter(pk=self.a.pk).update(priority=4)
+        PrintQueue.objects.filter(pk=self.b.pk).update(priority=3)
+        result = move_queue_entry(self.c.pk, direction="top")
+        self.assertEqual(result.entry.priority, 4)
+        self.assertEqual(result.previous_priority, 2)
+        self.assertTrue(result.priority_changed)
+        self.assertEqual(self._order(self.printer), [self.c.pk, self.a.pk, self.b.pk])
+
+    def test_move_bottom_across_priority_groups_adopts_lowest(self):
+        PrintQueue.objects.filter(pk=self.b.pk).update(priority=1)
+        PrintQueue.objects.filter(pk=self.c.pk).update(priority=1)
+        result = move_queue_entry(self.a.pk, direction="bottom")
+        self.assertEqual(result.entry.priority, 1)
+        self.assertEqual(self._order(self.printer), [self.b.pk, self.c.pk, self.a.pk])
+
+    def test_result_reports_unchanged_priority(self):
+        result = move_queue_entry(self.c.pk, direction="up")
+        self.assertFalse(result.priority_changed)
+
     def test_next_waiting_entry_respects_manual_order(self):
         move_queue_entry(self.c.pk, target_index=0)
         self.assertEqual(next_waiting_entry(self.printer).pk, self.c.pk)
@@ -209,6 +235,44 @@ class PrintQueueMoveViewTests(_QueueFixtureMixin, _RBACTestBase):
         self.client.login(username="designer_user", password="testpass123")
         resp = self.client.post(reverse("core:printqueue_move", args=[999999]), {"direction": "up"})
         self.assertEqual(resp.status_code, 404)
+
+    def test_success_message_and_priority_change_message(self):
+        PrintQueue.objects.filter(pk=self.a.pk).update(priority=4)
+        self.client.login(username="designer_user", password="testpass123")
+        self._move(self.b, direction="up")
+        msgs = [str(m) for m in self.client.get(reverse("core:printqueue_list")).context["messages"]]
+        self.assertTrue(any(m.startswith("Moved Plate") for m in msgs), msgs)
+        self.assertTrue(any("Priority changed from Normal to Urgent" in m for m in msgs), msgs)
+
+    def test_no_priority_message_within_same_group(self):
+        self.client.login(username="designer_user", password="testpass123")
+        self._move(self.b, direction="up")
+        msgs = [str(m) for m in self.client.get(reverse("core:printqueue_list")).context["messages"]]
+        self.assertFalse(any("Priority changed" in m for m in msgs), msgs)
+
+    @mock.patch("core.views.queue.start_print_for_queue_entry")
+    def test_run_all_starts_manually_reordered_entry(self, mock_start):
+        self.printer.moonraker_url = "http://printer:7125"
+        self.printer.save()
+        low = self._make_entry(self.printer, position=3, priority=1)
+        low.plate.gcode_file = "gcode/test.gcode"
+        low.plate.save()
+        self.client.login(username="admin_user", password="testpass123")
+        self._move(low, position="1")
+        self.client.post(reverse("core:run_all_queues"))
+        mock_start.assert_called_once()
+        self.assertEqual(mock_start.call_args.args[0].pk, low.pk)
+
+    def test_failed_retry_requeues_first_in_priority_group(self):
+        """A failed print goes back to the front of its priority group, not an arbitrary rank."""
+        c = self._make_entry(self.printer, position=3)
+        self.client.login(username="admin_user", password="testpass123")
+        self._move(c, position="1")  # order: c, a, b -> positions 1, 2, 3
+        PrintQueue.objects.filter(pk=self.b.pk).update(status=PrintQueue.STATUS_AWAITING_REVIEW)
+        self.client.post(reverse("core:printqueue_review", args=[self.b.pk]), {"action": "fail"})
+        self.b.refresh_from_db()
+        self.assertEqual(self.b.status, PrintQueue.STATUS_WAITING)
+        self.assertEqual(self._order(self.printer), [self.b.pk, c.pk, self.a.pk])
 
     @mock.patch("core.views.queue.start_print_for_queue_entry")
     def test_run_next_starts_manually_reordered_entry(self, mock_start):
