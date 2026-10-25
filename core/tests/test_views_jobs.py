@@ -599,7 +599,9 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
         self.assertEqual(self._jobs(printer=self.printer.pk), [self.job_a])
 
     def test_non_numeric_printer_ignored(self):
-        self.assertEqual(len(self._jobs(printer="abc")), 2)
+        resp = self.client.get(self.url, {"printer": "abc"})
+        self.assertEqual(len(resp.context["print_jobs"]), 2)
+        self.assertFalse(resp.context["filters_active"])
 
     def test_filter_project(self):
         self.assertEqual(self._jobs(project=self.project.pk), [self.job_a])

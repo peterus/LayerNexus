@@ -64,6 +64,12 @@ class PrintJobListView(LoginRequiredMixin, ListView):
     context_object_name = "print_jobs"
     paginate_by = 25
 
+    @staticmethod
+    def _numeric(value: str) -> str:
+        """Return the stripped value if it is a plain integer, else an empty string."""
+        value = value.strip()
+        return value if value.isdigit() else ""
+
     def _filters(self) -> dict[str, str]:
         """Return the sanitized filter values from the query string."""
         params = self.request.GET
@@ -73,8 +79,8 @@ class PrintJobListView(LoginRequiredMixin, ListView):
         return {
             "q": params.get("q", "").strip(),
             "status": status,
-            "printer": params.get("printer", "").strip(),
-            "project": params.get("project", "").strip(),
+            "printer": self._numeric(params.get("printer", "")),
+            "project": self._numeric(params.get("project", "")),
         }
 
     def get_queryset(self) -> QuerySet:
@@ -89,9 +95,9 @@ class PrintJobListView(LoginRequiredMixin, ListView):
             )
         if filters["status"]:
             queryset = queryset.filter(status=filters["status"])
-        if filters["printer"].isdigit():
+        if filters["printer"]:
             queryset = queryset.filter(printer_id=int(filters["printer"]))
-        if filters["project"].isdigit():
+        if filters["project"]:
             queryset = queryset.filter(job_parts__target_assembly_id=int(filters["project"]))
         return queryset.distinct().order_by("-created_at", "-pk")
 
