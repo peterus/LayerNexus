@@ -281,14 +281,13 @@ class ScheduledStartEdgeTests(TestCase):
         future = self.now + timedelta(hours=5)
         real_select = ScheduledQueueStart.objects.filter
 
-        def reschedule_after_read(*args, **kwargs):
-            qs = real_select(*args, **kwargs)
-            if kwargs.get("status") == ScheduledQueueStart.STATUS_PENDING and "start_at__lte" in kwargs:
-                list(qs)  # the due read happens first
-                ScheduledQueueStart.objects.filter(pk=row.pk).update(start_at=future)
-            return qs
+        def reschedule_at_claim(*args, **kwargs):
+            # The claim is the only filter() call that matches by pk.
+            if "pk" in kwargs:
+                real_select(pk=row.pk).update(start_at=future)
+            return real_select(*args, **kwargs)
 
-        with mock.patch.object(ScheduledQueueStart.objects, "filter", side_effect=reschedule_after_read):
+        with mock.patch.object(ScheduledQueueStart.objects, "filter", side_effect=reschedule_at_claim):
             run_due_scheduled_starts(self.now)
         start.assert_not_called()
         row.refresh_from_db()
