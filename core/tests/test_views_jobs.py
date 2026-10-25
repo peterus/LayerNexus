@@ -1,7 +1,9 @@
 """Tests for print job views."""
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from core.models import OrcaPrintPreset, Part, PrintJob, PrintJobPart, PrintJobPlate, ProjectPart
@@ -564,3 +566,82 @@ class AddPartToJobAtomicPinTests(TestDataMixin, TestCase):
         )
         self.assertEqual(resp.status_code, 302)
         self.assertFalse(job.job_parts.filter(part=part).exists())  # rejected, not added
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class PrintJobListFilterTests(TestDataMixin, TestCase):
+    """Tests for filtering, ordering and pagination of the print job list."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+        self.url = reverse("core:printjob_list")
+        self.job_a = PrintJob.objects.create(name="Alpha", status=PrintJob.STATUS_DRAFT, printer=self.printer)
+        self.job_b = PrintJob.objects.create(name="Beta", status=PrintJob.STATUS_COMPLETED)
+        PrintJobPart.objects.create(print_job=self.job_a, part=self.part, quantity=1, target_assembly=self.project)
+        PrintJobPart.objects.create(print_job=self.job_b, part=self.other_part, quantity=2)
+
+    def _jobs(self, **params):
+        resp = self.client.get(self.url, params)
+        self.assertEqual(resp.status_code, 200)
+        return list(resp.context["print_jobs"])
+
+    def test_newest_first(self):
+        self.assertEqual(self._jobs(), [self.job_b, self.job_a])
+
+    def test_filter_status(self):
+        self.assertEqual(self._jobs(status="completed"), [self.job_b])
+
+    def test_invalid_status_ignored(self):
+        self.assertEqual(len(self._jobs(status="bogus")), 2)
+
+    def test_filter_printer(self):
+        self.assertEqual(self._jobs(printer=self.printer.pk), [self.job_a])
+
+    def test_non_numeric_printer_ignored(self):
+        resp = self.client.get(self.url, {"printer": "abc"})
+        self.assertEqual(len(resp.context["print_jobs"]), 2)
+        self.assertFalse(resp.context["filters_active"])
+
+    def test_filter_project(self):
+        self.assertEqual(self._jobs(project=self.project.pk), [self.job_a])
+
+    def test_search_job_name(self):
+        self.assertEqual(self._jobs(q="alph"), [self.job_a])
+
+    def test_search_part_name_no_duplicates(self):
+        PrintJobPart.objects.create(print_job=self.job_a, part=self.other_part, quantity=1)
+        self.assertEqual(self._jobs(q="part"), [self.job_b, self.job_a])
+
+    def test_combined_filters(self):
+        self.assertEqual(self._jobs(status="draft", printer=self.printer.pk, q="alpha"), [self.job_a])
+        self.assertEqual(self._jobs(status="completed", printer=self.printer.pk), [])
+
+    def test_empty_result_message(self):
+        resp = self.client.get(self.url, {"q": "nomatch"})
+        self.assertContains(resp, "No print jobs match the current filters.")
+        self.assertContains(resp, "Reset")
+
+    def test_pagination_keeps_filters(self):
+        for i in range(30):
+            PrintJob.objects.create(name=f"Bulk {i}", status=PrintJob.STATUS_FAILED)
+        resp = self.client.get(self.url, {"status": "failed"})
+        self.assertEqual(len(resp.context["print_jobs"]), 25)
+        self.assertContains(resp, "page=2&status=failed")
+        page2 = self.client.get(self.url, {"status": "failed", "page": 2})
+        self.assertEqual(len(page2.context["print_jobs"]), 5)
+
+    def test_no_table_light_header(self):
+        resp = self.client.get(self.url)
+        self.assertNotContains(resp, "table-light")
+
+    def test_query_count_constant(self):
+        with CaptureQueriesContext(connection) as small:
+            self.client.get(self.url)
+        for i in range(10):
+            job = PrintJob.objects.create(name=f"Extra {i}")
+            PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
+            PrintJobPlate.objects.create(print_job=job, plate_number=1)
+        with CaptureQueriesContext(connection) as large:
+            self.client.get(self.url)
+        self.assertEqual(len(small), len(large))

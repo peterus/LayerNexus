@@ -2,10 +2,12 @@
 
 import logging
 from collections import defaultdict
+from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db import transaction
+from django.db.models import Q, QuerySet
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
@@ -17,6 +19,7 @@ from core.mixins import RoleRequiredMixin
 from core.models import (
     OrcaMachineProfile,
     Part,
+    PrinterProfile,
     PrintJob,
     PrintJobPart,
     Project,
@@ -49,14 +52,66 @@ class _IncompatiblePartError(Exception):
 
 
 class PrintJobListView(LoginRequiredMixin, ListView):
-    """List all print jobs."""
+    """List print jobs with server-side filtering and pagination.
+
+    Supported GET params: ``q`` (job or part name), ``status``, ``printer``
+    (pk) and ``project`` (pk of the assembly a job contributes to).
+    Invalid values are ignored.  Newest jobs come first.
+    """
 
     model = PrintJob
     template_name = "core/printjob_list.html"
     context_object_name = "print_jobs"
+    paginate_by = 25
 
-    def get_queryset(self):
-        return PrintJob.objects.prefetch_related("job_parts__part", "plates")
+    @staticmethod
+    def _numeric(value: str) -> str:
+        """Return the stripped value if it is a plain integer, else an empty string."""
+        value = value.strip()
+        return value if value.isdigit() else ""
+
+    def _filters(self) -> dict[str, str]:
+        """Return the sanitized filter values from the query string."""
+        params = self.request.GET
+        status = params.get("status", "").strip()
+        if status not in dict(PrintJob.STATUS_CHOICES):
+            status = ""
+        return {
+            "q": params.get("q", "").strip(),
+            "status": status,
+            "printer": self._numeric(params.get("printer", "")),
+            "project": self._numeric(params.get("project", "")),
+        }
+
+    def get_queryset(self) -> QuerySet:
+        """Return the filtered, newest-first queryset."""
+        filters = self._filters()
+        queryset = PrintJob.objects.select_related("machine_profile", "printer").prefetch_related(
+            "job_parts__part", "plates"
+        )
+        if filters["q"]:
+            queryset = queryset.filter(
+                Q(name__icontains=filters["q"]) | Q(job_parts__part__name__icontains=filters["q"])
+            )
+        if filters["status"]:
+            queryset = queryset.filter(status=filters["status"])
+        if filters["printer"]:
+            queryset = queryset.filter(printer_id=int(filters["printer"]))
+        if filters["project"]:
+            queryset = queryset.filter(job_parts__target_assembly_id=int(filters["project"]))
+        return queryset.distinct().order_by("-created_at", "-pk")
+
+    def get_context_data(self, **kwargs) -> dict:
+        """Add filter values, filter options and a pagination query string."""
+        context = super().get_context_data(**kwargs)
+        filters = self._filters()
+        context.update(filters)
+        context["status_choices"] = PrintJob.STATUS_CHOICES
+        context["printers"] = PrinterProfile.objects.order_by("name")
+        context["projects"] = Project.objects.filter(attributed_job_parts__isnull=False).distinct().order_by("name")
+        context["filters_active"] = any(filters.values())
+        context["filter_querystring"] = urlencode({key: value for key, value in filters.items() if value})
+        return context
 
 
 class PrintJobCreateView(RoleRequiredMixin, CreateView):
