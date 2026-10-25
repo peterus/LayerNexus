@@ -2,7 +2,7 @@
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
-from django.test import TestCase, override_settings
+from django.test import Client, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
@@ -744,10 +744,31 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
         self.printer.delete()
         self.assertEqual(self.client.get(self.url).status_code, 200)
 
-    def test_saved_filters_are_per_session(self):
+    def test_saved_deleted_project_discarded(self):
+        other_project = Project.objects.create(name="Gone", created_by=self.user)
+        self.client.get(self.url, {"project": [self.project.pk, other_project.pk]})
+        other_project.delete()
+        resp = self.client.get(self.url)
+        self.assertRedirects(resp, f"{self.url}?project={self.project.pk}", fetch_redirect_response=False)
+
+    def test_saved_filters_are_isolated_between_sessions(self):
         self.client.get(self.url, {"status": "draft"})
-        self.client.logout()
-        self.client.login(username="testuser", password="testpass123")
+        other = Client()
+        other.login(username="otheruser", password="otherpass123")
+        self.assertEqual(other.get(self.url).status_code, 200)
+        self.assertEqual(self.client.get(self.url).status_code, 302)
+
+    def test_unicode_digit_and_oversized_ids_ignored(self):
+        for value in ("\u00b2", "9" * 30, "-1"):
+            for key in ("printer", "project"):
+                resp = self.client.get(self.url, {key: value})
+                self.assertEqual(resp.status_code, 200, (key, value))
+                self.assertEqual(len(resp.context["print_jobs"]), 2)
+
+    def test_saved_oversized_ids_ignored(self):
+        session = self.client.session
+        session["printjob_list_filters"] = {"printer": ["9" * 30], "project": ["\u00b2"], "status": [], "q": ""}
+        session.save()
         self.assertEqual(self.client.get(self.url).status_code, 200)
 
     def test_reset_link_rendered(self):

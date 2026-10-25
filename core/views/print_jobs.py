@@ -1,12 +1,15 @@
 """Print job views for the LayerNexus application."""
 
 import logging
+import re
 from collections import defaultdict
+from collections.abc import Iterable
+from typing import Any
 from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db import transaction
+from django.db import models, transaction
 from django.db.models import Q, QuerySet
 from django.http import HttpRequest, HttpResponse, JsonResponse, QueryDict
 from django.shortcuts import get_object_or_404, redirect
@@ -28,6 +31,9 @@ from core.models import (
 from core.services.slicing_worker import _start_orcaslicer_worker
 
 logger = logging.getLogger(__name__)
+
+# Plain ASCII digits, bounded so int() and the SQLite integer binding cannot overflow.
+_PK_RE = re.compile(r"[0-9]{1,18}")
 
 __all__ = [
     "PrintJobListView",
@@ -68,7 +74,7 @@ class PrintJobListView(LoginRequiredMixin, ListView):
     session_key = "printjob_list_filters"
     filter_keys = ("q", "status", "printer", "project")
 
-    def get(self, request: HttpRequest, *args, **kwargs) -> HttpResponse:
+    def get(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
         """Remember the last filters per session and restore them on a bare visit.
 
         Explicit filter params are saved; ``?reset=1`` clears them; a request
@@ -107,7 +113,7 @@ class PrintJobListView(LoginRequiredMixin, ListView):
         return filters if any(filters.values()) else {}
 
     @staticmethod
-    def _existing(model, pks: list[str]) -> list[str]:
+    def _existing(model: type[models.Model], pks: list[str]) -> list[str]:
         """Return the pks (as strings, in order) that still exist for ``model``."""
         if not pks:
             return []
@@ -118,18 +124,18 @@ class PrintJobListView(LoginRequiredMixin, ListView):
         """Return the sanitized filter values from the query string."""
         return self._sanitize(self.request.GET)
 
-    def _sanitize(self, params) -> dict[str, str | list[str]]:
+    def _sanitize(self, params: QueryDict) -> dict[str, str | list[str]]:
         """Sanitize raw filter params (a QueryDict) into validated values."""
         valid_status = dict(PrintJob.STATUS_CHOICES)
         return {
             "q": params.get("q", "").strip(),
             "status": self._unique(v.strip() for v in params.getlist("status") if v.strip() in valid_status),
-            "printer": self._unique(v.strip() for v in params.getlist("printer") if v.strip().isdigit()),
-            "project": self._unique(v.strip() for v in params.getlist("project") if v.strip().isdigit()),
+            "printer": self._unique(v.strip() for v in params.getlist("printer") if _PK_RE.fullmatch(v.strip())),
+            "project": self._unique(v.strip() for v in params.getlist("project") if _PK_RE.fullmatch(v.strip())),
         }
 
     @staticmethod
-    def _unique(values) -> list[str]:
+    def _unique(values: Iterable[str]) -> list[str]:
         """Return the values de-duplicated, preserving order."""
         return list(dict.fromkeys(values))
 
