@@ -30,7 +30,7 @@ from typing import Any
 from asgiref.sync import sync_to_async
 from django.core.management.base import BaseCommand
 
-from core.models import PrinterProfile, PrintQueue
+from core.models import PrinterProfile, PrintJobPlate, PrintQueue
 from core.services.moonraker import MoonrakerClient
 from core.services.moonraker_operator_ui import MoonrakerOperatorUI
 from core.services.moonraker_ws import MoonrakerWebSocketClient
@@ -74,10 +74,14 @@ def _load_printer(pk: int) -> PrinterProfile | None:
 
 @sync_to_async
 def _load_active_queue_entry(printer_pk: int) -> PrintQueue | None:
+    # ``plate__status=printing`` skips an entry that a start has only claimed
+    # (G-code still uploading): the printer's state still belongs to the
+    # previous print and must not end the new entry.
     return (
         PrintQueue.objects.filter(
             printer_id=printer_pk,
             status=PrintQueue.STATUS_PRINTING,
+            plate__status=PrintJobPlate.STATUS_PRINTING,
         )
         .select_related("plate__print_job")
         .order_by("started_at")

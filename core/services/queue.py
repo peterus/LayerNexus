@@ -32,6 +32,8 @@ __all__ = [
     "review_queue_entry",
     "start_next_for_printer",
     "start_print_for_queue_entry",
+    "mark_queue_entry_started",
+    "upload_and_start_print",
     "PrintStartError",
     "QueueReorderError",
     "ReviewStateError",
@@ -294,7 +296,7 @@ def start_next_for_printer(printer: PrinterProfile, *, expected_entry_pk: int | 
         )
 
     try:
-        start_print_for_queue_entry(entry)
+        remote_filename = upload_and_start_print(entry)
     except PrintStartError as exc:
         _release_claim(entry)
         return StartResult(outcome="error", entry=entry, error=str(exc))
@@ -302,9 +304,14 @@ def start_next_for_printer(printer: PrinterProfile, *, expected_entry_pk: int | 
         _release_claim(entry)
         logger.exception("Failed to run queue entry %s: %s", entry.pk, exc)
         return StartResult(outcome="error", entry=entry, error=PRINTER_ERROR_MESSAGE)
-    # Any other exception is deliberately not caught: it can come from the DB
-    # saves *after* the printer accepted the start, and releasing the claim
-    # then would allow a second start of a print that is already running.
+    except BaseException:
+        # Nothing was started on the printer (e.g. the G-code file is missing
+        # on disk): hand the entry back to the queue.
+        _release_claim(entry)
+        raise
+    # The printer accepted the start; from here on the claim must never be
+    # released, even if recording it fails, or the print could start twice.
+    mark_queue_entry_started(entry, remote_filename)
     return StartResult(outcome="started", entry=entry)
 
 
@@ -418,9 +425,27 @@ def start_print_for_queue_entry(entry: PrintQueue) -> str:
         PrintStartError: If the entry has no G-code file.
         PrinterError: If the printer backend call fails.
     """
+    remote_filename = upload_and_start_print(entry)
+    mark_queue_entry_started(entry, remote_filename)
+    return remote_filename
+
+
+def upload_and_start_print(entry: PrintQueue) -> str:
+    """Upload the entry's G-code and start it on the printer (no DB writes).
+
+    Args:
+        entry: A ``PrintQueue`` instance with ``plate__print_job`` and
+            ``printer`` already selected/loaded.
+
+    Returns:
+        The remote filename used for the print.
+
+    Raises:
+        PrintStartError: If the entry has no G-code file.
+        PrinterError: If the printer backend call fails.
+    """
     plate = entry.plate
     job = plate.print_job
-    printer = entry.printer
 
     gcode_file = plate.gcode_file
     if not gcode_file:
@@ -430,11 +455,23 @@ def start_print_for_queue_entry(entry: PrintQueue) -> str:
     safe_name = re.sub(r"[^\w\-]", "_", str(job))[:50]
     remote_filename = f"LN_{safe_name}_p{plate.plate_number}.gcode"
 
-    backend = get_printer_backend(printer)
+    backend = get_printer_backend(entry.printer)
 
     # Upload gcode and start the print
     backend.upload_gcode(gcode_file.path, filename=remote_filename)
     backend.start_print(remote_filename)
+    return remote_filename
+
+
+def mark_queue_entry_started(entry: PrintQueue, remote_filename: str) -> None:
+    """Record a print the printer has accepted on the entry, its plate and its job.
+
+    Args:
+        entry: The queue entry that was started.
+        remote_filename: The file name on the printer.
+    """
+    plate = entry.plate
+    job = plate.print_job
 
     # Update queue entry
     entry.status = PrintQueue.STATUS_PRINTING
@@ -452,5 +489,3 @@ def start_print_for_queue_entry(entry: PrintQueue) -> str:
     if not job.started_at:
         job.started_at = timezone.now()
     job.save(update_fields=["status", "started_at"])
-
-    return remote_filename

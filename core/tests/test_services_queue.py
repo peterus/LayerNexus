@@ -388,3 +388,14 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
         entry.refresh_from_db()
         self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
         self.assertIsNone(entry.started_at)
+
+    def test_start_next_unexpected_error_before_start_releases_claim(self, mock_get_backend):
+        """A non-printer error before the printer accepted the start hands the entry back."""
+        mock_get_backend.return_value.upload_gcode.side_effect = FileNotFoundError("gcode gone")
+        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        with self.assertRaises(FileNotFoundError):
+            start_next_for_printer(self.printer)
+        mock_get_backend.return_value.start_print.assert_not_called()
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
+        self.assertIsNone(entry.started_at)
