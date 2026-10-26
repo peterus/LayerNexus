@@ -99,6 +99,12 @@ class PrintJobListFilamentTests(TestDataMixin, TestCase):
     def test_filter_none_option(self):
         self.assertEqual([j.pk for j in self._jobs(filament="none")], [self.job_none.pk])
 
+    def test_filter_none_excludes_jobs_without_parts(self):
+        PrintJob.objects.create(name="EmptyDraft")
+        self.assertEqual([j.pk for j in self._jobs(filament="none")], [self.job_none.pk])
+        pks = {j.pk for j in self._jobs(filament=["none", "1"])}
+        self.assertEqual(pks, {self.job_none.pk, self.job_a.pk, self.job_mixed.pk})
+
     def test_filter_combined_with_status(self):
         self.job_a.status = PrintJob.STATUS_COMPLETED
         self.job_a.save()

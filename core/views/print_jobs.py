@@ -169,7 +169,8 @@ class PrintJobListView(LoginRequiredMixin, ListView):
                 job_parts__part__spoolman_filament_id__in=[int(v) for v in filters["filament"] if v != self.no_filament]
             )
             if self.no_filament in filters["filament"]:
-                condition |= Q(job_parts__part__spoolman_filament_id__isnull=True)
+                # ``job_parts__isnull=False`` keeps part-less jobs out (else the OR matches their NULL outer join).
+                condition |= Q(job_parts__isnull=False, job_parts__part__spoolman_filament_id__isnull=True)
             queryset = queryset.filter(condition)
         return queryset.distinct().order_by("-created_at", "-pk")
 
