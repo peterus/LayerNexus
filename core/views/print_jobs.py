@@ -28,6 +28,7 @@ from core.models import (
     Project,
     SpoolmanFilamentMapping,
 )
+from core.services.filament_display import filament_badges, filament_label, mapping_lookup
 from core.services.slicing_worker import _start_orcaslicer_worker
 
 logger = logging.getLogger(__name__)
@@ -61,8 +62,9 @@ class PrintJobListView(LoginRequiredMixin, ListView):
     """List print jobs with server-side filtering and pagination.
 
     Supported GET params: ``q`` (job or part name) plus the repeatable
-    multi-select params ``status``, ``printer`` (pk) and ``project`` (pk of the
-    assembly a job contributes to).  Nothing selected means no filter; invalid
+    multi-select params ``status``, ``printer`` (pk), ``project`` (pk of the
+    assembly a job contributes to) and ``filament`` (Spoolman filament id, or ``none``
+    for jobs with a part that has no filament assigned).  Nothing selected means no filter; invalid
     values are ignored.  Newest jobs come first.
     """
 
@@ -72,7 +74,8 @@ class PrintJobListView(LoginRequiredMixin, ListView):
     paginate_by = 25
 
     session_key = "printjob_list_filters"
-    filter_keys = ("q", "status", "printer", "project")
+    filter_keys = ("q", "status", "printer", "project", "filament")
+    no_filament = "none"
 
     def get(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
         """Remember the last filters per session and restore them on a bare visit.
@@ -109,6 +112,8 @@ class PrintJobListView(LoginRequiredMixin, ListView):
         filters = self._sanitize(params)
         filters["printer"] = self._existing(PrinterProfile, filters["printer"])
         filters["project"] = self._existing(Project, filters["project"])
+        available = {option["value"] for option in self._filament_options()}
+        filters["filament"] = [v for v in filters["filament"] if v in available]
         return filters if any(filters.values()) else {}
 
     @staticmethod
@@ -131,6 +136,11 @@ class PrintJobListView(LoginRequiredMixin, ListView):
             "status": self._unique(v.strip() for v in params.getlist("status") if v.strip() in valid_status),
             "printer": self._unique(v.strip() for v in params.getlist("printer") if _PK_RE.fullmatch(v.strip())),
             "project": self._unique(v.strip() for v in params.getlist("project") if _PK_RE.fullmatch(v.strip())),
+            "filament": self._unique(
+                v.strip()
+                for v in params.getlist("filament")
+                if v.strip() == self.no_filament or _PK_RE.fullmatch(v.strip())
+            ),
         }
 
     @staticmethod
@@ -154,7 +164,56 @@ class PrintJobListView(LoginRequiredMixin, ListView):
             queryset = queryset.filter(printer_id__in=[int(v) for v in filters["printer"]])
         if filters["project"]:
             queryset = queryset.filter(job_parts__target_assembly_id__in=[int(v) for v in filters["project"]])
+        if filters["filament"]:
+            condition = Q(
+                job_parts__part__spoolman_filament_id__in=[int(v) for v in filters["filament"] if v != self.no_filament]
+            )
+            if self.no_filament in filters["filament"]:
+                condition |= Q(job_parts__part__spoolman_filament_id__isnull=True)
+            queryset = queryset.filter(condition)
         return queryset.distinct().order_by("-created_at", "-pk")
+
+    def _filament_options(self) -> list[dict[str, str]]:
+        """Return the filament filter options: filaments used by any job, plus ``none`` if some part has none."""
+        rows = (
+            PrintJobPart.objects.order_by("part__spoolman_filament_id", "part__material")
+            .values_list("part__spoolman_filament_id", "part__material")
+            .distinct()
+        )
+        materials: dict[int, str] = {}
+        has_none = False
+        for filament_id, material in rows:
+            if filament_id is None:
+                has_none = True
+            elif not materials.get(filament_id):
+                materials[filament_id] = material
+        mappings = mapping_lookup(set(materials))
+        options = [
+            {
+                "value": str(filament_id),
+                "label": filament_label(
+                    filament_id,
+                    mappings[filament_id].spoolman_filament_name if filament_id in mappings else "",
+                    material,
+                ),
+            }
+            for filament_id, material in materials.items()
+        ]
+        options.sort(key=lambda option: option["label"].lower())
+        if has_none:
+            options.append({"value": self.no_filament, "label": "No filament assigned"})
+        return options
+
+    @staticmethod
+    def _attach_filament_badges(jobs: Iterable[PrintJob]) -> None:
+        """Set ``filament_badges`` on each job using one mapping query (parts are already prefetched)."""
+        jobs = list(jobs)
+        ids = {
+            jp.part.spoolman_filament_id for job in jobs for jp in job.job_parts.all() if jp.part.spoolman_filament_id
+        }
+        mappings = mapping_lookup(ids)
+        for job in jobs:
+            job.filament_badges = filament_badges([jp.part for jp in job.job_parts.all()], mappings)
 
     @staticmethod
     def _querystring(filters: dict[str, str | list[str]]) -> str:
@@ -182,6 +241,9 @@ class PrintJobListView(LoginRequiredMixin, ListView):
         context["status_summary"] = self._summary(filters["status"], "All statuses")
         context["printer_summary"] = self._summary(filters["printer"], "All printers")
         context["project_summary"] = self._summary(filters["project"], "All projects")
+        context["filament_options"] = self._filament_options()
+        context["filament_summary"] = self._summary(filters["filament"], "All filaments")
+        self._attach_filament_badges(context["print_jobs"])
         context["filters_active"] = any(filters.values())
         context["filter_querystring"] = self._querystring(filters)
         shown = filters["status"] or [value for value, _label in PrintJob.STATUS_CHOICES]
@@ -577,12 +639,12 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
                 mapping = SpoolmanFilamentMapping.objects.filter(
                     spoolman_filament_id=filament_id,
                 ).first()
-                filament_label = (
-                    (mapping.spoolman_filament_name if mapping and mapping.spoolman_filament_name else None)
-                    or next((p.material for p, _ in group_parts if p.material), None)
-                    or f"Filament #{filament_id}"
+                filament_name = filament_label(
+                    filament_id,
+                    mapping.spoolman_filament_name if mapping else "",
+                    next((p.material for p, _ in group_parts if p.material), None),
                 )
-                label_parts.append(filament_label)
+                label_parts.append(filament_name)
             if len(groups) > 1:
                 label_parts.append(f"Group {jobs_created + 1}")
 

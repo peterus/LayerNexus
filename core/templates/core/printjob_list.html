@@ -13,7 +13,7 @@
 
 <form method="get" class="card card-body filter-bar shadow-sm mb-3" role="search" aria-label="Filter print jobs">
   <div class="row g-2 align-items-end">
-    <div class="col-12 col-md-4">
+    <div class="col-12 col-md-3">
       <label for="filter-q" class="form-label small mb-1">Search</label>
       <input type="search" id="filter-q" name="q" value="{{ q }}" class="form-control form-control-sm" placeholder="Job or part name">
     </div>
@@ -59,7 +59,23 @@
         </ul>
       </div>
     </div>
-    <div class="col-12 col-md-2 d-flex gap-2">
+    <div class="col-6 col-md-2">
+      <label class="form-label small mb-1" id="filter-filament-label">Filament</label>
+      <div class="dropdown">
+        <button type="button" id="filter-filament-btn" class="btn btn-sm btn-outline-secondary dropdown-toggle w-100 text-start" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false" aria-labelledby="filter-filament-label filter-filament-btn">{{ filament_summary }}</button>
+        <ul class="dropdown-menu w-100 px-2">
+          {% for opt in filament_options %}
+          <li class="form-check">
+            <input class="form-check-input" type="checkbox" name="filament" value="{{ opt.value }}" id="filter-filament-{{ opt.value }}"{% if opt.value in filament %} checked{% endif %}>
+            <label class="form-check-label w-100" for="filter-filament-{{ opt.value }}">{{ opt.label }}</label>
+          </li>
+          {% empty %}
+          <li class="small text-body-secondary px-1">No filaments in use</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+    <div class="col-12 col-md-auto d-flex gap-2">
       <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-funnel me-1"></i>Filter</button>
       {% if filters_active %}
       <a href="{% url 'core:printjob_list' %}?reset=1" class="btn btn-sm btn-outline-secondary">Reset</a>
@@ -82,7 +98,8 @@
           <th>Machine</th>
           <th>Status</th>
           <th class="text-center">Plates</th>
-          <th class="text-end">Filament</th>
+          <th>Filament</th>
+          <th class="text-end">Used</th>
           <th class="text-end">Print Time</th>
           <th>Created</th>
           <th>Actions</th>
@@ -109,6 +126,9 @@
             {% include "core/includes/_job_status_badge.html" with status=job.status display=job.get_status_display %}
           </td>
           <td class="text-center"><span class="badge bg-secondary-subtle text-secondary-emphasis">{{ job.plate_count }}</span></td>
+          <td>
+            {% for badge in job.filament_badges %}<span class="badge filament-badge bg-secondary-subtle text-secondary-emphasis fw-normal me-1">{% if badge.hex %}<span class="filament-swatch" style="--swatch: {{ badge.hex }}" aria-hidden="true"></span>{% endif %}{{ badge.label }}</span>{% empty %}<small class="text-body-secondary">—</small>{% endfor %}
+          </td>
           <td class="text-end"><small>{% if job.filament_used_grams %}{{ job.filament_used_grams|floatformat:1 }}&nbsp;g{% else %}—{% endif %}</small></td>
           <td class="text-end"><small>{% if job.print_time_estimate %}{{ job.print_time_estimate|duration_format }}{% else %}—{% endif %}</small></td>
           <td><small class="text-body-secondary">{{ job.created_at|timesince }} ago</small></td>

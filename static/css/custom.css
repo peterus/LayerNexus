@@ -123,3 +123,15 @@ footer {
         display: none !important;
     }
 }
+
+/* Filament badge in the print job list: colour dot driven by the validated --swatch hex. */
+.filament-swatch {
+    display: inline-block;
+    width: 0.75em;
+    height: 0.75em;
+    margin-right: 0.35em;
+    border-radius: 50%;
+    background-color: var(--swatch);
+    border: 1px solid var(--bs-border-color);
+    vertical-align: -0.05em;
+}
