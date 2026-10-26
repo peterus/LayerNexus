@@ -33,7 +33,7 @@ def filament_badges(parts: list[Part], mappings: dict[int, SpoolmanFilamentMappi
     """Return the distinct filaments of ``parts`` as ``{"label", "hex"}`` dicts (``hex`` may be empty).
 
     Parts with a Spoolman filament id are grouped by it; parts without one are grouped
-    by material and colour and skipped entirely when both are empty.
+    by material and colour and skipped entirely when both are empty. The result is sorted by label.
     """
     badges: dict[object, dict[str, str]] = {}
     for part in parts:
@@ -48,9 +48,10 @@ def filament_badges(parts: list[Part], mappings: dict[int, SpoolmanFilamentMappi
             hex_color = safe_hex(mapping.spoolman_color_hex if mapping else "") or safe_hex(part.color)
         else:
             key = (part.material, part.color)
-            label = part.material or part.color
+            hex_color = safe_hex(part.color)
+            # A hex colour is shown as the swatch; a free-text colour must stay in the label to tell badges apart.
+            label = " · ".join(v for v in (part.material, "" if hex_color else part.color) if v)
             if not label or key in badges:
                 continue
-            hex_color = safe_hex(part.color)
         badges[key] = {"label": label, "hex": hex_color}
-    return list(badges.values())
+    return sorted(badges.values(), key=lambda badge: badge["label"].lower())

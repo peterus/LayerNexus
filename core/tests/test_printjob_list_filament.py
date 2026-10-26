@@ -80,6 +80,22 @@ class PrintJobListFilamentTests(TestDataMixin, TestCase):
         job = next(j for j in self._jobs() if j.pk == self.job_none.pk)
         self.assertEqual(job.filament_badges, [{"label": "ABS", "hex": "#abcdef"}])
 
+    def test_unmapped_parts_same_material_different_text_color_distinguishable(self):
+        red = Part.objects.create(name="R", material="PLA", color="red")
+        blue = Part.objects.create(name="B", material="PLA", color="blue")
+        job = PrintJob.objects.create(name="Colours")
+        PrintJobPart.objects.create(print_job=job, part=red)
+        PrintJobPart.objects.create(print_job=job, part=blue)
+        found = next(j for j in self._jobs() if j.pk == job.pk)
+        self.assertEqual([b["label"] for b in found.filament_badges], ["PLA · blue", "PLA · red"])
+
+    def test_badges_sorted_by_label_regardless_of_part_order(self):
+        job = PrintJob.objects.create(name="Reverse")
+        PrintJobPart.objects.create(print_job=job, part=self.part_b)
+        PrintJobPart.objects.create(print_job=job, part=self.part_a)
+        found = next(j for j in self._jobs() if j.pk == job.pk)
+        self.assertEqual([b["label"] for b in found.filament_badges], ["Galaxy Black PLA", "Signal Red PETG"])
+
     def test_invalid_hex_not_rendered(self):
         mapping = SpoolmanFilamentMapping.objects.get(spoolman_filament_id=1)
         mapping.spoolman_color_hex = "red;background:url(x)"
