@@ -87,10 +87,11 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
     def test_creates_single_job_for_compatible_parts(self):
         """All parts with same preset/filament end up in one job."""
         part_two = Part.objects.create(
+            project=self.project,
+            quantity=2,
             name="Part Two",
             stl_file=SimpleUploadedFile("part2.stl", b"solid part2"),
         )
-        ProjectPart.objects.create(project=self.project, part=part_two, quantity=2)
         resp = self.client.post(self._url())
         self.assertEqual(resp.status_code, 302)
         # One job created
@@ -107,11 +108,12 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
         self.part.save()
 
         part_two = Part.objects.create(
+            project=self.project,
+            quantity=1,
             name="Part Two",
             spoolman_filament_id=20,
             stl_file=SimpleUploadedFile("part2.stl", b"solid part2"),
         )
-        ProjectPart.objects.create(project=self.project, part=part_two, quantity=1)
         resp = self.client.post(self._url())
         self.assertEqual(resp.status_code, 302)
         jobs = PrintJob.objects.filter(created_by=self.user)
@@ -119,8 +121,7 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
 
     def test_skips_parts_without_stl(self):
         """Parts without an STL file are not added to any job."""
-        no_stl = Part.objects.create(name="No STL Part")
-        ProjectPart.objects.create(project=self.project, part=no_stl, quantity=1)
+        no_stl = Part.objects.create(project=self.project, quantity=1, name="No STL Part")
         resp = self.client.post(self._url())
         self.assertEqual(resp.status_code, 302)
         job = PrintJob.objects.filter(created_by=self.user).first()
@@ -194,11 +195,12 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
         self.part.spoolman_filament_id = 10
         self.part.save()
         part_two = Part.objects.create(
+            project=self.project,
+            quantity=1,
             name="Part Two",
             spoolman_filament_id=20,
             stl_file=SimpleUploadedFile("part2.stl", b"solid part2"),
         )
-        ProjectPart.objects.create(project=self.project, part=part_two, quantity=1)
         resp = self.client.post(self._url())
         self.assertRedirects(resp, reverse("core:project_detail", args=[self.project.pk]))
 
@@ -248,8 +250,7 @@ class AddPartToJobPresetTests(TestDataMixin, TestCase):
 
         preset = self._preset("P")
         project = Project.objects.create(name="Proj", default_print_preset=preset)
-        part = Part.objects.create(name="p")
-        ProjectPart.objects.create(project=project, part=part, quantity=1)
+        part = Part.objects.create(project=project, quantity=1, name="p")
         auto, choices = part.resolve_job_preset_candidates()
         self.assertEqual(auto, preset)
         self.assertEqual(choices, [])
@@ -259,8 +260,7 @@ class AddPartToJobPresetTests(TestDataMixin, TestCase):
 
         a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
         b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
-        part = Part.objects.create(name="p")
-        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        part = Part.objects.create(project=a, quantity=1, name="p")
         ProjectPart.objects.create(project=b, part=part, quantity=1)
         auto, choices = part.resolve_job_preset_candidates()
         self.assertIsNone(auto)
@@ -273,10 +273,9 @@ class AddPartToJobPresetTests(TestDataMixin, TestCase):
         pb = self._preset("PB")
         a = Project.objects.create(name="A", default_print_preset=pa)
         b = Project.objects.create(name="B", default_print_preset=pb)
-        part = Part.objects.create(name="p")
+        part = Part.objects.create(project=a, quantity=1, name="p")
         part.stl_file.name = "stl_files/p.stl"
         part.save(update_fields=["stl_file"])
-        ProjectPart.objects.create(project=a, part=part, quantity=1)
         ProjectPart.objects.create(project=b, part=part, quantity=1)
 
         resp = self.client.post(
@@ -292,10 +291,9 @@ class AddPartToJobPresetTests(TestDataMixin, TestCase):
 
         a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
         b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
-        part = Part.objects.create(name="p")
+        part = Part.objects.create(project=a, quantity=1, name="p")
         part.stl_file.name = "stl_files/p.stl"
         part.save(update_fields=["stl_file"])
-        ProjectPart.objects.create(project=a, part=part, quantity=1)
         ProjectPart.objects.create(project=b, part=part, quantity=1)
 
         before = PrintJob.objects.count()
@@ -347,12 +345,15 @@ class CreateJobsPerPathPresetTests(TestDataMixin, TestCase):
         top = Project.objects.create(
             name="Truck", default_print_preset=self._preset("TruckPreset"), created_by=self.user
         )
-        cabin = Project.objects.create(name="Cabin", default_print_preset=cabin_preset, created_by=self.user)
-        frame = Project.objects.create(name="Frame", default_print_preset=frame_preset, created_by=self.user)
-        ProjectComponent.objects.create(parent_project=top, child_project=cabin, quantity=1)
-        ProjectComponent.objects.create(parent_project=top, child_project=frame, quantity=1)
-        bolt = Part.objects.create(name="bolt", stl_file=SimpleUploadedFile("bolt.stl", b"solid"))
-        ProjectPart.objects.create(project=cabin, part=bolt, quantity=4)
+        cabin = Project.objects.create(
+            parent=top, quantity=1, name="Cabin", default_print_preset=cabin_preset, created_by=self.user
+        )
+        frame = Project.objects.create(
+            parent=top, quantity=1, name="Frame", default_print_preset=frame_preset, created_by=self.user
+        )
+        bolt = Part.objects.create(
+            project=cabin, quantity=4, name="bolt", stl_file=SimpleUploadedFile("bolt.stl", b"solid")
+        )
         ProjectPart.objects.create(project=frame, part=bolt, quantity=10)
 
         resp = self.client.post(reverse("core:project_create_jobs", args=[top.pk]))
@@ -386,8 +387,7 @@ class AddPartToJobCompatibilityTests(TestDataMixin, TestCase):
 
         a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
         b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
-        part = Part.objects.create(name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
-        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        part = Part.objects.create(project=a, quantity=1, name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
         ProjectPart.objects.create(project=b, part=part, quantity=1)
         before = PrintJob.objects.count()
         # 999999 is not among the offered choices → rejected, no job.
@@ -402,10 +402,12 @@ class AddPartToJobCompatibilityTests(TestDataMixin, TestCase):
         pb = self._preset("PB")
         proj_a = Project.objects.create(name="A", default_print_preset=pa)
         proj_b = Project.objects.create(name="B", default_print_preset=pb)
-        part_a = Part.objects.create(name="pa", stl_file=SimpleUploadedFile("pa.stl", b"solid"))
-        ProjectPart.objects.create(project=proj_a, part=part_a, quantity=1)
-        part_b = Part.objects.create(name="pb", stl_file=SimpleUploadedFile("pb.stl", b"solid"))
-        ProjectPart.objects.create(project=proj_b, part=part_b, quantity=1)
+        part_a = Part.objects.create(
+            project=proj_a, quantity=1, name="pa", stl_file=SimpleUploadedFile("pa.stl", b"solid")
+        )
+        part_b = Part.objects.create(
+            project=proj_b, quantity=1, name="pb", stl_file=SimpleUploadedFile("pb.stl", b"solid")
+        )
 
         job = PrintJob.objects.create(name="J", status=PrintJob.STATUS_DRAFT, created_by=self.user, print_preset=pa)
         PrintJobPart.objects.create(print_job=job, part=part_a, quantity=1)
@@ -420,8 +422,7 @@ class AddPartToJobCompatibilityTests(TestDataMixin, TestCase):
 
         preset = self._preset("P")
         proj = Project.objects.create(name="P", default_print_preset=preset)
-        part = Part.objects.create(name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
-        ProjectPart.objects.create(project=proj, part=part, quantity=1)
+        part = Part.objects.create(project=proj, quantity=1, name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
         # Blank draft created via the job form (no pinned preset).
         job = PrintJob.objects.create(name="Blank", status=PrintJob.STATUS_DRAFT, created_by=self.user)
 
@@ -450,8 +451,7 @@ class PartDetailDraftJobFilterTests(TestDataMixin, TestCase):
         preset = self._preset("P")
         other = self._preset("Other")
         proj = Project.objects.create(name="P", default_print_preset=preset)
-        part = Part.objects.create(name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
-        ProjectPart.objects.create(project=proj, part=part, quantity=1)
+        part = Part.objects.create(project=proj, quantity=1, name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
 
         match = PrintJob.objects.create(
             name="Match", status=PrintJob.STATUS_DRAFT, created_by=self.user, print_preset=preset
@@ -488,10 +488,12 @@ class CreateJobsPrintedByPresetTests(TestDataMixin, TestCase):
         cabin_preset = self._preset("CabinPreset")
         frame_preset = self._preset("FramePreset")
         top = Project.objects.create(name="Truck", default_print_preset=self._preset("Truck"), created_by=self.user)
-        cabin = Project.objects.create(name="Cabin", default_print_preset=cabin_preset, created_by=self.user)
-        frame = Project.objects.create(name="Frame", default_print_preset=frame_preset, created_by=self.user)
-        ProjectComponent.objects.create(parent_project=top, child_project=cabin, quantity=1)
-        ProjectComponent.objects.create(parent_project=top, child_project=frame, quantity=1)
+        cabin = Project.objects.create(
+            parent=top, quantity=1, name="Cabin", default_print_preset=cabin_preset, created_by=self.user
+        )
+        frame = Project.objects.create(
+            parent=top, quantity=1, name="Frame", default_print_preset=frame_preset, created_by=self.user
+        )
         bolt = Part.objects.create(name="bolt", stl_file=SimpleUploadedFile("bolt.stl", b"solid"))
         ProjectPart.objects.create(project=cabin, part=bolt, quantity=4)  # CabinPreset bundle
         ProjectPart.objects.create(project=frame, part=bolt, quantity=10)  # FramePreset bundle
@@ -540,8 +542,9 @@ class CreateJobsSkipNoPresetTests(TestDataMixin, TestCase):
 
         # Project with NO default preset (legacy/nullable) and a part with no override.
         project = Project.objects.create(name="Legacy", created_by=self.user)  # default_print_preset NULL
-        part = Part.objects.create(name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
-        ProjectPart.objects.create(project=project, part=part, quantity=1)
+        part = Part.objects.create(
+            project=project, quantity=1, name="p", stl_file=SimpleUploadedFile("p.stl", b"solid")
+        )
 
         before = PrintJob.objects.count()
         resp = self.client.post(reverse("core:project_create_jobs", args=[project.pk]))
@@ -568,8 +571,7 @@ class AddPartToJobAtomicPinTests(TestDataMixin, TestCase):
         pa = self._preset("PA")
         pb = self._preset("PB")
         proj = Project.objects.create(name="B", default_print_preset=pb)
-        part = Part.objects.create(name="pb", stl_file=SimpleUploadedFile("pb.stl", b"solid"))
-        ProjectPart.objects.create(project=proj, part=part, quantity=1)
+        part = Part.objects.create(project=proj, quantity=1, name="pb", stl_file=SimpleUploadedFile("pb.stl", b"solid"))
         # Empty draft already pinned to PA (no parts yet).
         job = PrintJob.objects.create(
             name="Pinned", status=PrintJob.STATUS_DRAFT, created_by=self.user, print_preset=pa

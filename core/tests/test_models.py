@@ -33,8 +33,7 @@ class ProjectModelTests(TestDataMixin, TestCase):
         self.assertEqual(self.project.total_parts_count, 3)
 
     def test_total_parts_count_multiple(self):
-        part_b = Part.objects.create(name="Part B")
-        ProjectPart.objects.create(project=self.project, part=part_b, quantity=5)
+        part_b = Part.objects.create(project=self.project, quantity=5, name="Part B")
         self.assertEqual(self.project.total_parts_count, 8)
 
     def test_printed_parts_count_no_jobs(self):
@@ -73,8 +72,9 @@ class ProjectModelTests(TestDataMixin, TestCase):
         self.assertAlmostEqual(self.project.total_filament_grams, 31.5)
 
     def test_total_filament_grams_excludes_null(self):
-        no_filament = Part.objects.create(name="No filament", filament_used_grams=None)
-        ProjectPart.objects.create(project=self.project, part=no_filament, quantity=2)
+        no_filament = Part.objects.create(
+            project=self.project, quantity=2, name="No filament", filament_used_grams=None
+        )
         self.assertAlmostEqual(self.project.total_filament_grams, 31.5)
 
     def test_total_filament_meters(self):

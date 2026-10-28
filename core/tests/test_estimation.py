@@ -626,8 +626,7 @@ class EstimationPresetResolutionTests(TestCase):
 
         preset = self._preset("Proj")
         project = Project.objects.create(name="Proj", default_print_preset=preset)
-        part = Part.objects.create(name="p")
-        ProjectPart.objects.create(project=project, part=part, quantity=1)
+        part = Part.objects.create(project=project, quantity=1, name="p")
         resolved, ambiguous = part.resolve_estimation_preset()
         self.assertEqual((resolved, ambiguous), (preset, False))
 
@@ -637,8 +636,7 @@ class EstimationPresetResolutionTests(TestCase):
         override = self._preset("Override")
         a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
         b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
-        part = Part.objects.create(name="p", print_preset=override)
-        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        part = Part.objects.create(project=a, quantity=1, name="p", print_preset=override)
         ProjectPart.objects.create(project=b, part=part, quantity=1)
         self.assertEqual(part.resolve_estimation_preset(), (override, False))
 
@@ -647,8 +645,7 @@ class EstimationPresetResolutionTests(TestCase):
 
         a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
         b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
-        part = Part.objects.create(name="p")
-        ProjectPart.objects.create(project=a, part=part, quantity=1)
+        part = Part.objects.create(project=a, quantity=1, name="p")
         ProjectPart.objects.create(project=b, part=part, quantity=1)
         resolved, ambiguous = part.resolve_estimation_preset()
         self.assertTrue(ambiguous)
@@ -662,10 +659,9 @@ class EstimationPresetResolutionTests(TestCase):
 
         a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
         b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
-        part = Part.objects.create(name="p", estimation_status=Part.ESTIMATION_ESTIMATING)
+        part = Part.objects.create(project=a, quantity=1, name="p", estimation_status=Part.ESTIMATION_ESTIMATING)
         part.stl_file.name = "stl_files/p.stl"
         part.save(update_fields=["stl_file"])
-        ProjectPart.objects.create(project=a, part=part, quantity=1)
         ProjectPart.objects.create(project=b, part=part, quantity=1)
 
         with mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls:
@@ -689,10 +685,9 @@ class ReEstimateEligibilityTests(TestCase):
         from core.models import Part, Project, ProjectPart
 
         project = Project.objects.create(name="Proj", default_print_preset=self._preset("P"))
-        part = Part.objects.create(name="p")  # no override
+        part = Part.objects.create(project=project, quantity=1, name="p")  # no override
         part.stl_file.name = "stl_files/p.stl"
         part.save(update_fields=["stl_file"])
-        ProjectPart.objects.create(project=project, part=part, quantity=1)
         self.assertTrue(part.is_estimable())
 
     def test_is_estimable_false_without_any_preset(self) -> None:
@@ -708,10 +703,9 @@ class ReEstimateEligibilityTests(TestCase):
 
         a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
         b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
-        part = Part.objects.create(name="p")
+        part = Part.objects.create(project=a, quantity=1, name="p")
         part.stl_file.name = "stl_files/p.stl"
         part.save(update_fields=["stl_file"])
-        ProjectPart.objects.create(project=a, part=part, quantity=1)
         ProjectPart.objects.create(project=b, part=part, quantity=1)
         self.assertTrue(part.is_estimable())  # queued so the worker records ambiguity
 
@@ -724,10 +718,9 @@ class ReEstimateEligibilityTests(TestCase):
         from core.models import Part, Project, ProjectPart
 
         project = Project.objects.create(name="Proj", default_print_preset=self._preset("P"))
-        part = Part.objects.create(name="p")  # no override, legacy
+        part = Part.objects.create(project=project, quantity=1, name="p")  # no override, legacy
         part.stl_file.name = "stl_files/p.stl"
         part.save(update_fields=["stl_file"])
-        ProjectPart.objects.create(project=project, part=part, quantity=1)
 
         user = User.objects.create_user("designer", password="pw")
         perm = Permission.objects.get(codename="can_manage_projects")
@@ -759,20 +752,16 @@ class ProjectContextEstimationTests(TestCase):
 
         preset = self._preset("P")
         project = Project.objects.create(name="Proj", default_print_preset=preset)
-        part = Part.objects.create(name="p")  # no override
-        ProjectPart.objects.create(project=project, part=part, quantity=1)
+        part = Part.objects.create(project=project, quantity=1, name="p")  # no override
         self.assertEqual(project.resolve_estimation_preset_map(), {part.pk: (preset, False)})
 
     def test_resolve_estimation_preset_map_ambiguous_within_assembly(self) -> None:
         from core.models import Part, Project, ProjectComponent, ProjectPart
 
         top = Project.objects.create(name="Top", default_print_preset=self._preset("Top"))
-        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
-        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
-        ProjectComponent.objects.create(parent_project=top, child_project=a, quantity=1)
-        ProjectComponent.objects.create(parent_project=top, child_project=b, quantity=1)
-        shared = Part.objects.create(name="shared")  # no override, differing nearest presets
-        ProjectPart.objects.create(project=a, part=shared, quantity=1)
+        a = Project.objects.create(parent=top, quantity=1, name="A", default_print_preset=self._preset("PA"))
+        b = Project.objects.create(parent=top, quantity=1, name="B", default_print_preset=self._preset("PB"))
+        shared = Part.objects.create(project=a, quantity=1, name="shared")  # no override, differing nearest presets
         ProjectPart.objects.create(project=b, part=shared, quantity=1)
         self.assertEqual(top.resolve_estimation_preset_map(), {shared.pk: (None, True)})
 
@@ -786,12 +775,11 @@ class ProjectContextEstimationTests(TestCase):
         a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
         b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
         requested = self._preset("Requested")
-        part = Part.objects.create(name="p", estimation_status=Part.ESTIMATION_ESTIMATING)
+        part = Part.objects.create(project=a, quantity=1, name="p", estimation_status=Part.ESTIMATION_ESTIMATING)
         part.stl_file.name = "stl_files/p.stl"
         # ...but a pinned requested preset must win over the context-free ambiguity.
         part.estimation_requested_preset = requested
         part.save(update_fields=["stl_file", "estimation_requested_preset"])
-        ProjectPart.objects.create(project=a, part=part, quantity=1)
         ProjectPart.objects.create(project=b, part=part, quantity=1)
 
         captured = {}
@@ -822,14 +810,13 @@ class ProjectContextEstimationTests(TestCase):
         a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
         b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
         stale = self._preset("Stale")
-        part = Part.objects.create(name="p", estimation_status=Part.ESTIMATION_ESTIMATING)
+        part = Part.objects.create(project=a, quantity=1, name="p", estimation_status=Part.ESTIMATION_ESTIMATING)
         part.stl_file.name = "stl_files/p.stl"
         part.save(update_fields=["stl_file"])
         # Simulate stale provenance that is NOT a pinned request (set via raw update so the
         # worker sees a value only because a prior success left it — the single-part path
         # would have cleared it; here we assert the ambiguous branch clears it defensively).
         Part.objects.filter(pk=part.pk).update(estimated_with_preset=None)
-        ProjectPart.objects.create(project=a, part=part, quantity=1)
         ProjectPart.objects.create(project=b, part=part, quantity=1)
         # Give it a stale value AFTER wiring so resolve() path (estimated_with_preset None) runs.
         Part.objects.filter(pk=part.pk).update(estimation_status=Part.ESTIMATION_ESTIMATING)
@@ -854,14 +841,11 @@ class ProjectContextEstimationTests(TestCase):
         # Shared part under one assembly but two modules that AGREE → unambiguous context preset.
         agreed = self._preset("Agreed")
         top = Project.objects.create(name="Top", default_print_preset=self._preset("Top"))
-        a = Project.objects.create(name="A", default_print_preset=agreed)
-        b = Project.objects.create(name="B", default_print_preset=agreed)
-        ProjectComponent.objects.create(parent_project=top, child_project=a, quantity=1)
-        ProjectComponent.objects.create(parent_project=top, child_project=b, quantity=1)
-        shared = Part.objects.create(name="shared")  # no override
+        a = Project.objects.create(parent=top, quantity=1, name="A", default_print_preset=agreed)
+        b = Project.objects.create(parent=top, quantity=1, name="B", default_print_preset=agreed)
+        shared = Part.objects.create(project=a, quantity=1, name="shared")  # no override
         shared.stl_file.name = "stl_files/s.stl"
         shared.save(update_fields=["stl_file"])
-        ProjectPart.objects.create(project=a, part=shared, quantity=1)
         ProjectPart.objects.create(project=b, part=shared, quantity=1)
 
         user = User.objects.create_user("designer2", password="pw")

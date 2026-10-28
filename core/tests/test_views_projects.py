@@ -183,8 +183,7 @@ class ProjectViewTests(TestDataMixin, TestCase):
         from core.models import ProjectComponent
 
         parent = Project.objects.create(name="TopTruck", created_by=self.user)
-        child = Project.objects.create(name="ChildModule", created_by=self.user)
-        ProjectComponent.objects.create(parent_project=parent, child_project=child)
+        child = Project.objects.create(parent=parent, name="ChildModule", created_by=self.user)
         resp = self.client.get(reverse("core:project_list"))
         self.assertContains(resp, "TopTruck")
         self.assertNotContains(resp, "ChildModule")  # referenced module is not top-level
@@ -230,16 +229,14 @@ class ProjectReEstimateViewTests(TestDataMixin, TestCase):
     def test_re_estimate_deduplicates_shared_part(self):
         """A part reachable via several DAG paths is reset and queued exactly once."""
         preset = OrcaPrintPreset.objects.create(name="Fast", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True)
-        shared = Part.objects.create(name="SharedBracket", print_preset=preset)
+        shared = Part.objects.create(project=self.project, quantity=1, name="SharedBracket", print_preset=preset)
         shared.stl_file.save(
             "shared.stl", SimpleUploadedFile("s.stl", b"solid\nendsolid", content_type="model/stl"), save=True
         )
         # Add the part directly to self.project
-        ProjectPart.objects.create(project=self.project, part=shared, quantity=1)
         # Also add it via a child module — creates a second DAG path to the same part
-        child = Project.objects.create(name="Module", created_by=self.user)
+        child = Project.objects.create(parent=self.project, quantity=1, name="Module", created_by=self.user)
         ProjectPart.objects.create(project=child, part=shared, quantity=1)
-        ProjectComponent.objects.create(parent_project=self.project, child_project=child, quantity=1)
 
         with mock.patch("core.views.projects._trigger_part_estimation") as triggered:
             resp = self.client.post(reverse("core:project_re_estimate", args=[self.project.pk]))
@@ -292,8 +289,7 @@ class AssemblyEditorViewTests(TestDataMixin, TestCase):
         from core.models import ProjectComponent
 
         a = Project.objects.create(name="CycA", created_by=self.user)
-        b = Project.objects.create(name="CycB", created_by=self.user)
-        ProjectComponent.objects.create(parent_project=a, child_project=b)
+        b = Project.objects.create(parent=a, name="CycB", created_by=self.user)
         # adding a under b would cycle -> no edge created
         resp = self.client.post(
             reverse("core:project_add_component", kwargs={"pk": b.pk}),
@@ -408,8 +404,7 @@ class BuildProgressExpandedTests(TestCase):
         self.user.groups.add(Group.objects.get(name="Admin"))
         self.client.login(username="bp_testuser", password="testpass123")
         self.project = Project.objects.create(name="BP Test Project", created_by=self.user)
-        self.part = Part.objects.create(name="BP Part")
-        ProjectPart.objects.create(project=self.project, part=self.part, quantity=2)
+        self.part = Part.objects.create(project=self.project, quantity=2, name="BP Part")
 
     def _context(self) -> dict:
         resp = self.client.get(reverse("core:project_detail", args=[self.project.pk]))

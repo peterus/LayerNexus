@@ -23,6 +23,8 @@ class ApiRequirementsTests(APITestCase):
         """GET /projects/{id}/requirements/ returns the JSON-safe aggregate payload."""
         project = Project.objects.create(name="Assembly")
         gear = Part.objects.create(
+            project=project,
+            quantity=2,
             name="Gear",
             spoolman_filament_id=7,
             material="PLA",
@@ -30,7 +32,6 @@ class ApiRequirementsTests(APITestCase):
             filament_used_meters=3.0,
             estimation_status=Part.ESTIMATION_SUCCESS,
         )
-        ProjectPart.objects.create(project=project, part=gear, quantity=2)
         resp = self.client.get(f"/api/v1/projects/{project.pk}/requirements/")
         self.assertEqual(resp.status_code, 200, resp.data)
         data = resp.data
@@ -50,8 +51,7 @@ class ApiRequirementsTests(APITestCase):
     def test_validate_flags_missing_stl(self) -> None:
         """A part without an STL is reported as an issue and the project is not ``ok``."""
         project = Project.objects.create(name="Assembly")
-        part = Part.objects.create(name="Bracket", spoolman_filament_id=7)
-        ProjectPart.objects.create(project=project, part=part, quantity=1)
+        part = Part.objects.create(project=project, quantity=1, name="Bracket", spoolman_filament_id=7)
         resp = self.client.get(f"/api/v1/projects/{project.pk}/validate/")
         self.assertEqual(resp.status_code, 200, resp.data)
         self.assertFalse(resp.data["ok"])
@@ -63,12 +63,13 @@ class ApiRequirementsTests(APITestCase):
         project = Project.objects.create(name="Assembly")
         stl = SimpleUploadedFile("m.stl", b"solid m\nendsolid m\n")
         part = Part.objects.create(
+            project=project,
+            quantity=1,
             name="Panel",
             stl_file=stl,
             spoolman_filament_id=None,
             estimation_status=Part.ESTIMATION_ERROR,
         )
-        ProjectPart.objects.create(project=project, part=part, quantity=1)
         resp = self.client.get(f"/api/v1/projects/{project.pk}/validate/")
         self.assertFalse(resp.data["ok"])
         my_issues = [i["issue"].lower() for i in resp.data["issues"] if i["part_id"] == part.pk]
@@ -87,13 +88,14 @@ class ApiRequirementsTests(APITestCase):
         project = Project.objects.create(name="Complete")
         stl = SimpleUploadedFile("g.stl", b"solid g\nendsolid g\n")
         gear = Part.objects.create(
+            project=project,
+            quantity=1,
             name="Gear",
             stl_file=stl,
             spoolman_filament_id=7,
             filament_used_grams=5.0,
             estimation_status=Part.ESTIMATION_SUCCESS,
         )
-        ProjectPart.objects.create(project=project, part=gear, quantity=1)
         resp = self.client.get(f"/api/v1/projects/{project.pk}/validate/")
         self.assertEqual(resp.status_code, 200, resp.data)
         self.assertTrue(resp.data["ok"], resp.data["issues"])

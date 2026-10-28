@@ -45,8 +45,7 @@ class ShoppingListViewTests(ShoppingViewTestBase):
         self.login(self.operator_user)
 
         def add_child(name: str) -> None:
-            child = Project.objects.create(name=name)
-            ProjectComponent.objects.create(parent_project=self.project, child_project=child, quantity=1)
+            child = Project.objects.create(parent=self.project, quantity=1, name=name)
             ProjectHardware.objects.create(project=child, hardware_part=self.m3, quantity=1)
 
         add_child("Child 1")
@@ -75,8 +74,7 @@ class ShoppingListViewTests(ShoppingViewTestBase):
         self.assertContains(response, "Reset all")
 
     def test_list_shows_used_in_line(self) -> None:
-        child = Project.objects.create(name="Child Module", created_by=self.admin_user)
-        ProjectComponent.objects.create(parent_project=self.project, child_project=child, quantity=2)
+        child = Project.objects.create(parent=self.project, quantity=2, name="Child Module", created_by=self.admin_user)
         ProjectHardware.objects.create(project=child, hardware_part=self.m3, quantity=1)
         self.login(self.operator_user)
         response = self.client.get(self.list_url)
@@ -84,8 +82,7 @@ class ShoppingListViewTests(ShoppingViewTestBase):
         self.assertNotContains(response, "bi-info-circle")
 
     def test_list_used_in_root_only_and_escaped(self) -> None:
-        child = Project.objects.create(name="<b>X</b>", created_by=self.admin_user)
-        ProjectComponent.objects.create(parent_project=self.project, child_project=child, quantity=1)
+        child = Project.objects.create(parent=self.project, quantity=1, name="<b>X</b>", created_by=self.admin_user)
         ProjectHardware.objects.create(project=child, hardware_part=self.m3, quantity=1)
         self.login(self.designer_user)
         response = self.client.get(self.list_url)
@@ -258,8 +255,7 @@ class ShoppingSummaryTests(ShoppingViewTestBase):
 
     def test_project_detail_summary_for_child_only_hardware(self) -> None:
         ProjectHardware.objects.filter(project=self.project).delete()
-        child = Project.objects.create(name="Child Module", created_by=self.admin_user)
-        ProjectComponent.objects.create(parent_project=self.project, child_project=child, quantity=1)
+        child = Project.objects.create(parent=self.project, quantity=1, name="Child Module", created_by=self.admin_user)
         ProjectHardware.objects.create(project=child, hardware_part=self.m3, quantity=1)
         self.login(self.designer_user)
         response = self.client.get(reverse("core:project_detail", args=[self.project.pk]))

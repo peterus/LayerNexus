@@ -119,12 +119,10 @@ class ProjectReEstimateActionTests(APITestCase):
         self.project = Project.objects.create(name="Assembly")
         preset = _make_preset()
 
-        self.part_with_stl = Part.objects.create(name="WithSTL", print_preset=preset)
+        self.part_with_stl = Part.objects.create(project=self.project, quantity=1, name="WithSTL", print_preset=preset)
         self.part_with_stl.stl_file.save("with.stl", _stl_file(), save=True)
-        ProjectPart.objects.create(project=self.project, part=self.part_with_stl, quantity=1)
 
-        self.part_no_stl = Part.objects.create(name="NoSTL")
-        ProjectPart.objects.create(project=self.project, part=self.part_no_stl, quantity=1)
+        self.part_no_stl = Part.objects.create(project=self.project, quantity=1, name="NoSTL")
 
     def test_reestimate_queues_eligible_parts(self) -> None:
         """Only parts with STL + preset are queued; response reports the count."""
@@ -152,8 +150,7 @@ class ProjectReEstimateActionTests(APITestCase):
     def test_reestimate_zero_eligible_returns_queued_zero(self) -> None:
         """A project whose parts all lack STL returns queued=0 (still 202)."""
         project = Project.objects.create(name="Empty")
-        no_stl = Part.objects.create(name="Bare")
-        ProjectPart.objects.create(project=project, part=no_stl, quantity=1)
+        no_stl = Part.objects.create(project=project, quantity=1, name="Bare")
 
         with mock.patch("core.api.views._trigger_part_estimation") as triggered:
             resp = self.client.post(f"/api/v1/projects/{project.pk}/re-estimate/")
@@ -173,9 +170,8 @@ class ProjectReEstimateActionTests(APITestCase):
         """A part reached via several composition paths is queued exactly once."""
         # The eligible part is reachable both directly and through a child module,
         # so ``_collect_parts_with_multiplier`` yields it once per path.
-        child = Project.objects.create(name="Module")
+        child = Project.objects.create(parent=self.project, quantity=1, name="Module")
         ProjectPart.objects.create(project=child, part=self.part_with_stl, quantity=1)
-        ProjectComponent.objects.create(parent_project=self.project, child_project=child, quantity=1)
 
         with mock.patch("core.api.views._trigger_part_estimation") as triggered:
             resp = self.client.post(f"/api/v1/projects/{self.project.pk}/re-estimate/")
@@ -199,9 +195,8 @@ class ReEstimateResolverEligibilityTests(APITestCase):
     def test_estimate_legacy_part_with_project_default_returns_202(self) -> None:
         """A part with no override but a containing project's default is now estimable."""
         project = Project.objects.create(name="Proj", default_print_preset=_make_preset())
-        part = Part.objects.create(name="Legacy")  # no override
+        part = Part.objects.create(project=project, quantity=1, name="Legacy")  # no override
         part.stl_file.save("legacy.stl", _stl_file(), save=True)
-        ProjectPart.objects.create(project=project, part=part, quantity=1)
 
         with mock.patch("core.api.views._trigger_part_estimation") as triggered:
             resp = self.client.post(f"/api/v1/parts/{part.pk}/estimate/")
@@ -213,9 +208,8 @@ class ReEstimateResolverEligibilityTests(APITestCase):
         a = Project.objects.create(name="A", default_print_preset=_make_preset())
         b_preset = OrcaPrintPreset.objects.create(name="Slow", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True)
         b = Project.objects.create(name="B", default_print_preset=b_preset)
-        part = Part.objects.create(name="Shared")  # no override, two differing defaults
+        part = Part.objects.create(project=a, quantity=1, name="Shared")  # no override, two differing defaults
         part.stl_file.save("shared.stl", _stl_file(), save=True)
-        ProjectPart.objects.create(project=a, part=part, quantity=1)
         ProjectPart.objects.create(project=b, part=part, quantity=1)
 
         with mock.patch("core.api.views._trigger_part_estimation") as triggered:
@@ -226,9 +220,8 @@ class ReEstimateResolverEligibilityTests(APITestCase):
     def test_project_re_estimate_queues_legacy_part(self) -> None:
         """Project re-estimate queues a legacy part via the project's default preset."""
         project = Project.objects.create(name="Proj", default_print_preset=_make_preset())
-        part = Part.objects.create(name="Legacy")  # no override
+        part = Part.objects.create(project=project, quantity=1, name="Legacy")  # no override
         part.stl_file.save("legacy.stl", _stl_file(), save=True)
-        ProjectPart.objects.create(project=project, part=part, quantity=1)
 
         with mock.patch("core.api.views._trigger_part_estimation") as triggered:
             resp = self.client.post(f"/api/v1/projects/{project.pk}/re-estimate/")

@@ -543,10 +543,8 @@ class AddComponentFormTests(TestCase):
         from core.models import ProjectComponent
 
         root = Project.objects.create(name="Root")
-        child = Project.objects.create(name="Child")
-        grandchild = Project.objects.create(name="Grandchild")
-        ProjectComponent.objects.create(parent_project=root, child_project=child)
-        ProjectComponent.objects.create(parent_project=child, child_project=grandchild)
+        child = Project.objects.create(parent=root, name="Child")
+        grandchild = Project.objects.create(parent=child, name="Grandchild")
         form = AddComponentForm(parent_project=root)
         qs = list(form.fields["child_project"].queryset)
         self.assertNotIn(root, qs)  # not itself
@@ -558,8 +556,7 @@ class AddComponentFormTests(TestCase):
         from core.models import ProjectComponent
 
         a = Project.objects.create(name="A")
-        b = Project.objects.create(name="B")
-        ProjectComponent.objects.create(parent_project=a, child_project=b)
+        b = Project.objects.create(parent=a, name="B")
         # adding a under b would cycle; clean must reject even if forced
         form = AddComponentForm(parent_project=b, data={"child_project": a.pk, "quantity": 1})
         self.assertFalse(form.is_valid())
@@ -593,8 +590,7 @@ class AddPartToProjectFormTests(TestCase):
         from core.forms import AddPartToProjectForm
         from core.models import Part, ProjectPart
 
-        already = Part.objects.create(name="Nut")
-        ProjectPart.objects.create(project=self.project, part=already, quantity=1)
+        already = Part.objects.create(project=self.project, quantity=1, name="Nut")
         form = AddPartToProjectForm(project=self.project)
         qs = list(form.fields["part"].queryset)
         self.assertNotIn(already, qs)  # already linked via edge

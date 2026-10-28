@@ -38,6 +38,8 @@ class PrintJob(models.Model):
         (STATUS_FAILED, "Failed"),
         (STATUS_CANCELLED, "Cancelled"),
     ]
+    #: Statuses of a finished job; every other status counts as unfinished.
+    TERMINAL_STATUSES: tuple[str, ...] = (STATUS_COMPLETED, STATUS_FAILED, STATUS_CANCELLED)
 
     name = models.CharField(
         max_length=255,
