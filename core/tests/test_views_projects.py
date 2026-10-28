@@ -164,6 +164,15 @@ class ProjectViewTests(TestDataMixin, TestCase):
                 self.assertNotIn("used_in", resp.context)
                 self.assertNotContains(resp, "Used in:")
 
+    def test_project_form_cancel_targets(self):
+        # Edit cancels back to the project itself; create cancels to the project list.
+        edit = self.client.get(reverse("core:project_update", kwargs={"pk": self.project.pk}))
+        detail_url = reverse("core:project_detail", kwargs={"pk": self.project.pk})
+        self.assertContains(edit, f'<a href="{detail_url}" class="btn btn-outline-secondary">Cancel</a>', html=True)
+        create = self.client.get(reverse("core:project_create"))
+        list_url = reverse("core:project_list")
+        self.assertContains(create, f'<a href="{list_url}" class="btn btn-outline-secondary">Cancel</a>', html=True)
+
     def test_part_detail_has_no_usage_table(self):
         resp = self.client.get(reverse("core:part_detail", kwargs={"pk": self.part.pk}))
         self.assertEqual(resp.status_code, 200)

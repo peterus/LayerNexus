@@ -49,6 +49,13 @@ class PartViewTests(TestDataMixin, TestCase):
         resp = self.client.get(reverse("core:part_update", args=[self.part.pk]))
         self.assertEqual(resp.status_code, 200)
 
+    def test_part_update_breadcrumb_links_back_to_part(self):
+        resp = self.client.get(reverse("core:part_update", args=[self.part.pk]))
+        part_url = reverse("core:part_detail", args=[self.part.pk])
+        self.assertContains(
+            resp, f'<li class="breadcrumb-item"><a href="{part_url}">{self.part.name}</a></li>', html=True
+        )
+
     def test_part_update_post(self):
         resp = self.client.post(
             reverse("core:part_update", args=[self.part.pk]),

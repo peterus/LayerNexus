@@ -8,8 +8,10 @@
     <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
     {% if project %}
     <li class="breadcrumb-item"><a href="{% url 'core:project_detail' project.pk %}">{{ project.name }}</a></li>
+    {% elif form.instance.pk %}
+    <li class="breadcrumb-item"><a href="{% url 'core:part_detail' form.instance.pk %}">{{ form.instance.name }}</a></li>
     {% endif %}
-    <li class="breadcrumb-item active">{% if form.instance.pk %}Edit {{ form.instance.name }}{% else %}Add Part{% endif %}</li>
+    <li class="breadcrumb-item active">{% if form.instance.pk %}Edit{% else %}Add Part{% endif %}</li>
   </ol>
 </nav>
 
