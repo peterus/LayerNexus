@@ -137,8 +137,9 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
 
         # "Add existing" pickers (deep copy), only for users who may use them.
         if self.request.user.has_perm("core.can_manage_projects"):
-            context["add_existing_part_form"] = AddExistingPartForm()
-            context["add_existing_subproject_form"] = AddExistingSubprojectForm(project=project)
+            labels = Project.path_label_map()
+            context["add_existing_part_form"] = AddExistingPartForm(labels=labels)
+            context["add_existing_subproject_form"] = AddExistingSubprojectForm(project=project, labels=labels)
 
         return context
 

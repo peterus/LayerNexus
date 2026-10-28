@@ -114,18 +114,21 @@ class ProjectCopyForm(forms.Form):
         help_text="Leave empty to create a new top-level project, or pick a project to copy into.",
     )
 
-    def __init__(self, *args, source: Project, **kwargs) -> None:
+    def __init__(self, *args, source: Project, labels: dict[int, str] | None = None, **kwargs) -> None:
         """Prefill the name and offer every project outside the copied subtree.
 
         Args:
             source: The project being copied.
+            labels: Precomputed :meth:`Project.path_label_map`, to avoid a second scan.
         """
         super().__init__(*args, **kwargs)
-        self.fields["name"].initial = f"{source.name} (copy)"
+        self.fields["name"].initial = source.default_copy_name()
         field = self.fields["target"]
         field.queryset = Project.objects.exclude(pk__in=source.subtree_ids()).order_by("name")
-        labels = Project.path_label_map()
-        field.choices = path_sorted_choices(field.queryset, lambda p: labels.get(p.pk, p.name), field.empty_label)
+        labels = Project.path_label_map() if labels is None else labels
+        field.choices = path_sorted_choices(
+            field.queryset.only("pk", "name"), lambda p: labels.get(p.pk, p.name), field.empty_label
+        )
 
 
 class AddExistingSubprojectForm(forms.Form):
@@ -133,14 +136,17 @@ class AddExistingSubprojectForm(forms.Form):
 
     source = forms.ModelChoiceField(queryset=Project.objects.none(), label="Project to copy")
 
-    def __init__(self, *args, project: Project, **kwargs) -> None:
+    def __init__(self, *args, project: Project, labels: dict[int, str] | None = None, **kwargs) -> None:
         """Offer every project outside ``project``'s own subtree.
 
         Args:
             project: The project the copy is added to.
+            labels: Precomputed :meth:`Project.path_label_map`, to avoid a second scan.
         """
         super().__init__(*args, **kwargs)
         field = self.fields["source"]
         field.queryset = Project.objects.exclude(pk__in=project.subtree_ids()).order_by("name")
-        labels = Project.path_label_map()
-        field.choices = path_sorted_choices(field.queryset, lambda p: labels.get(p.pk, p.name), field.empty_label)
+        labels = Project.path_label_map() if labels is None else labels
+        field.choices = path_sorted_choices(
+            field.queryset.only("pk", "name"), lambda p: labels.get(p.pk, p.name), field.empty_label
+        )

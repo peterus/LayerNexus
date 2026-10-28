@@ -52,16 +52,25 @@ def duplicate_field_file(field_file: FieldFile, tracker: CopiedFiles) -> str | N
 
     Returns:
         The new storage name, or ``None`` if the source is empty or missing on disk.
+
+    Raises:
+        OSError: If the copy cannot be written (only a *missing source* is tolerated).
     """
     if not field_file:
         return None
     storage = field_file.storage
     name = field_file.name
     try:
-        with storage.open(name, "rb") as fh:
-            new_name = storage.save(field_file.field.generate_filename(None, PurePosixPath(name).name), File(fh))
-    except OSError:
+        source = storage.open(name, "rb")
+    except FileNotFoundError:
         logger.warning("deep_copy: missing file %s", name)
         return None
+    # Write errors (disk full, permissions) propagate so the whole copy fails and cleans up.
+    with source as fh:
+        new_name = storage.save(
+            field_file.field.generate_filename(None, PurePosixPath(name).name),
+            File(fh),
+            max_length=field_file.field.max_length,
+        )
     tracker.add(storage, new_name)
     return new_name

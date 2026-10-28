@@ -159,37 +159,47 @@ class Part(models.Model):
         """Return whether this part has an STL file and a resolvable print preset."""
         return bool(self.stl_file) and self.effective_print_preset_id is not None
 
-    def deep_copy(self, *, project: Project, _files: CopiedFiles | None = None) -> Part:
+    def deep_copy(self, *, project: Project) -> Part:
         """Copy this part (content, never history) into ``project``.
 
         Copies the scalar fields, the estimate fields and the ``PrintTimeEstimate``
         rows, and writes the STL/3MF as a new file. Print history (``PrintJobPart``)
         and ``FileVersion`` rows are not copied. An in-flight estimation
-        (``pending``/``estimating``) or a model file missing on disk resets the copy's
-        estimation status to ``none`` so it is never stuck.
+        (``pending``/``estimating``) resets the copy's estimation status to ``none``
+        so it is never stuck; a model file missing on disk also drops the copied
+        estimate.
+
+        The file is copied *before* the (short) row transaction, so the SQLite write
+        lock is not held during file I/O; if anything fails, the new file is removed.
 
         Args:
             project: Target project of the copy.
-            _files: Tracker shared with an enclosing :meth:`Project.deep_copy`; when
-                omitted, this call runs in its own transaction and removes the new
-                file again if it fails.
 
         Returns:
             The new :class:`Part`.
         """
-        if _files is None:
-            tracker = CopiedFiles()
-            try:
-                with transaction.atomic():
-                    return self.deep_copy(project=project, _files=tracker)
-            except Exception:
-                tracker.delete_all()
-                raise
+        tracker = CopiedFiles()
+        try:
+            stl_name = duplicate_field_file(self.stl_file, tracker)
+            with transaction.atomic():
+                return self._create_copy(project, stl_name)
+        except Exception:
+            tracker.delete_all()
+            raise
 
-        stl_name = duplicate_field_file(self.stl_file, _files)
-        reset = self.estimation_status in (self.ESTIMATION_PENDING, self.ESTIMATION_ESTIMATING) or (
-            bool(self.stl_file) and stl_name is None
-        )
+    def _create_copy(self, project: Project, stl_name: str | None) -> Part:
+        """Insert the copy's rows; the caller copied the model file beforehand.
+
+        Args:
+            project: Target project of the copy.
+            stl_name: Storage name of the copied model file, or ``None`` if the part
+                has none or it was missing on disk.
+
+        Returns:
+            The new :class:`Part`.
+        """
+        missing_file = bool(self.stl_file) and stl_name is None
+        reset = missing_file or self.estimation_status in (self.ESTIMATION_PENDING, self.ESTIMATION_ESTIMATING)
         copy = Part.objects.create(
             project=project,
             name=self.name,
@@ -200,13 +210,15 @@ class Part(models.Model):
             spoolman_filament_id=self.spoolman_filament_id,
             print_preset_id=self.print_preset_id,
             notes=self.notes,
-            filament_used_grams=self.filament_used_grams,
-            filament_used_meters=self.filament_used_meters,
-            estimated_print_time=self.estimated_print_time,
+            filament_used_grams=None if missing_file else self.filament_used_grams,
+            filament_used_meters=None if missing_file else self.filament_used_meters,
+            estimated_print_time=None if missing_file else self.estimated_print_time,
             estimation_status=self.ESTIMATION_NONE if reset else self.estimation_status,
             estimation_error="" if reset else self.estimation_error,
             estimated_with_preset_id=None if reset else self.estimated_with_preset_id,
         )
+        if missing_file:
+            return copy
         estimates = [
             PrintTimeEstimate(
                 part=copy,

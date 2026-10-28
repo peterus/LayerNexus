@@ -5,11 +5,12 @@ import tempfile
 from unittest import mock
 
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import override_settings
+from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from core.models import OrcaPrintPreset, Part, Project
 from core.tests.mixins import _RBACTestBase
+from core.views.helpers import _requeue_stale_estimates
 
 MEDIA_ROOT = tempfile.mkdtemp(prefix="layernexus-copyviews-")
 
@@ -220,3 +221,81 @@ class CopyViewTests(_RBACTestBase):
     def test_add_existing_get_not_allowed(self, _worker: mock.Mock) -> None:
         resp = self.client.get(reverse("core:project_add_existing_part", args=[self.other.pk]))
         self.assertEqual(resp.status_code, 405)
+
+
+@override_settings(MEDIA_ROOT=MEDIA_ROOT)
+@mock.patch("core.views.helpers._start_orcaslicer_worker")
+class RequeueStaleEstimatesTests(TestCase):
+    """Unit tests for ``_requeue_stale_estimates`` (copied parts only)."""
+
+    def setUp(self) -> None:
+        self.preset_x = _preset("X")
+        self.preset_y = _preset("Y")
+        self.root = Project.objects.create(name="R", default_print_preset=self.preset_y)
+        self.sub = Project.objects.create(name="S", parent=self.root)
+
+    def _part(self, project: Project, **kwargs) -> Part:
+        defaults = {
+            "name": "p",
+            "stl_file": SimpleUploadedFile("p.stl", b"solid p"),
+            "estimation_status": Part.ESTIMATION_SUCCESS,
+            "estimated_with_preset": self.preset_x,
+            "filament_used_grams": 3.0,
+        }
+        defaults.update(kwargs)
+        return Part.objects.create(project=project, **defaults)
+
+    def _fresh(self, part: Part) -> Part:
+        return Part.objects.select_related("project").get(pk=part.pk)
+
+    def test_changed_preset_is_cleared_and_queued(self, worker: mock.Mock) -> None:
+        part = self._part(self.sub)
+        self.assertEqual(_requeue_stale_estimates([self._fresh(part)]), 1)
+        part.refresh_from_db()
+        self.assertEqual(part.estimation_status, Part.ESTIMATION_PENDING)
+        self.assertIsNone(part.filament_used_grams)
+        self.assertIsNone(part.estimated_with_preset)
+        worker.assert_called_once()
+
+    def test_unchanged_preset_is_kept(self, worker: mock.Mock) -> None:
+        part = self._part(self.sub, estimated_with_preset=self.preset_y)
+        self.assertEqual(_requeue_stale_estimates([self._fresh(part)]), 0)
+        part.refresh_from_db()
+        self.assertEqual((part.estimation_status, part.filament_used_grams), (Part.ESTIMATION_SUCCESS, 3.0))
+        worker.assert_not_called()
+
+    def test_part_own_preset_wins(self, worker: mock.Mock) -> None:
+        part = self._part(self.sub, print_preset=self.preset_x)
+        self.assertEqual(_requeue_stale_estimates([self._fresh(part)]), 0)
+        worker.assert_not_called()
+
+    def test_part_without_file_is_skipped(self, worker: mock.Mock) -> None:
+        part = self._part(self.sub, stl_file=None)
+        self.assertEqual(_requeue_stale_estimates([self._fresh(part)]), 0)
+        part.refresh_from_db()
+        self.assertEqual(part.filament_used_grams, 3.0)
+        worker.assert_not_called()
+
+    def test_no_resolvable_preset_clears_but_does_not_queue(self, worker: mock.Mock) -> None:
+        orphan_root = Project.objects.create(name="legacy root without preset")
+        part = self._part(orphan_root)
+        self.assertEqual(_requeue_stale_estimates([self._fresh(part)]), 0)
+        part.refresh_from_db()
+        self.assertEqual(part.estimation_status, Part.ESTIMATION_NONE)
+        self.assertIsNone(part.filament_used_grams)
+        worker.assert_not_called()
+
+    def test_never_estimated_part_is_queued(self, worker: mock.Mock) -> None:
+        part = self._part(self.sub, estimation_status=Part.ESTIMATION_NONE, estimated_with_preset=None)
+        self.assertEqual(_requeue_stale_estimates([self._fresh(part)]), 1)
+        part.refresh_from_db()
+        self.assertEqual(part.estimation_status, Part.ESTIMATION_PENDING)
+
+    def test_ancestor_chain_resolved_once_per_project(self, worker: mock.Mock) -> None:
+        leaf = Project.objects.create(name="T", parent=self.sub)
+        parts = [self._part(leaf, name=f"p{i}") for i in range(5)]
+        fresh = list(Part.objects.filter(pk__in=[p.pk for p in parts]).select_related("project"))
+        with self.assertNumQueries(2 + 2 * 5):
+            # The ancestor walk (S and R) runs once, not once per part; each part then
+            # costs one clearing update and one "pending" update.
+            self.assertEqual(_requeue_stale_estimates(fresh), 5)

@@ -355,6 +355,14 @@ class Project(models.Model):
             "print_history": PrintJobPart.objects.filter(part__project_id__in=ids).count(),
         }
 
+    #: Suffix of the default name of a copied project.
+    COPY_SUFFIX = " (copy)"
+
+    def default_copy_name(self) -> str:
+        """Return ``"<name> (copy)"``, shortening the name so it fits ``max_length``."""
+        max_length = self._meta.get_field("name").max_length
+        return f"{self.name[: max_length - len(self.COPY_SUFFIX)]}{self.COPY_SUFFIX}"
+
     def deep_copy(
         self,
         *,
@@ -368,19 +376,21 @@ class Project(models.Model):
         its documents (new files), its hardware assignments (same catalog
         entries) and its parts (see :meth:`Part.deep_copy`). Print history,
         ``FileVersion`` rows and shopping status are not copied. A file missing on
-        disk leaves the copied field empty and logs a warning.
+        disk logs a warning: the image or model file of the copy is left empty, and a
+        document without its file is skipped.
 
         When copied as a new top-level project (``parent=None``), the copy gets this
         project's *effective* preset, so the "roots must have a preset" rule holds.
 
-        Everything runs in one transaction; if it fails, the files written so far are
-        deleted again. (Files are not removed if an *enclosing* transaction of the
-        caller rolls back later.)
+        The files are copied first, *outside* the row transaction, so the SQLite write
+        lock is only held for the short row inserts. If anything fails, the files
+        written so far are deleted again. (Files are not removed if an *enclosing*
+        transaction of the caller rolls back later, or if the process is killed.)
 
         Args:
             parent: Target parent, or ``None`` to create a new top-level project.
-            name: Name of the top copy; defaults to ``"<name> (copy)"``. Descendants
-                keep their names.
+            name: Name of the top copy; defaults to :meth:`default_copy_name`.
+                Descendants keep their names.
             created_by: User recorded as creator of every copied node.
 
         Returns:
@@ -389,35 +399,74 @@ class Project(models.Model):
         Raises:
             ValidationError: If ``parent`` is this project or one of its descendants.
         """
+        self._assert_copy_target(parent)
         tracker = CopiedFiles()
         try:
+            nodes = self._snapshot_subtree()
+            files = self._copy_subtree_files(nodes, tracker)
             with transaction.atomic():
-                if parent is not None and parent.pk in self.subtree_ids():
-                    raise ValidationError(
-                        {"parent": "A project cannot be copied into itself or one of its sub-projects."}
-                    )
-                return self._deep_copy_into(parent, name or f"{self.name} (copy)", created_by, tracker)
+                # Re-check under the write lock: the tree may have changed meanwhile.
+                self._assert_copy_target(parent)
+                return self._create_subtree_copy(nodes, files, parent, name or self.default_copy_name(), created_by)
         except Exception:
             tracker.delete_all()
             raise
 
-    def _deep_copy_into(
+    def _assert_copy_target(self, parent: Project | None) -> None:
+        """Raise :class:`ValidationError` if ``parent`` lies in this project's subtree."""
+        if parent is not None and parent.pk in self.subtree_ids():
+            raise ValidationError({"parent": "A project cannot be copied into itself or one of its sub-projects."})
+
+    def _snapshot_subtree(self) -> list[tuple[Project, list[ProjectDocument], list[Part]]]:
+        """Return every subtree node (parents first) with its documents and parts.
+
+        Walks via the cycle-guarded :meth:`_walk_subtree`, before anything is created.
+
+        Returns:
+            ``(node, documents, parts)`` tuples in depth-first order.
+        """
+        return [(node, list(node.documents.all()), list(node.parts.all())) for node, _factor in self._walk_subtree()]
+
+    @staticmethod
+    def _copy_subtree_files(
+        nodes: list[tuple[Project, list[ProjectDocument], list[Part]]],
+        tracker: CopiedFiles,
+    ) -> dict[tuple[str, int], str | None]:
+        """Copy every image, document and model file of the snapshot.
+
+        Args:
+            nodes: Output of :meth:`_snapshot_subtree`.
+            tracker: Records every new file for cleanup on failure.
+
+        Returns:
+            New storage names keyed by ``("image"|"document"|"part", source pk)``;
+            ``None`` where the source has no file or it is missing on disk.
+        """
+        files: dict[tuple[str, int], str | None] = {}
+        for node, documents, parts in nodes:
+            files["image", node.pk] = duplicate_field_file(node.image, tracker)
+            for doc in documents:
+                files["document", doc.pk] = duplicate_field_file(doc.file, tracker)
+            for part in parts:
+                files["part", part.pk] = duplicate_field_file(part.stl_file, tracker)
+        return files
+
+    def _create_subtree_copy(
         self,
+        nodes: list[tuple[Project, list[ProjectDocument], list[Part]]],
+        files: dict[tuple[str, int], str | None],
         parent: Project | None,
         name: str,
         created_by: User | None,
-        tracker: CopiedFiles,
     ) -> Project:
-        """Copy the subtree under ``parent``; the caller provides the transaction.
-
-        The source nodes are snapshotted (via the cycle-guarded :meth:`_walk_subtree`)
-        before anything is created, and each node is copied after its parent.
+        """Insert the rows of the copied subtree; the caller provides the transaction.
 
         Args:
+            nodes: Output of :meth:`_snapshot_subtree` (each node after its parent).
+            files: Output of :meth:`_copy_subtree_files`.
             parent: Target parent of the top copy, or ``None`` for a new root.
             name: Name of the top copy.
             created_by: User recorded as creator of every copied node.
-            tracker: Records every new file for cleanup on failure.
 
         Returns:
             The new top :class:`Project`.
@@ -425,9 +474,8 @@ class Project(models.Model):
         from core.models.documents import ProjectDocument
         from core.models.hardware import ProjectHardware
 
-        nodes = [node for node, _factor in self._walk_subtree()]
         copies: dict[int, Project] = {}
-        for node in nodes:
+        for node, documents, parts in nodes:
             is_top = node.pk == self.pk
             if is_top:
                 preset_id = self.effective_default_print_preset_id if parent is None else self.default_print_preset_id
@@ -436,19 +484,20 @@ class Project(models.Model):
             copy = Project.objects.create(
                 name=name if is_top else node.name,
                 description=node.description,
-                image=duplicate_field_file(node.image, tracker),
+                image=files["image", node.pk],
                 parent=parent if is_top else copies[node.parent_id],
                 quantity=node.quantity,
                 default_print_preset_id=preset_id,
                 created_by=created_by,
             )
             copies[node.pk] = copy
-            for doc in node.documents.all():
+            for doc in documents:
+                doc_file = files["document", doc.pk]
+                if doc_file is None:
+                    # Nothing to copy: a document row without its file would only 500 on download.
+                    continue
                 ProjectDocument.objects.create(
-                    project=copy,
-                    name=doc.name,
-                    file=duplicate_field_file(doc.file, tracker) or "",
-                    uploaded_by_id=doc.uploaded_by_id,
+                    project=copy, name=doc.name, file=doc_file, uploaded_by_id=doc.uploaded_by_id
                 )
             hardware = [
                 ProjectHardware(
@@ -458,8 +507,8 @@ class Project(models.Model):
             ]
             if hardware:
                 ProjectHardware.objects.bulk_create(hardware)
-            for part in node.parts.all():
-                part.deep_copy(project=copy, _files=tracker)
+            for part in parts:
+                part._create_copy(copy, files["part", part.pk])
         return copies[self.pk]
 
     def _walk_subtree(self, multiplier: int = 1) -> list[tuple[Project, int]]:

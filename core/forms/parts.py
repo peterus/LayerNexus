@@ -86,7 +86,9 @@ class PartCopyForm(forms.Form):
         field.queryset = Project.objects.order_by("name")
         field.initial = source.project_id
         labels = Project.path_label_map()
-        field.choices = path_sorted_choices(field.queryset, lambda p: labels[p.pk], field.empty_label)
+        field.choices = path_sorted_choices(
+            field.queryset.only("pk", "name"), lambda p: labels.get(p.pk, p.name), field.empty_label
+        )
 
 
 class AddExistingPartForm(forms.Form):
@@ -94,12 +96,16 @@ class AddExistingPartForm(forms.Form):
 
     part = forms.ModelChoiceField(queryset=Part.objects.none(), label="Part to copy")
 
-    def __init__(self, *args, **kwargs) -> None:
-        """Offer every part, labelled ``"<project path> › <part name>"``."""
+    def __init__(self, *args, labels: dict[int, str] | None = None, **kwargs) -> None:
+        """Offer every part, labelled ``"<project path> › <part name>"``.
+
+        Args:
+            labels: Precomputed :meth:`Project.path_label_map`, to avoid a second scan.
+        """
         super().__init__(*args, **kwargs)
         field = self.fields["part"]
         field.queryset = Part.objects.order_by("name")
-        labels = Project.path_label_map()
+        labels = Project.path_label_map() if labels is None else labels
         field.choices = path_sorted_choices(
             field.queryset.only("pk", "name", "project_id"),
             lambda part: " › ".join(filter(None, [labels.get(part.project_id), part.name])),

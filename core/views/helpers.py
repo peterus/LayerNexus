@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from django.contrib.auth.models import User
 from django.db.models import QuerySet
 
-from core.models import Part
+from core.models import Part, Project
 from core.services.slicing_worker import _start_orcaslicer_worker
 
 logger = logging.getLogger(__name__)
@@ -23,8 +23,6 @@ def _user_projects_qs(user: "User") -> QuerySet:
     Returns:
         QuerySet of all Project instances.
     """
-    from core.models import Project
-
     return Project.objects.all()
 
 
@@ -69,9 +67,12 @@ def _requeue_stale_estimates(parts: Iterable[Part]) -> int:
     """
     count = 0
     project_presets: dict[int, int | None] = {}
+    # One shared instance per project, so each ancestor chain is loaded (and cached) once.
+    projects: dict[int, Project] = {}
     for part in parts:
         if not part.stl_file:
             continue
+        part.project = projects.setdefault(part.project_id, part.project)
         if part.print_preset_id is not None:
             effective_id = part.print_preset_id
         else:

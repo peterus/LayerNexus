@@ -258,6 +258,10 @@ class DeepCopyTests(TestCase):
         self.assertFalse(new_part.stl_file)
         self.assertEqual(new_part.estimation_status, Part.ESTIMATION_NONE)
         self.assertIsNone(new_part.estimated_with_preset)
+        self.assertIsNone(new_part.filament_used_grams)
+        self.assertIsNone(new_part.filament_used_meters)
+        self.assertIsNone(new_part.estimated_print_time)
+        self.assertEqual(new_part.time_estimates.count(), 0)
         self.assertIn(self.part_r.stl_file.name, logs.output[0])
 
     def test_deep_copy_project_missing_image_and_document(self) -> None:
@@ -266,9 +270,47 @@ class DeepCopyTests(TestCase):
         with self.assertLogs("core.models.file_copy", "WARNING"):
             copy = self.root.deep_copy(parent=None)
         self.assertFalse(copy.image)
-        new_doc = ProjectDocument.objects.get(project__parent=copy)
-        self.assertFalse(new_doc.file)
-        self.assertEqual(new_doc.name, "Manual")
+        # A document without its file has nothing to copy, so it is skipped.
+        self.assertFalse(ProjectDocument.objects.filter(project__parent=copy).exists())
+        self.assertEqual(copy.subprojects.get().name, "S")
+
+    def test_deep_copy_write_error_fails_and_cleans_up(self) -> None:
+        from django.core.files.storage import FileSystemStorage
+
+        before_files = _media_files()
+        before = (Project.objects.count(), Part.objects.count(), ProjectDocument.objects.count())
+        real_save = FileSystemStorage.save
+        calls = {"n": 0}
+
+        def flaky_save(storage: FileSystemStorage, *args, **kwargs) -> str:
+            calls["n"] += 1
+            if calls["n"] == 3:
+                raise OSError("No space left on device")
+            return real_save(storage, *args, **kwargs)
+
+        with mock.patch.object(FileSystemStorage, "save", flaky_save), self.assertRaises(OSError):
+            self.root.deep_copy(parent=None)
+        self.assertEqual(calls["n"], 3)
+        self.assertEqual((Project.objects.count(), Part.objects.count(), ProjectDocument.objects.count()), before)
+        self.assertEqual(_media_files(), before_files)
+
+    def test_part_deep_copy_failure_removes_new_file(self) -> None:
+        before_files = _media_files()
+        count = Part.objects.count()
+        with (
+            mock.patch.object(Part.objects, "create", side_effect=RuntimeError("boom")),
+            self.assertRaises(RuntimeError),
+        ):
+            self.part_r.deep_copy(project=self.root)
+        self.assertEqual(Part.objects.count(), count)
+        self.assertEqual(_media_files(), before_files)
+
+    def test_default_copy_name_fits_max_length(self) -> None:
+        self.root.name = "x" * 255
+        self.root.save()
+        copy = self.root.deep_copy(parent=None)
+        self.assertEqual(len(copy.name), 255)
+        self.assertTrue(copy.name.endswith(" (copy)"))
 
     def test_deep_copy_failure_removes_new_files(self) -> None:
         before_files = _media_files()
