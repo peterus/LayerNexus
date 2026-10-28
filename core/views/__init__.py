@@ -53,7 +53,6 @@ from .parts import (
     PartCreateView,
     PartDeleteView,
     PartDetailView,
-    PartLibraryListView,
     PartReEstimateView,
     PartUpdateView,
 )
@@ -146,7 +145,6 @@ __all__ = [
     "PartCreateView",
     "PartDeleteView",
     "PartDetailView",
-    "PartLibraryListView",
     "PartReEstimateView",
     "PartUpdateView",
     "PrintJobCreateView",

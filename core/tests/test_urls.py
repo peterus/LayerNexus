@@ -1,7 +1,7 @@
 """Tests for URL resolution."""
 
 from django.test import TestCase
-from django.urls import reverse
+from django.urls import NoReverseMatch, reverse
 
 
 class URLResolutionTests(TestCase):
@@ -107,3 +107,7 @@ class URLResolutionTests(TestCase):
 
     def test_materialprofile_list(self):
         self.assertEqual(reverse("core:materialprofile_list"), "/materials/")
+
+    def test_part_library_url_removed(self):
+        with self.assertRaises(NoReverseMatch):
+            reverse("core:part_library")
