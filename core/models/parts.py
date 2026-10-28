@@ -2,37 +2,15 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Optional
 
+from django.core.validators import MinValueValidator
 from django.db import models
-from django.db.models import QuerySet, Sum
+from django.db.models import CheckConstraint, Q, QuerySet, Sum
 
 if TYPE_CHECKING:
     from core.models.orca_profiles import OrcaPrintPreset
     from core.models.printing import PrintJob, PrintJobPart
-    from core.models.projects import Project
-
-
-def resolve_part_preset(part: Part, nearest_project: Project | None) -> Optional[OrcaPrintPreset]:
-    """Resolve a part's effective print preset given its nearest containing project.
-
-    Applies the Variant-B precedence: an explicit ``part.print_preset`` override wins;
-    otherwise the ``default_print_preset`` of the nearest directly-containing project on
-    the current build path is used; otherwise ``None``.
-
-    Args:
-        part: The part whose print preset to resolve.
-        nearest_project: The project directly containing the part on this build path,
-            or ``None`` when there is no project context.
-
-    Returns:
-        The resolved :class:`~core.models.orca_profiles.OrcaPrintPreset`, or ``None``.
-    """
-    if part.print_preset_id is not None:
-        return part.print_preset
-    if nearest_project is not None and nearest_project.default_print_preset_id is not None:
-        return nearest_project.default_print_preset
-    return None
 
 
 def _job_fully_printed(job: PrintJob) -> bool:
@@ -49,12 +27,23 @@ def _job_fully_printed(job: PrintJob) -> bool:
 
 
 class Part(models.Model):
-    """A standalone reusable part that can be attached to projects via ProjectPart edges."""
+    """A printable part that belongs to exactly one project (or sub-project)."""
 
     name = models.CharField(
         max_length=255,
         blank=True,
         help_text="Optional — derived from the uploaded filename if left empty.",
+    )
+    project = models.ForeignKey(
+        "core.Project",
+        on_delete=models.CASCADE,
+        related_name="parts",
+        help_text="The project or sub-project this part belongs to.",
+    )
+    quantity = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+        help_text="How many of this part the project needs.",
     )
     stl_file = models.FileField(upload_to="stl_files/", blank=True, null=True)  # also stores 3MF files
     color = models.CharField(
@@ -87,18 +76,6 @@ class Part(models.Model):
         blank=True,
         related_name="estimated_parts",
         help_text="The print preset that produced the currently stored estimate.",
-    )
-    estimation_requested_preset = models.ForeignKey(
-        "OrcaPrintPreset",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="estimation_requests",
-        help_text=(
-            "Transient queue-time channel: a whole-project re-estimate pins the "
-            "project-context preset here so the worker estimates with it. Consumed "
-            "(cleared) by the worker on claim; never used as estimate provenance."
-        ),
     )
     notes = models.TextField(blank=True)
 
@@ -138,25 +115,12 @@ class Part(models.Model):
 
     class Meta:
         ordering = ["name"]
+        constraints = [
+            CheckConstraint(condition=Q(quantity__gte=1), name="part_quantity_gte_1"),
+        ]
 
     def __str__(self) -> str:
         return self.name
-
-    def containing_projects(self) -> list[Project]:
-        """Return distinct projects that include this part via a composition edge.
-
-        Traverses the ``ProjectPart`` edges pointing at this part (``project_links``)
-        rather than the legacy single ``project`` FK, so a part shared by several
-        modules lists all of them (its "used in").
-
-        Returns:
-            Distinct :class:`~core.models.projects.Project` instances, first-seen
-            order preserved.
-        """
-        seen: dict[int, Project] = {}
-        for link in self.project_links.select_related("project").all():
-            seen.setdefault(link.project_id, link.project)
-        return list(seen.values())
 
     @property
     def is_3mf(self) -> bool:
@@ -164,89 +128,33 @@ class Part(models.Model):
         return bool(self.stl_file) and self.stl_file.name.lower().endswith(".3mf")
 
     @property
-    def effective_print_preset_id(self) -> Optional[int]:
-        """Return the part's own print preset ID, or ``None`` if not set.
+    def effective_print_preset(self) -> Optional[OrcaPrintPreset]:
+        """Return the preset this part is sliced with, resolved bottom-up.
+
+        The part's own ``print_preset`` wins; otherwise the nearest
+        ``default_print_preset`` up the project chain is used.
 
         Returns:
-            Print preset primary key, or ``None``.
+            The resolved :class:`~core.models.orca_profiles.OrcaPrintPreset`, or ``None``.
         """
-        return self.print_preset_id or None
+        if self.print_preset_id is not None:
+            return self.print_preset
+        if self.project_id is None:
+            return None
+        return self.project.effective_default_print_preset
 
     @property
-    def effective_print_preset(self) -> Optional[OrcaPrintPreset]:
-        """Return the part's own print preset, or ``None`` if not set.
-
-        Returns:
-            OrcaPrintPreset instance, or ``None``.
-        """
-        return self.print_preset if self.print_preset_id else None
-
-    def resolve_estimation_preset(self) -> tuple[Optional[OrcaPrintPreset], bool]:
-        """Resolve the preset to estimate this part with, flagging ambiguity.
-
-        Variant B without a build context: an explicit override wins; otherwise the
-        ``default_print_preset`` of the containing projects is used when they all agree
-        (or there is exactly one). When two or more containing projects disagree and there
-        is no override, the preset is **ambiguous** — estimation must not guess.
-
-        Returns:
-            ``(preset, ambiguous)``. When ``ambiguous`` is ``True`` the preset is ``None``
-            and the caller should mark the estimate as needing an override rather than
-            picking one. When ``ambiguous`` is ``False`` the preset may still be ``None``
-            (no override and no containing-project default).
-        """
+    def effective_print_preset_id(self) -> Optional[int]:
+        """Return the primary key of :attr:`effective_print_preset`, or ``None``."""
         if self.print_preset_id is not None:
-            return self.print_preset, False
-        distinct: dict[int, OrcaPrintPreset] = {}
-        for project in self.containing_projects():
-            if project.default_print_preset_id is not None:
-                distinct[project.default_print_preset_id] = project.default_print_preset
-        if len(distinct) > 1:
-            return None, True
-        if len(distinct) == 1:
-            return next(iter(distinct.values())), False
-        return None, False
-
-    def resolve_job_preset_candidates(self) -> tuple[Optional[OrcaPrintPreset], list[OrcaPrintPreset]]:
-        """Resolve the preset for the standalone (part-path) "Add to Job" flow.
-
-        Variant B without a project build context, with a UI escape hatch: an explicit
-        override, a single containing project, or several projects that all agree yield an
-        unambiguous ``auto`` preset (and no choices). Several containing projects that
-        disagree and no override yield ``auto=None`` and the distinct containing-project
-        presets as ``choices`` so the UI can offer a dropdown.
-
-        Returns:
-            ``(auto_preset, choices)``. When ``choices`` is non-empty the caller must ask
-            the user to pick one; otherwise ``auto_preset`` (possibly ``None``) is used.
-        """
-        if self.print_preset_id is not None:
-            return self.print_preset, []
-        distinct: dict[int, OrcaPrintPreset] = {}
-        for project in self.containing_projects():
-            if project.default_print_preset_id is not None:
-                distinct[project.default_print_preset_id] = project.default_print_preset
-        if len(distinct) > 1:
-            return None, list(distinct.values())
-        if len(distinct) == 1:
-            return next(iter(distinct.values())), []
-        return None, []
+            return self.print_preset_id
+        if self.project_id is None:
+            return None
+        return self.project.effective_default_print_preset_id
 
     def is_estimable(self) -> bool:
-        """Return whether this part is worth queuing for background estimation.
-
-        Variant B: a part is estimable when it has an STL file and its estimation preset
-        either resolves to a concrete preset OR is ambiguous. Ambiguous parts are still
-        queued so the background worker records the "ambiguous" status rather than the
-        caller silently swallowing it (see :meth:`resolve_estimation_preset`).
-
-        Returns:
-            ``True`` when the part should be queued, else ``False``.
-        """
-        if not self.stl_file:
-            return False
-        preset, ambiguous = self.resolve_estimation_preset()
-        return preset is not None or ambiguous
+        """Return whether this part has an STL file and a resolvable print preset."""
+        return bool(self.stl_file) and self.effective_print_preset_id is not None
 
     @property
     def color_display(self) -> str:
@@ -311,14 +219,11 @@ class Part(models.Model):
             return entries
         return None
 
-    def _fully_printed_entry_pks(self, **filters: Any) -> QuerySet:
+    def _fully_printed_entry_pks(self) -> QuerySet:
         """Return PKs of this part's job entries whose job has all plates completed.
 
         Evaluated lazily as an ``IN`` subquery by the callers, so the full aggregate
         still costs a single query.
-
-        Args:
-            **filters: Extra ``job_entries`` filters (e.g. ``target_assembly``).
 
         Returns:
             Distinct ``values_list`` queryset of qualifying ``PrintJobPart`` PKs.
@@ -327,67 +232,11 @@ class Part(models.Model):
 
         unfinished_job_ids = PrintJobPlate.objects.exclude(status=PrintJobPlate.STATUS_COMPLETED).values("print_job_id")
         return (
-            self.job_entries.filter(print_job__plates__status=PrintJobPlate.STATUS_COMPLETED, **filters)
+            self.job_entries.filter(print_job__plates__status=PrintJobPlate.STATUS_COMPLETED)
             .exclude(print_job_id__in=unfinished_job_ids)
             .values_list("pk", flat=True)
             .distinct()
         )
-
-    def printed_quantity_for(self, assembly: Project) -> int:
-        """Completed-plate print quantity of this part attributed to ``assembly``.
-
-        Same completion rule as :attr:`printed_quantity` (a job counts once all of its
-        plates are completed), but restricted to job entries whose
-        ``target_assembly`` is ``assembly``. Unattributed entries (``target_assembly``
-        is ``NULL``) are never counted here; they remain in the global
-        :attr:`printed_quantity` only.
-
-        Two evaluation paths mirror :attr:`printed_quantity` so this stays off the N+1
-        path for prefetched aggregate rendering: when the whole
-        ``job_entries__print_job__plates`` chain is cached (see
-        :meth:`Project.aggregate_prefetch_lookups`) the attributed sum is computed in Python
-        with **no** extra query, filtering on the already-loaded ``target_assembly_id`` FK
-        column; otherwise a single DB aggregate is issued.
-
-        Args:
-            assembly: The build context (top-level assembly project) to filter by.
-
-        Returns:
-            Sum of attributed job-entry quantities whose job has all plates completed.
-        """
-        entries = self._prefetched_job_entries()
-        if entries is not None:
-            return sum(
-                entry.quantity
-                for entry in entries
-                if entry.target_assembly_id == assembly.pk and _job_fully_printed(entry.print_job)
-            )
-
-        completed_pks = self._fully_printed_entry_pks(target_assembly=assembly)
-        return self.job_entries.filter(pk__in=completed_pks).aggregate(total=Sum("quantity"))["total"] or 0
-
-    def printed_quantity_for_by_preset(self, assembly: Project) -> dict[Optional[int], int]:
-        """Attributed completed-plate quantities for ``assembly``, grouped by job preset.
-
-        Same completion rule and attribution as :meth:`printed_quantity_for`, but the sum
-        is split by the producing job's pinned ``print_preset`` so a per-preset job-creation
-        split can subtract prints from the correct bundle instead of one aggregate. Prints
-        from legacy jobs with no pinned preset are grouped under the ``None`` key (the caller
-        allocates those greedily).
-
-        Args:
-            assembly: The build context (top-level assembly project) to filter by.
-
-        Returns:
-            ``{print_preset_id_or_None: quantity}`` over attributed, completed job entries.
-        """
-        completed_pks = self._fully_printed_entry_pks(target_assembly=assembly)
-        rows = (
-            self.job_entries.filter(pk__in=completed_pks)
-            .values("print_job__print_preset")
-            .annotate(total=Sum("quantity"))
-        )
-        return {row["print_job__print_preset"]: row["total"] for row in rows}
 
 
 class PrintTimeEstimate(models.Model):

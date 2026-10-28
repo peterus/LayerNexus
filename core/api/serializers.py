@@ -1,10 +1,8 @@
 """DRF serializers for the iterative build API.
 
-All composition is expressed through the Phase-1 edge models
-(:class:`~core.models.composition.ProjectComponent` / ``ProjectPart``); the legacy
-``Project.parent`` / ``Part.project`` FKs have been removed (Phase-6 contract).
-Parts are created standalone and attached to projects via the
-``POST /projects/{id}/parts/`` edge endpoint.
+Projects form a strict tree: a sub-project has a ``parent`` and a ``quantity`` within
+it, and every part belongs to exactly one ``project`` with its own ``quantity``. The
+print preset is required on top-level projects and inherited bottom-up otherwise.
 """
 
 from __future__ import annotations
@@ -19,26 +17,25 @@ from core.models import (
     OrcaPrintPreset,
     Part,
     Project,
-    ProjectComponent,
     ProjectDocument,
     ProjectHardware,
-    ProjectPart,
     SpoolmanFilamentMapping,
 )
-from core.models.composition import component_would_create_cycle
 
 
 class ProjectSerializer(serializers.ModelSerializer):
-    """Serialize a project's scalar fields.
+    """Serialize a project, including its place in the tree.
 
-    Sub-project composition is managed via the ``components`` edge endpoint, not the
-    legacy ``parent``/``quantity`` fields, so those are deliberately not writable here.
-    ``default_print_preset`` is required (Variant B preset resolution depends on it).
+    ``parent`` is ``null`` for top-level projects; ``quantity`` is how many of this
+    sub-project the parent needs (ignored on top-level projects). ``default_print_preset``
+    is required on top-level projects and optional (inherited) on sub-projects.
     """
 
+    parent = serializers.PrimaryKeyRelatedField(queryset=Project.objects.all(), allow_null=True, required=False)
     default_print_preset = serializers.PrimaryKeyRelatedField(
-        queryset=OrcaPrintPreset.objects.all(),
-        required=True,
+        queryset=OrcaPrintPreset.objects.filter(state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True),
+        allow_null=True,
+        required=False,
     )
 
     class Meta:
@@ -47,26 +44,69 @@ class ProjectSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "description",
+            "parent",
+            "quantity",
             "default_print_preset",
             "created_at",
             "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        """Require a preset on top-level projects and reject cyclic re-parenting.
+
+        Args:
+            attrs: The validated field values (partial on ``PATCH``).
+
+        Returns:
+            The unchanged ``attrs``.
+
+        Raises:
+            serializers.ValidationError: When a top-level project would have no
+                preset, or the new parent lies in the project's own subtree.
+        """
+        parent = attrs["parent"] if "parent" in attrs else getattr(self.instance, "parent", None)
+        preset = (
+            attrs["default_print_preset"]
+            if "default_print_preset" in attrs
+            else getattr(self.instance, "default_print_preset", None)
+        )
+        if parent is None and preset is None:
+            raise serializers.ValidationError({"default_print_preset": ["Required for top-level projects."]})
+        if parent is None:
+            # Quantity only means something below a parent; keep top-level projects at 1
+            # so a later re-parent never reactivates a stale multiplier.
+            if attrs.get("quantity", 1) != 1:
+                raise serializers.ValidationError({"quantity": ["Top-level projects always have quantity 1."]})
+            attrs["quantity"] = 1
+        if self.instance is not None and parent is not None and parent.pk in self.instance.subtree_ids():
+            raise serializers.ValidationError(
+                {"parent": ["A project cannot be a sub-project of itself or one of its descendants."]}
+            )
+        return attrs
+
 
 class PartSerializer(serializers.ModelSerializer):
     """Serialize a part's writable scalar fields plus read-only estimation results.
 
-    ``stl_file`` is read-only here — it is uploaded through the dedicated multipart
-    ``POST /parts/{id}/stl/`` endpoint so ordinary create/update stays JSON. Parts are
-    attached to projects via the ``POST /projects/{id}/parts/`` edge endpoint.
+    ``project`` is required: every part belongs to exactly one project. ``stl_file`` is
+    read-only here — it is uploaded through the dedicated multipart
+    ``POST /parts/{id}/stl/`` endpoint so ordinary create/update stays JSON.
     """
+
+    print_preset = serializers.PrimaryKeyRelatedField(
+        queryset=OrcaPrintPreset.objects.filter(state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True),
+        allow_null=True,
+        required=False,
+    )
 
     class Meta:
         model = Part
         fields = [
             "id",
+            "project",
             "name",
+            "quantity",
             "stl_file",
             "spoolman_filament_id",
             "color",
@@ -92,47 +132,6 @@ class PartSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-
-
-class ProjectComponentSerializer(serializers.ModelSerializer):
-    """Serialize a sub-project composition edge (parent supplied by the URL).
-
-    The cycle guard runs in :meth:`validate` using the parent from the view context, so
-    a create returns a structured ``400`` instead of the model's ``save()`` raising an
-    unhandled ``ValidationError`` (which would be a ``500``).
-
-    ``child_project`` is the edge's identity and is **read-only on update**: reassigning
-    it on an existing edge would orphan the old child's legacy ``parent`` FK (which is
-    cleaned up only on delete, via the ``post_delete`` receiver) and is not a meaningful
-    operation — change composition by deleting and recreating the edge. Only ``quantity``
-    is mutable on update.
-    """
-
-    class Meta:
-        model = ProjectComponent
-        fields = ["id", "child_project", "quantity"]
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        """Make ``child_project`` read-only when updating an existing edge."""
-        super().__init__(*args, **kwargs)
-        if self.instance is not None:
-            self.fields["child_project"].read_only = True
-
-    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
-        """Reject edges that would make an assembly (transitively) contain itself."""
-        parent = self.context.get("parent_project")
-        child = attrs.get("child_project") or getattr(self.instance, "child_project", None)
-        if parent is not None and child is not None and component_would_create_cycle(parent.pk, child.pk):
-            raise serializers.ValidationError({"child_project": "This would make an assembly contain itself (cycle)."})
-        return attrs
-
-
-class ProjectPartEdgeSerializer(serializers.ModelSerializer):
-    """Serialize a project↔part composition edge (project supplied by the URL)."""
-
-    class Meta:
-        model = ProjectPart
-        fields = ["id", "part", "quantity"]
 
 
 class ProjectDocumentSerializer(serializers.ModelSerializer):
@@ -177,7 +176,7 @@ class HardwarePartSerializer(serializers.ModelSerializer):
 
 
 class ProjectHardwareSerializer(serializers.ModelSerializer):
-    """Serialize a hardware assignment edge (project supplied by the URL)."""
+    """Serialize a hardware assignment (project supplied by the URL)."""
 
     class Meta:
         model = ProjectHardware
@@ -208,24 +207,19 @@ class OrcaPrintPresetSerializer(serializers.ModelSerializer):
 
 
 class ProjectTreeSerializer(serializers.ModelSerializer):
-    """Nested read-only view of an assembly: child modules, direct parts and hardware.
-
-    Traverses the composition edges (``child_modules``/``direct_parts``/
-    ``hardware_assignments``) for orientation. A path-local visited set guards against a
-    corrupt persisted cycle so rendering always terminates.
-    """
+    """Nested read-only view of a project: its parts, hardware and sub-projects (recursive)."""
 
     parts = serializers.SerializerMethodField()
-    components = serializers.SerializerMethodField()
+    subprojects = serializers.SerializerMethodField()
     hardware = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
-        fields = ["id", "name", "description", "parts", "components", "hardware"]
+        fields = ["id", "name", "description", "quantity", "parts", "subprojects", "hardware"]
 
     def get_parts(self, obj: Project) -> list[dict[str, Any]]:
-        """Return ``{part, name, quantity}`` dicts for parts directly attached to ``obj``."""
-        return [{"part": part.pk, "name": part.name, "quantity": qty} for part, qty in obj.direct_parts()]
+        """Return ``{part, name, quantity}`` dicts for the parts directly in ``obj``."""
+        return [{"part": part.pk, "name": part.name, "quantity": part.quantity} for part in obj.parts.all()]
 
     def get_hardware(self, obj: Project) -> list[dict[str, Any]]:
         """Return ``{hardware_part, name, quantity}`` dicts for hardware assigned to ``obj``."""
@@ -234,14 +228,16 @@ class ProjectTreeSerializer(serializers.ModelSerializer):
             for hw in obj.hardware_assignments.select_related("hardware_part").all()
         ]
 
-    def get_components(self, obj: Project) -> list[dict[str, Any]]:
-        """Return ``{child, quantity}`` dicts, recursing into each child module."""
-        path: set[int] = set(self.context.get("_path", set()))
-        if obj.pk in path:
-            return []
-        child_context = dict(self.context)
-        child_context["_path"] = path | {obj.pk}
+    def get_subprojects(self, obj: Project) -> list[dict[str, Any]]:
+        """Return the nested tree of each direct sub-project.
+
+        The ids already on the current path are carried in the context, so a corrupt
+        persisted cycle terminates instead of recursing forever.
+        """
+        path: frozenset[int] = self.context.get("_tree_path", frozenset()) | {obj.pk}
+        child_context = {**self.context, "_tree_path": path}
         return [
-            {"child": ProjectTreeSerializer(child, context=child_context).data, "quantity": qty}
-            for child, qty in obj.child_modules()
+            ProjectTreeSerializer(sub, context=child_context).data
+            for sub in obj.subprojects.all()
+            if sub.pk not in path
         ]

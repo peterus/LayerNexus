@@ -34,11 +34,8 @@ def _trigger_part_estimation(part: Part) -> None:
     unified OrcaSlicer worker thread is running.  The worker processes
     all OrcaSlicer work (estimations and slicing) sequentially.
 
-    Variant B: eligibility is delegated to :meth:`Part.is_estimable` (STL present and
-    a preset that resolves — or is ambiguous — against the containing projects), so a
-    legacy part with no own override but a project default is queued instead of being
-    dropped here. Ambiguous parts are queued too so the worker records the ambiguous
-    status rather than the caller silently swallowing it.
+    Eligibility is delegated to :meth:`Part.is_estimable` (STL present and a preset
+    that resolves bottom-up: the part's own preset or the nearest project default).
 
     Args:
         part: The Part instance to estimate.

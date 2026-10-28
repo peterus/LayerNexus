@@ -5,7 +5,7 @@ from unittest import mock
 from django.contrib.auth.models import Group, User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
-from django.urls import reverse
+from django.urls import NoReverseMatch, reverse
 
 from core.models import (
     OrcaPrintPreset,
@@ -16,8 +16,6 @@ from core.models import (
     PrintJobPlate,
     PrintQueue,
     Project,
-    ProjectComponent,
-    ProjectPart,
 )
 from core.tests.mixins import TestDataMixin
 
@@ -100,38 +98,41 @@ class ProjectViewTests(TestDataMixin, TestCase):
         resp = self.client.post(reverse("core:project_delete", args=[self.other_project.pk]))
         self.assertEqual(resp.status_code, 302)
 
-    def test_project_update_does_not_touch_component_edges(self):
-        """Editing a module via the project edit form must not disturb its composition edges.
-
-        The edit form no longer exposes the legacy ``parent``/``quantity`` re-parent
-        control (composition is edited through the edge UI), so a plain edit of an
-        edge-based module must leave its ``parent_links`` untouched — the regression
-        this whole change targets, guarded at the view layer.
-        """
-        truck = Project.objects.create(name="Truck", created_by=self.user)
-        ProjectComponent.objects.create(parent_project=truck, child_project=self.project, quantity=2)
-
-        resp = self.client.post(
-            reverse("core:project_update", args=[self.project.pk]),
-            {"name": "Renamed Module", "description": "", "default_print_preset": self.preset.pk},
-        )
-        self.assertEqual(resp.status_code, 302)
-        self.project.refresh_from_db()
-        self.assertEqual(self.project.name, "Renamed Module")
-        self.assertEqual(self.project.parent_links.count(), 1)
-        edge = self.project.parent_links.get()
-        self.assertEqual(edge.parent_project_id, truck.pk)
-        self.assertEqual(edge.quantity, 2)
-
     def test_project_edit_form_has_no_parent_field(self):
-        """The edit form no longer exposes the legacy parent/quantity re-parent control."""
+        """Re-parenting is not part of this PR: the edit form has no parent field."""
         resp = self.client.get(reverse("core:project_update", args=[self.project.pk]))
         form = resp.context["form"]
         self.assertNotIn("parent", form.fields)
-        self.assertNotIn("quantity", form.fields)
+        self.assertNotIn("quantity", form.fields)  # roots have no quantity
 
-    def test_subproject_create_makes_component_edge(self):
-        """Creating a sub-project links it to the parent via a ProjectComponent edge."""
+    def test_project_list_shows_only_roots(self):
+        """Only top-level projects are listed."""
+        Project.objects.create(name="ChildModule", parent=self.project, created_by=self.user)
+        resp = self.client.get(reverse("core:project_list"))
+        self.assertContains(resp, self.project.name)
+        self.assertNotContains(resp, "ChildModule")
+        self.assertEqual(list(resp.context["projects"]).count(self.project), 1)
+
+    def test_detail_lists_subprojects_and_parts_with_quantity(self):
+        """The detail page lists its sub-projects (×qty) and parts (qty)."""
+        Project.objects.create(name="Axle module", parent=self.project, quantity=4, created_by=self.user)
+        resp = self.client.get(reverse("core:project_detail", args=[self.project.pk]))
+        self.assertContains(resp, "Axle module")
+        self.assertContains(resp, "×4")
+        self.assertEqual(resp.context["parts"], [self.part])
+        self.assertContains(resp, self.part.name)
+        self.assertEqual(resp.context["build_rows_by_pk"][self.part.pk]["needed"], 3)
+
+    def test_detail_breadcrumb_shows_ancestors(self):
+        """A sub-project's breadcrumb walks up to the root."""
+        sub = Project.objects.create(name="Sub", parent=self.project, created_by=self.user)
+        leaf = Project.objects.create(name="Leaf", parent=sub, created_by=self.user)
+        resp = self.client.get(reverse("core:project_detail", args=[leaf.pk]))
+        self.assertEqual(resp.context["ancestors"], [self.project, sub])
+        self.assertContains(resp, reverse("core:project_detail", args=[sub.pk]))
+
+    def test_subproject_create_sets_parent_and_quantity(self):
+        """Creating a sub-project sets parent and quantity on the new project."""
         parent = Project.objects.create(name="Assembly", created_by=self.user)
         resp = self.client.post(
             reverse("core:subproject_create", args=[parent.pk]),
@@ -139,14 +140,56 @@ class ProjectViewTests(TestDataMixin, TestCase):
         )
         self.assertEqual(resp.status_code, 302)
         child = Project.objects.get(name="New Module")
-        edge = ProjectComponent.objects.get(parent_project=parent, child_project=child)
-        self.assertEqual(edge.quantity, 3)
+        self.assertEqual(child.parent_id, parent.pk)
+        self.assertEqual(child.quantity, 3)
         self.assertEqual(child.created_by_id, self.user.pk)
+
+    def test_subproject_create_preset_optional(self):
+        """A sub-project may leave the preset empty (inherited from the parent)."""
+        resp = self.client.post(
+            reverse("core:subproject_create", args=[self.project.pk]),
+            {"name": "Inheriting", "description": "", "quantity": "1", "default_print_preset": ""},
+        )
+        self.assertEqual(resp.status_code, 302)
+        child = Project.objects.get(name="Inheriting")
+        self.assertIsNone(child.default_print_preset_id)
+
+    def test_edit_subproject_quantity(self):
+        """Editing a sub-project changes its quantity; its preset stays optional."""
+        sub = Project.objects.create(name="Sub", parent=self.project, quantity=1, created_by=self.user)
+        resp = self.client.post(
+            reverse("core:project_update", args=[sub.pk]),
+            {"name": "Sub", "description": "", "quantity": "5", "default_print_preset": ""},
+        )
+        self.assertEqual(resp.status_code, 302)
+        sub.refresh_from_db()
+        self.assertEqual(sub.quantity, 5)
+        self.assertEqual(sub.parent_id, self.project.pk)
+
+    def test_edit_root_requires_preset(self):
+        """A top-level project cannot be saved without a preset."""
+        resp = self.client.post(
+            reverse("core:project_update", args=[self.project.pk]),
+            {"name": "Renamed", "description": "", "default_print_preset": ""},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("default_print_preset", resp.context["form"].errors)
+
+    def test_edge_urls_removed(self):
+        """The composition edge editing URLs no longer exist."""
+        for name in (
+            "project_add_component",
+            "project_add_part",
+            "project_component_remove",
+            "project_component_quantity",
+            "project_part_remove",
+            "project_part_quantity",
+        ):
+            with self.subTest(name=name), self.assertRaises(NoReverseMatch):
+                reverse(f"core:{name}", args=[1])
 
     def test_no_used_in_context_anywhere(self):
         # Tree rollback: the edge-based "Used in" navigation is gone from every view.
-        assembly = Project.objects.create(name="Assembly", created_by=self.user)
-        ProjectComponent.objects.create(parent_project=assembly, child_project=self.project)
         urls = [
             reverse("core:project_detail", kwargs={"pk": self.project.pk}),
             reverse("core:project_update", kwargs={"pk": self.project.pk}),
@@ -179,25 +222,6 @@ class ProjectViewTests(TestDataMixin, TestCase):
         self.assertNotIn("part_usage", resp.context)
         self.assertNotContains(resp, "Used in assemblies")
 
-    def test_list_shows_only_top_level_edge_based(self):
-        from core.models import ProjectComponent
-
-        parent = Project.objects.create(name="TopTruck", created_by=self.user)
-        child = Project.objects.create(name="ChildModule", created_by=self.user)
-        ProjectComponent.objects.create(parent_project=parent, child_project=child)
-        resp = self.client.get(reverse("core:project_list"))
-        self.assertContains(resp, "TopTruck")
-        self.assertNotContains(resp, "ChildModule")  # referenced module is not top-level
-
-    def test_detail_part_count_uses_edges(self):
-        from core.models import Part, ProjectPart
-
-        proj = Project.objects.create(name="CountProj", created_by=self.user)
-        p = Part.objects.create(name="X")
-        ProjectPart.objects.create(project=proj, part=p)  # direct edge into proj
-        resp = self.client.get(reverse("core:project_detail", kwargs={"pk": proj.pk}))
-        self.assertContains(resp, "X")  # the referenced part is listed
-
     def test_detail_has_no_duplicate_button(self):
         proj = Project.objects.create(name="Truck A", created_by=self.user)
         resp = self.client.get(reverse("core:project_detail", kwargs={"pk": proj.pk}))
@@ -227,26 +251,34 @@ class ProjectReEstimateViewTests(TestDataMixin, TestCase):
         resp = self.client.post(reverse("core:project_re_estimate", args=[self.project.pk]))
         self.assertRedirects(resp, reverse("core:project_detail", args=[self.project.pk]))
 
-    def test_re_estimate_deduplicates_shared_part(self):
-        """A part reachable via several DAG paths is reset and queued exactly once."""
+    def test_re_estimate_queues_each_part_once_with_inherited_preset(self):
+        """Each subtree part with an STL and a resolvable preset is reset and queued once."""
         preset = OrcaPrintPreset.objects.create(name="Fast", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True)
-        shared = Part.objects.create(name="SharedBracket", print_preset=preset)
-        shared.stl_file.save(
-            "shared.stl", SimpleUploadedFile("s.stl", b"solid\nendsolid", content_type="model/stl"), save=True
+        self.project.default_print_preset = preset
+        self.project.save()
+        child = Project.objects.create(parent=self.project, quantity=2, name="Module", created_by=self.user)
+        inherited = Part.objects.create(
+            project=child, quantity=1, name="Bracket", filament_used_grams=3.0, estimation_status="success"
         )
-        # Add the part directly to self.project
-        ProjectPart.objects.create(project=self.project, part=shared, quantity=1)
-        # Also add it via a child module — creates a second DAG path to the same part
-        child = Project.objects.create(name="Module", created_by=self.user)
-        ProjectPart.objects.create(project=child, part=shared, quantity=1)
-        ProjectComponent.objects.create(parent_project=self.project, child_project=child, quantity=1)
+        inherited.stl_file.save("b.stl", SimpleUploadedFile("b.stl", b"solid\nendsolid"), save=True)
 
         with mock.patch("core.views.projects._trigger_part_estimation") as triggered:
             resp = self.client.post(reverse("core:project_re_estimate", args=[self.project.pk]))
 
         self.assertEqual(resp.status_code, 302)
-        triggered.assert_called_once()
-        self.assertEqual(triggered.call_args[0][0].pk, shared.pk)
+        triggered.assert_called_once()  # self.part has no STL, so only the inherited part
+        self.assertEqual(triggered.call_args[0][0].pk, inherited.pk)
+        inherited.refresh_from_db()
+        self.assertIsNone(inherited.filament_used_grams)
+        self.assertEqual(inherited.estimation_status, Part.ESTIMATION_NONE)
+
+    def test_re_estimate_skips_part_without_resolvable_preset(self):
+        """A part with an STL but no preset anywhere up the chain is not queued."""
+        bare = Part.objects.create(project=self.project, quantity=1, name="Bare")
+        bare.stl_file.save("bare.stl", SimpleUploadedFile("bare.stl", b"solid\nendsolid"), save=True)
+        with mock.patch("core.views.projects._trigger_part_estimation") as triggered:
+            self.client.post(reverse("core:project_re_estimate", args=[self.project.pk]))
+        triggered.assert_not_called()
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -269,136 +301,6 @@ class CostViewTests(TestDataMixin, TestCase):
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
-class AssemblyEditorViewTests(TestDataMixin, TestCase):
-    """Edge write views + assembly editor + delete semantics (Phase 3b)."""
-
-    def setUp(self):
-        super().setUp()
-        self.client.login(username="testuser", password="testpass123")
-
-    def test_add_existing_component_creates_edge(self):
-        from core.models import ProjectComponent
-
-        truck = Project.objects.create(name="Truck", created_by=self.user)
-        cabin = Project.objects.create(name="Cabin", created_by=self.user)
-        resp = self.client.post(
-            reverse("core:project_add_component", kwargs={"pk": truck.pk}),
-            {"child_project": cabin.pk, "quantity": 2},
-        )
-        self.assertEqual(resp.status_code, 302)
-        self.assertTrue(ProjectComponent.objects.filter(parent_project=truck, child_project=cabin, quantity=2).exists())
-
-    def test_add_component_rejects_cycle(self):
-        from core.models import ProjectComponent
-
-        a = Project.objects.create(name="CycA", created_by=self.user)
-        b = Project.objects.create(name="CycB", created_by=self.user)
-        ProjectComponent.objects.create(parent_project=a, child_project=b)
-        # adding a under b would cycle -> no edge created
-        resp = self.client.post(
-            reverse("core:project_add_component", kwargs={"pk": b.pk}),
-            {"child_project": a.pk, "quantity": 1},
-        )
-        self.assertEqual(resp.status_code, 302)
-        self.assertFalse(ProjectComponent.objects.filter(parent_project=b, child_project=a).exists())
-
-    def test_remove_component_edge_keeps_node(self):
-        from core.models import ProjectComponent
-
-        truck = Project.objects.create(name="Truck", created_by=self.user)
-        cabin = Project.objects.create(name="Cabin", created_by=self.user)
-        edge = ProjectComponent.objects.create(parent_project=truck, child_project=cabin)
-        resp = self.client.post(reverse("core:project_component_remove", kwargs={"pk": edge.pk}))
-        self.assertEqual(resp.status_code, 302)
-        self.assertFalse(ProjectComponent.objects.filter(pk=edge.pk).exists())
-        self.assertTrue(Project.objects.filter(pk=cabin.pk).exists())  # node survives
-
-    def test_remove_component_clears_stale_legacy_parent_fk(self):
-        # A legacy sub-project (parent FK set, edge seeded on insert) that is detached
-        # through the edge UI must have its stale parent FK cleared, so the former
-        # parent is deletable (parent uses on_delete=PROTECT) and preset inheritance
-        # no longer leaks from the ex-parent.
-        parent = Project.objects.create(name="Assembly", created_by=self.user)
-        child = Project.objects.create(name="Module", parent=parent, quantity=2, created_by=self.user)
-        edge = child.parent_links.get()  # seeded on insert by Project.save()
-
-        resp = self.client.post(reverse("core:project_component_remove", kwargs={"pk": edge.pk}))
-        self.assertEqual(resp.status_code, 302)
-
-        child.refresh_from_db()
-        self.assertIsNone(child.parent_id)
-        self.assertEqual(parent.subprojects.count(), 0)
-
-    def test_update_component_quantity(self):
-        from core.models import ProjectComponent
-
-        truck = Project.objects.create(name="Truck", created_by=self.user)
-        cabin = Project.objects.create(name="Cabin", created_by=self.user)
-        edge = ProjectComponent.objects.create(parent_project=truck, child_project=cabin, quantity=1)
-        resp = self.client.post(reverse("core:project_component_quantity", kwargs={"pk": edge.pk}), {"quantity": 5})
-        self.assertEqual(resp.status_code, 302)
-        edge.refresh_from_db()
-        self.assertEqual(edge.quantity, 5)
-
-    def test_add_existing_part_creates_edge(self):
-        from core.models import Part, ProjectPart
-
-        assembly = Project.objects.create(name="Assembly", created_by=self.user)
-        lib_part = Part.objects.create(name="LibBolt")
-        resp = self.client.post(
-            reverse("core:project_add_part", kwargs={"pk": assembly.pk}),
-            {"part": lib_part.pk, "quantity": 6},
-        )
-        self.assertEqual(resp.status_code, 302)
-        self.assertTrue(ProjectPart.objects.filter(project=assembly, part=lib_part, quantity=6).exists())
-
-    def test_remove_part_edge_keeps_node(self):
-        from core.models import Part, ProjectPart
-
-        assembly = Project.objects.create(name="Assembly", created_by=self.user)
-        part = Part.objects.create(name="Screw")
-        edge = ProjectPart.objects.create(project=assembly, part=part)
-        resp = self.client.post(reverse("core:project_part_remove", kwargs={"pk": edge.pk}))
-        self.assertEqual(resp.status_code, 302)
-        self.assertFalse(ProjectPart.objects.filter(pk=edge.pk).exists())
-        self.assertTrue(Part.objects.filter(pk=part.pk).exists())  # part node survives
-
-    def test_detail_shows_assembly_editor_for_manager(self):
-        proj = Project.objects.create(name="EditProj", created_by=self.user)
-        resp = self.client.get(reverse("core:project_detail", kwargs={"pk": proj.pk}))
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "Add existing module")
-        self.assertContains(resp, "Add existing part")
-
-    def test_add_component_requires_manage_permission(self):
-        from django.contrib.auth.models import Group, User
-
-        operator = User.objects.create_user(username="op_user", password="oppass123")
-        operator.groups.add(Group.objects.get(name="Operator"))
-        self.client.logout()
-        self.client.login(username="op_user", password="oppass123")
-        truck = Project.objects.create(name="Truck", created_by=self.user)
-        cabin = Project.objects.create(name="Cabin", created_by=self.user)
-        resp = self.client.post(
-            reverse("core:project_add_component", kwargs={"pk": truck.pk}),
-            {"child_project": cabin.pk, "quantity": 1},
-        )
-        self.assertEqual(resp.status_code, 403)
-
-    def test_detail_hides_editor_for_operator(self):
-        from django.contrib.auth.models import Group, User
-
-        operator = User.objects.create_user(username="op2_user", password="oppass123")
-        operator.groups.add(Group.objects.get(name="Operator"))
-        self.client.logout()
-        self.client.login(username="op2_user", password="oppass123")
-        proj = Project.objects.create(name="ReadOnlyProj", created_by=self.user)
-        resp = self.client.get(reverse("core:project_detail", kwargs={"pk": proj.pk}))
-        self.assertEqual(resp.status_code, 200)
-        self.assertNotContains(resp, "Add existing module")
-
-
-@override_settings(ALLOWED_HOSTS=["testserver"])
 class BuildProgressExpandedTests(TestCase):
     """Context flag build_progress_expanded on the project detail view."""
 
@@ -408,8 +310,7 @@ class BuildProgressExpandedTests(TestCase):
         self.user.groups.add(Group.objects.get(name="Admin"))
         self.client.login(username="bp_testuser", password="testpass123")
         self.project = Project.objects.create(name="BP Test Project", created_by=self.user)
-        self.part = Part.objects.create(name="BP Part")
-        ProjectPart.objects.create(project=self.project, part=self.part, quantity=2)
+        self.part = Part.objects.create(project=self.project, quantity=2, name="BP Part")
 
     def _context(self) -> dict:
         resp = self.client.get(reverse("core:project_detail", args=[self.project.pk]))
@@ -421,21 +322,21 @@ class BuildProgressExpandedTests(TestCase):
 
     def test_true_when_printed_gt_zero(self):
         job = PrintJob.objects.create(status=PrintJob.STATUS_COMPLETED)
-        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2, target_assembly=self.project)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
         PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         self.assertTrue(self._context()["build_progress_expanded"])
 
     def test_true_when_active_job(self):
-        """Non-terminal job attributed to this project expands the section."""
+        """A non-terminal job with a part of this project expands the section."""
         job = PrintJob.objects.create(status=PrintJob.STATUS_PRINTING)
-        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2, target_assembly=self.project)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
         self.assertTrue(self._context()["build_progress_expanded"])
 
     def test_true_when_job_queued(self):
-        """Job with a PrintQueue entry attributed to this project expands the section."""
+        """A queued job with a part of this project expands the section."""
         printer = PrinterProfile.objects.create(name="BP Printer", created_by=self.user)
         job = PrintJob.objects.create(status=PrintJob.STATUS_UPLOADED)
-        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2, target_assembly=self.project)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
         plate = PrintJobPlate.objects.create(print_job=job, plate_number=1)
         PrintQueue.objects.create(plate=plate, printer=printer)
         self.assertTrue(self._context()["build_progress_expanded"])
@@ -443,19 +344,28 @@ class BuildProgressExpandedTests(TestCase):
     def test_false_when_only_cancelled_job(self):
         """Terminal (cancelled) jobs do not expand the section."""
         job = PrintJob.objects.create(status=PrintJob.STATUS_CANCELLED)
-        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2, target_assembly=self.project)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
         self.assertFalse(self._context()["build_progress_expanded"])
 
     def test_false_when_only_failed_job(self):
         """Terminal (failed) jobs do not expand the section."""
         job = PrintJob.objects.create(status=PrintJob.STATUS_FAILED)
-        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2, target_assembly=self.project)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
         self.assertFalse(self._context()["build_progress_expanded"])
+
+    def test_true_when_active_job_in_subproject(self):
+        """An unfinished job with a part of a grandchild expands the root's section."""
+        sub = Project.objects.create(name="Sub", parent=self.project, created_by=self.user)
+        leaf = Project.objects.create(name="Leaf", parent=sub, created_by=self.user)
+        deep = Part.objects.create(project=leaf, quantity=1, name="Deep part")
+        job = PrintJob.objects.create(status=PrintJob.STATUS_DRAFT)
+        PrintJobPart.objects.create(print_job=job, part=deep, quantity=1)
+        self.assertTrue(self._context()["build_progress_expanded"])
 
     def test_template_renders_show_class(self):
         """Template renders Bootstrap 'show' class when build_progress_expanded is True."""
         job = PrintJob.objects.create(status=PrintJob.STATUS_PRINTING)
-        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2, target_assembly=self.project)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
         resp = self.client.get(reverse("core:project_detail", args=[self.project.pk]))
         self.assertContains(resp, "buildProgressBody")
         self.assertContains(resp, 'class="collapse show"')

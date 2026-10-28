@@ -20,7 +20,6 @@ from core.models import (
     Part,
     PrintJob,
     Project,
-    ProjectPart,
     SpoolmanFilamentMapping,
 )
 from core.services.spoolman import SpoolmanClient, SpoolmanError
@@ -117,17 +116,9 @@ class PartDetailView(LoginRequiredMixin, DetailView):
             instantiation=True,
         )
 
-        # Draft jobs the user can add this part to — those whose pinned preset (Variant B)
-        # is one this part can resolve to, and whose filament matches. The allowed presets
-        # are the part's own resolution candidates (override, single project, or the distinct
-        # containing-project presets offered by the dropdown).
-        auto_candidate, choice_candidates = part.resolve_job_preset_candidates()
-        if auto_candidate is not None:
-            allowed_preset_ids = {auto_candidate.pk}
-        elif choice_candidates:
-            allowed_preset_ids = {c.pk for c in choice_candidates}
-        else:
-            allowed_preset_ids = set()
+        # Draft jobs the user can add this part to — those whose pinned preset is the
+        # part's effective (bottom-up resolved) preset, and whose filament matches.
+        allowed_preset_ids = {part.effective_print_preset_id} - {None}
         effective_filament_id = part.spoolman_filament_id
 
         draft_jobs = PrintJob.objects.filter(
@@ -162,45 +153,9 @@ class PartDetailView(LoginRequiredMixin, DetailView):
                 spoolman_filament_name = mapping.spoolman_filament_name
         context["spoolman_filament_name"] = spoolman_filament_name
 
-        # Candidate assemblies for per-variant print attribution: the top-level
-        # assemblies (projects with no parent edges) that transitively contain this
-        # part. Blank selection = unattributed.
-        context["candidate_assemblies"] = self._candidate_assemblies(part)
-
-        auto_preset, preset_choices = part.resolve_job_preset_candidates()
-        context["job_preset_auto"] = auto_preset
-        context["job_preset_choices"] = preset_choices
+        context["ancestors"] = part.project.ancestors()
 
         return context
-
-    @staticmethod
-    def _candidate_assemblies(part: Part) -> list[Project]:
-        """Return the top-level assemblies that transitively contain ``part``.
-
-        Walks up the composition edges (``parent_assemblies``) from every project that
-        directly contains the part, collecting the roots (projects with no parent
-        edges). A path-local guard makes a corrupt persisted cycle terminate.
-
-        Args:
-            part: The part whose containing top-level assemblies to resolve.
-
-        Returns:
-            Distinct root :class:`~core.models.Project` instances, first-seen order.
-        """
-        roots: dict[int, Project] = {}
-        visited: set[int] = set()
-        stack = list(part.containing_projects())
-        while stack:
-            project = stack.pop(0)
-            if project.pk in visited:
-                continue
-            visited.add(project.pk)
-            parents = project.parent_assemblies()
-            if not parents:
-                roots.setdefault(project.pk, project)
-            else:
-                stack.extend(parents)
-        return list(roots.values())
 
 
 class PartCreateView(_SpoolmanFilamentMixin, ProjectManageMixin, CreateView):
@@ -227,9 +182,9 @@ class PartCreateView(_SpoolmanFilamentMixin, ProjectManageMixin, CreateView):
 
     def form_valid(self, form):
         self.apply_spoolman_filament(form)
+        form.instance.project = self.project
 
         response = super().form_valid(form)
-        ProjectPart.objects.create(project=self.project, part=self.object, quantity=1)
         messages.success(self.request, "Part added successfully.")
 
         # Trigger background estimation slicing
@@ -285,9 +240,7 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
         response = super().form_valid(form)
 
         if needs_re_estimate:
-            # Clear old estimates so new ones are written. Also drop any stale project-context
-            # request preset: the inputs changed, so the worker must resolve fresh (else a
-            # request queued before this edit would estimate with the wrong preset).
+            # Clear old estimates so new ones are written.
             Part.objects.filter(pk=self.object.pk).update(
                 filament_used_grams=None,
                 filament_used_meters=None,
@@ -295,7 +248,6 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
                 estimation_status=Part.ESTIMATION_NONE,
                 estimation_error="",
                 estimated_with_preset=None,
-                estimation_requested_preset=None,
             )
             _trigger_part_estimation(self.object)
 
@@ -303,6 +255,7 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
+        context["project"] = self.object.project
         context["spoolman_configured"] = self._spoolman_configured
         context["spoolman_colors"] = self._spoolman_colors
         context["spoolman_colors_json"] = json.dumps(self._spoolman_colors)
@@ -315,8 +268,9 @@ class PartDeleteView(ProjectManageMixin, DeleteView):
     model = Part
     template_name = "core/part_confirm_delete.html"
 
-    def get_success_url(self):
-        return reverse_lazy("core:project_list")
+    def get_success_url(self) -> str:
+        """Redirect to the project the deleted part belonged to."""
+        return reverse("core:project_detail", kwargs={"pk": self.object.project_id})
 
     def form_valid(self, form):
         messages.success(self.request, "Part deleted.")
@@ -352,8 +306,7 @@ class PartReEstimateView(ProjectManageMixin, View):
             messages.warning(request, "No print preset configured — cannot estimate.")
             return redirect("core:part_detail", pk=part.pk)
 
-        # Clear provenance AND any stale request channel: the single-part path carries no
-        # build context, so the worker must resolve the preset itself.
+        # Clear the stored estimate and its provenance; the worker resolves the preset.
         Part.objects.filter(pk=part.pk).update(
             filament_used_grams=None,
             filament_used_meters=None,
@@ -361,7 +314,6 @@ class PartReEstimateView(ProjectManageMixin, View):
             estimation_status=Part.ESTIMATION_NONE,
             estimation_error="",
             estimated_with_preset=None,
-            estimation_requested_preset=None,
         )
         _trigger_part_estimation(part)
         messages.info(request, f"Re-estimation started for '{part.name}'.")

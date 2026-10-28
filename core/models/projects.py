@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Optional
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
-from django.db import models, transaction
-from django.db.models import CheckConstraint, Q
+from django.db import models
+from django.db.models import CheckConstraint, Q, QuerySet
 
 from core.models.parts import Part
 from core.models.spoolman import SpoolmanFilamentMapping
@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from core.models.documents import ProjectDocument
     from core.models.hardware import ProjectHardware
     from core.models.orca_profiles import OrcaPrintPreset
+    from core.models.printing import PrintJob
 
 
 class Project(models.Model):
@@ -40,7 +41,7 @@ class Project(models.Model):
     )
     parent = models.ForeignKey(
         "self",
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
         null=True,
         blank=True,
         related_name="subprojects",
@@ -86,59 +87,18 @@ class Project(models.Model):
         return self.name
 
     def save(self, *args, **kwargs) -> None:
-        """Persist the project, refusing to store a cyclic legacy ``parent``.
+        """Persist the project, refusing to store a cyclic ``parent``.
 
         Django never calls :meth:`clean` implicitly, so the cycle check is run
         here too — a ``project.parent = descendant; project.save()`` from a shell
-        or import raises :class:`ValidationError` instead of persisting a graph
+        or import raises :class:`ValidationError` instead of persisting a cycle
         that would later blow up the recursive aggregate properties.
-
-        Edge reconciliation is **seed-on-create only**: when a project is *inserted*
-        with the legacy ``parent`` FK set, one matching ``ProjectComponent`` edge is
-        created if missing, so a project created via ``Project(parent=…)`` still
-        appears under its assembly. A ``save()`` **never deletes** edges, **never
-        overwrites** an existing edge's ``quantity``, and — crucially — does **not**
-        re-run the mirror on later saves. The composition graph is authoritative once
-        the row exists: detaching/re-parenting through the ``ProjectComponent`` edge UI
-        (which owns edge deletion) is durable and is not undone by a subsequent scalar
-        save or API ``PATCH`` of a project whose stale legacy ``parent_id`` is still set.
-
-        This is the fix for a production data corruptor: the previous shim ran
-        ``ProjectComponent.objects.filter(child_project=self).delete()`` on *every*
-        save whose ``parent`` FK was ``None`` — which is every edge-based project —
-        so a plain GUI edit or API ``PATCH`` silently wiped the assembly's parent
-        edges. The seed-on-create mirror is an interim bridge for the still-present
-        legacy ``parent`` FK and is removed together with that field in the contract
-        phase.
-
-        The row insert and the seeded edge are written inside one
-        :func:`~django.db.transaction.atomic` block, so a failure of the edge create
-        rolls back the insert too — the two dependent writes never commit apart
-        (no parent row left without its seeded edge).
         """
         self._assert_parent_acyclic()
-        creating = self._state.adding
-        with transaction.atomic():
-            super().save(*args, **kwargs)
-            if creating and self.parent_id is not None:
-                from core.models.composition import ProjectComponent
-
-                ProjectComponent.objects.get_or_create(
-                    parent_project_id=self.parent_id,
-                    child_project=self,
-                    defaults={"quantity": self.quantity},
-                )
+        super().save(*args, **kwargs)
 
     def clean(self) -> None:
-        """Validate that the parent assignment does not create a cycle.
-
-        Runs on every ``full_clean()`` path — ``ProjectEditForm``, the admin,
-        etc. The same check is also enforced in :meth:`save` so a bare
-        shell/import ``save()`` cannot persist a cycle either. The visited-set
-        guards on the recursive traversals (:meth:`get_descendant_ids` and the
-        ``_collect_*`` aggregators) remain as a runtime safety net for any cycle
-        that somehow reaches the database (e.g. a raw SQL / bulk ``update``).
-        """
+        """Validate that the parent assignment does not create a cycle."""
         super().clean()
         self._assert_parent_acyclic()
 
@@ -154,12 +114,11 @@ class Project(models.Model):
         concurrency-safe — two simultaneous re-parent transactions (A→B and B→A)
         can each pass the check on stale reads and commit a cycle. Fully
         preventing that would need DB-level enforcement (serializable isolation /
-        row locks / a recursive-CTE constraint). The consequence is bounded, not
-        catastrophic: **every** parent-chain traversal in this model
-        (:meth:`get_descendant_ids`, :meth:`effective_default_print_preset`, the
-        ``_collect_*`` aggregators) carries a visited-set guard, so a raced cycle
-        degrades to a logically odd graph rather than an infinite loop /
-        ``RecursionError`` at render.
+        row locks / a recursive-CTE constraint). The upward walks
+        (:meth:`ancestors`, :meth:`effective_default_print_preset`),
+        :meth:`get_descendant_ids` and the ``_collect_*`` aggregators (via
+        :meth:`_walk_subtree`) carry a visited-set guard, so a raced cycle
+        degrades to an odd result rather than a hang.
         """
         if self.parent_id is None:
             return
@@ -178,50 +137,41 @@ class Project(models.Model):
 
     @property
     def is_subproject(self) -> bool:
-        """Return True if any assembly references this project via a composition edge."""
-        return self.parent_links.exists()
+        """Return True if this project has a parent project."""
+        return self.parent_id is not None
 
-    def parent_assemblies(self) -> list[Project]:
-        """Return distinct assemblies that directly contain this project (its "used in").
+    def ancestors(self) -> list[Project]:
+        """Return the ancestor chain of this project, root first, excluding self.
 
-        Traverses the ``ProjectComponent`` edges pointing at this project
-        (``parent_links``) rather than the legacy single ``parent`` FK, so a module
-        shared by several assemblies lists all of them.
+        A visited-set guard makes the walk terminate even on a corrupt cycle.
 
         Returns:
-            Distinct parent :class:`Project` instances (empty list for top-level
-            assemblies), first-seen order preserved.
+            Ancestor projects ordered from the root down to the direct parent.
         """
-        seen: dict[int, Project] = {}
-        for edge in self.parent_links.select_related("parent_project").all():
-            seen.setdefault(edge.parent_project_id, edge.parent_project)
-        return list(seen.values())
+        chain: list[Project] = []
+        visited: set[int] = {self.pk} if self.pk is not None else set()
+        current = self.parent
+        while current is not None and current.pk not in visited:
+            visited.add(current.pk)
+            chain.append(current)
+            current = current.parent
+        chain.reverse()
+        return chain
 
-    def child_modules(self) -> list[tuple[Project, int]]:
-        """Return ``(child_project, quantity)`` pairs from composition edges, ordered.
+    @property
+    def root(self) -> Project:
+        """Return the top-level project of this project's tree (self for roots)."""
+        chain = self.ancestors()
+        return chain[0] if chain else self
 
-        Reads the ``child_links`` composition edges (ordered by ``position, pk``) instead
-        of the legacy ``subprojects`` FK reverse relation.
-
-        Returns:
-            List of ``(child_project, edge_quantity)`` tuples.
-        """
-        return [(e.child_project, e.quantity) for e in self.child_links.select_related("child_project").all()]
-
-    def direct_parts(self) -> list[tuple[Part, int]]:
-        """Return ``(part, quantity)`` pairs directly attached to this project, ordered.
-
-        Reads the ``part_links`` composition edges (ordered by ``position, pk``) instead
-        of the legacy ``parts`` FK reverse relation.
-
-        Returns:
-            List of ``(part, edge_quantity)`` tuples.
-        """
-        return [(link.part, link.quantity) for link in self.part_links.select_related("part").all()]
+    @property
+    def path_label(self) -> str:
+        """Return the project path from the root down to self, joined by ``" › "``."""
+        return " › ".join(p.name for p in [*self.ancestors(), self])
 
     def direct_part_count(self) -> int:
-        """Return the number of distinct parts directly attached to this project (via edges)."""
-        return self.part_links.count()
+        """Return the number of parts directly in this project."""
+        return self.parts.count()
 
     @property
     def effective_default_print_preset(self) -> Optional[OrcaPrintPreset]:
@@ -266,28 +216,24 @@ class Project(models.Model):
         return None
 
     #: Relation chain that carries everything the aggregate properties need for one node
-    #: (its parts via composition edges, and each part's completed-plate job info).
-    _AGGREGATE_PART_LEAF = "part_links__part__job_entries__print_job__plates"
+    #: (its parts and each part's completed-plate job info).
+    _AGGREGATE_PART_LEAF = "parts__job_entries__print_job__plates"
 
     @classmethod
     def aggregate_prefetch_lookups(cls, depth: int = 3) -> list[str]:
-        """Prefetch lookups that keep the DAG aggregate properties query-flat.
+        """Prefetch lookups that keep the tree aggregate properties query-flat.
 
         Returns the ``prefetch_related`` arguments a list/detail view should use
         so that ``total_parts_count``, ``progress_percent``, ``aggregated_status``
-        and ``total_filament_grams`` traverse the composition DAG entirely from
-        cache instead of issuing a query per node/part (the N+1 that made project
-        lists with status badges slow).
+        and ``total_filament_grams`` traverse the project tree entirely from
+        cache instead of issuing a query per node/part.
 
-        Covers, up to ``depth`` levels of ``child_links`` nesting, the part-edge leaf
-        (``part_links__part__…``) and the child-edge relation
-        (``child_links__child_project``) so the recursive collectors traverse from
-        cache. The self-referential composition relation cannot be prefetched to
-        unbounded depth; levels below ``depth`` degrade gracefully to lazy queries
-        (never worse than before).
+        Covers, up to ``depth`` levels of ``subprojects`` nesting, the part leaf
+        (``parts__job_entries__print_job__plates``) and the ``subprojects`` relation.
+        Levels below ``depth`` degrade gracefully to lazy queries.
 
         Args:
-            depth: Number of child-module levels to cover (root counts as 0).
+            depth: Number of sub-project levels to cover (root counts as 0).
 
         Returns:
             List of ``prefetch_related`` lookup strings.
@@ -296,274 +242,177 @@ class Project(models.Model):
         prefix = ""
         for _ in range(depth + 1):
             lookups.append(f"{prefix}{cls._AGGREGATE_PART_LEAF}")
-            lookups.append(f"{prefix}child_links__child_project")
-            prefix += "child_links__child_project__"
+            lookups.append(f"{prefix}subprojects")
+            prefix += "subprojects__"
         return lookups
 
     @classmethod
     def hardware_prefetch_lookups(cls, depth: int = 3) -> list[str]:
-        """Prefetch lookups for walking only the composition tree (no parts/print jobs).
+        """Prefetch lookups for walking only the project tree (no parts/print jobs).
 
         Lighter alternative to :meth:`aggregate_prefetch_lookups` for callers that
         only aggregate hardware, such as the shopping list.
 
         Args:
-            depth: Number of child-module levels to cover (root counts as 0).
+            depth: Number of sub-project levels to cover (root counts as 0).
 
         Returns:
             List of ``prefetch_related`` lookup strings.
         """
-        return ["child_links__child_project" + "__child_links__child_project" * level for level in range(depth + 1)]
+        return ["subprojects" + "__subprojects" * level for level in range(depth + 1)]
 
-    def get_descendant_ids(self, _path: set[int] | None = None) -> set[int]:
-        """Return the set of PKs of all descendant projects over the composition DAG.
+    def get_descendant_ids(self) -> set[int]:
+        """Return the set of PKs of all descendant projects.
 
-        Traverses ``child_links`` (composition edges) instead of the legacy
-        ``subprojects`` FK; a path-local guard makes a corrupt persisted cycle
-        terminate. Shared modules reached via multiple paths appear once in the set.
-
-        Args:
-            _path: PKs on the current recursion stack (path-local cycle guard) so a
-                corrupt cycle already persisted in the database (e.g. inserted outside
-                model validation) terminates instead of raising ``RecursionError``.
+        Walks the tree level by level with one ``values_list`` query per depth
+        (not per node); a visited-set guard makes a corrupt persisted cycle
+        terminate.
 
         Returns:
-            Set of project PKs that are descendants of this project.
+            Set of project PKs below this project in the tree.
         """
-        if _path is None:
-            _path = set()
-        if self.pk in _path:
-            return set()
-        next_path = _path | {self.pk}
         ids: set[int] = set()
-        for edge in self.child_links.all():
-            child = edge.child_project
-            ids.add(child.pk)
-            ids |= child.get_descendant_ids(next_path)
+        frontier: set[int] = {self.pk}
+        while frontier:
+            children = set(Project.objects.filter(parent_id__in=frontier).values_list("pk", flat=True))
+            frontier = children - ids - {self.pk}
+            ids |= frontier
         return ids
 
-    def _expand_parts_relative(
-        self,
-        _path: set[int],
-        _memo: dict[int, list[tuple[Part, int]]],
-    ) -> list[tuple[Part, int]]:
-        """Return ``[(part, multiplier_relative_to_self)]`` over the composition DAG.
+    def subtree_ids(self) -> set[int]:
+        """Return the PKs of this project and all of its descendants."""
+        return {self.pk} | self.get_descendant_ids()
 
-        The multiplier is the **product of the composition edge quantities** on the path
-        from this node down to the part — the ``ProjectComponent`` child-edge quantities
-        times the part's own ``ProjectPart.quantity`` edge. The **edge quantity is the leaf
-        count** (Phase 6a): a part attached to a module ``4×`` and ``10×`` in two modules of
-        one assembly counts ``14``, independently of the global ``Part.quantity``. Callers
-        therefore consume the multiplier directly and **must not** additionally multiply by
-        ``Part.quantity`` (that would double-count). Under the Phase-2 dual-write
-        ``ProjectPart.quantity == Part.quantity`` for single-count fixtures, so this flip is
-        behavior-preserving for them; ``Part.quantity`` becomes redundant and is removed in
-        the contract phase.
+    def blocking_jobs(self, ids: set[int] | None = None) -> QuerySet[PrintJob]:
+        """Return unfinished print jobs that contain a part of this project's subtree.
 
-        Traverses ``part_links`` (direct parts, folding ``ProjectPart.quantity``) and
-        ``child_links`` (child modules, multiplying by each edge ``quantity``). A per-node
-        ``_memo`` caches the
-        (path-independent, in an acyclic graph) expansion so a module shared via several paths
-        is expanded once and scaled per incoming edge. ``_path`` guards against a corrupt
-        persisted cycle: a node recurring on its own recursion stack contributes nothing
-        further (traversal terminates, degrading gracefully — consistent with the Phase-1
-        corrupt-cycle stance).
+        A project cannot be deleted while any of these exist.
 
         Args:
-            _path: PKs on the current recursion stack (path-local cycle guard).
-            _memo: Per-node cache of relative expansions, keyed by project PK.
+            ids: Precomputed :meth:`subtree_ids`, to avoid walking the tree again.
 
         Returns:
-            List of ``(part, multiplier_relative_to_self)`` tuples.
+            Distinct queryset of :class:`~core.models.printing.PrintJob` rows whose
+            status is not in :attr:`PrintJob.TERMINAL_STATUSES`.
         """
-        if self.pk in _memo:
-            return _memo[self.pk]
-        if self.pk in _path:
-            return []
-        next_path = _path | {self.pk}
-        rel: list[tuple[Part, int]] = [(link.part, link.quantity) for link in self.part_links.all()]
-        for edge in self.child_links.all():
-            for part, mult in edge.child_project._expand_parts_relative(next_path, _memo):
-                rel.append((part, edge.quantity * mult))
-        _memo[self.pk] = rel
-        return rel
+        from core.models.printing import PrintJob
+
+        return (
+            PrintJob.objects.filter(job_parts__part__project_id__in=self.subtree_ids() if ids is None else ids)
+            .exclude(status__in=PrintJob.TERMINAL_STATUSES)
+            .distinct()
+        )
+
+    def deletion_summary(self, ids: set[int] | None = None) -> dict[str, int]:
+        """Count what deleting this project would remove along with it.
+
+        Args:
+            ids: Precomputed :meth:`subtree_ids`, to avoid walking the tree again.
+
+        Returns:
+            Dict with keys ``subprojects``, ``parts``, ``documents``, ``hardware`` and
+            ``print_history`` (the ``PrintJobPart`` rows of the subtree's parts).
+        """
+        from core.models.documents import ProjectDocument
+        from core.models.hardware import ProjectHardware
+        from core.models.printing import PrintJobPart
+
+        if ids is None:
+            ids = self.subtree_ids()
+        return {
+            "subprojects": len(ids) - 1,
+            "parts": Part.objects.filter(project_id__in=ids).count(),
+            "documents": ProjectDocument.objects.filter(project_id__in=ids).count(),
+            "hardware": ProjectHardware.objects.filter(project_id__in=ids).count(),
+            "print_history": PrintJobPart.objects.filter(part__project_id__in=ids).count(),
+        }
+
+    def _walk_subtree(self, multiplier: int = 1) -> list[tuple[Project, int]]:
+        """Return every node of the subtree (self first, depth-first) with its multiplier.
+
+        The multiplier of a node is ``multiplier`` times the quantities of all
+        sub-projects from this project down to (and including) that node. A
+        visited-set guard skips a node already seen, so a corrupt persisted cycle
+        terminates instead of recursing forever.
+
+        Args:
+            multiplier: Factor of this project itself.
+
+        Returns:
+            List of ``(project, multiplier)`` tuples in depth-first order.
+        """
+        nodes: list[tuple[Project, int]] = []
+        visited: set[int] = set()
+        stack: list[tuple[Project, int]] = [(self, multiplier)]
+        while stack:
+            node, factor = stack.pop()
+            if node.pk in visited:
+                continue
+            visited.add(node.pk)
+            nodes.append((node, factor))
+            stack.extend((sub, factor * sub.quantity) for sub in reversed(list(node.subprojects.all())))
+        return nodes
 
     def _collect_parts_with_multiplier(self, multiplier: int = 1) -> list[tuple[Part, int]]:
-        """Collect all parts over the composition DAG with their effective multiplier.
+        """Collect all parts of the subtree with their needed count.
 
-        Reads the Phase-1 composition edges (``part_links``/``child_links``). Each part is
-        returned once per distinct path to it, scaled by the product of edge quantities on
-        that path (including its own ``ProjectPart.quantity`` edge — the leaf count, Phase 6a)
-        times ``multiplier`` — so a building block shared by two assemblies (or reached via a
-        diamond) contributes correctly to each. The returned multiplier is the **effective
-        count**; callers must not multiply it again by ``Part.quantity``.
+        Each part appears exactly once, with ``multiplier × part.quantity`` where the
+        multiplier is the product of the sub-project quantities from this project down
+        to the part's project.
 
         Args:
             multiplier: Outer quantity factor applied to every collected part.
 
         Returns:
-            List of ``(part, effective_count)`` tuples.
+            List of ``(part, needed_count)`` tuples.
         """
-        rel = self._expand_parts_relative(set(), {})
-        return [(part, multiplier * mult) for part, mult in rel]
-
-    def resolve_part_presets(self) -> list[tuple[Part, int, Optional[OrcaPrintPreset]]]:
-        """Expand the composition DAG, resolving each part's preset per build path.
-
-        Traverses ``part_links``/``child_links`` like :meth:`_collect_parts_with_multiplier`
-        but additionally carries the **nearest directly-containing project** down each path so
-        the leaf resolution (:func:`core.models.parts.resolve_part_preset`) can apply the
-        override-else-nearest-project rule (Variant B). A part shared via several paths appears
-        once per path, each with the preset of the module that contains it on that path.
-
-        Returns:
-            List of ``(part, effective_count, resolved_preset)`` tuples, where
-            ``effective_count`` matches :meth:`_collect_parts_with_multiplier` and
-            ``resolved_preset`` is an :class:`OrcaPrintPreset` or ``None``.
-        """
-        from core.models.parts import resolve_part_preset
-
-        results: list[tuple[Part, int, Optional[OrcaPrintPreset]]] = []
-        self._resolve_presets_walk(nearest=self, multiplier=1, _path=set(), _out=results, _resolve=resolve_part_preset)
-        return results
-
-    def resolve_estimation_preset_map(self) -> dict[int, tuple[Optional[OrcaPrintPreset], bool]]:
-        """Resolve each distinct part's estimation preset **in this project's context**.
-
-        Folds :meth:`resolve_part_presets` (per build path) into one ``(preset, ambiguous)``
-        result per part, so a whole-project re-estimate can estimate a legacy part with the
-        nearest-project default instead of skipping it. A part is ``ambiguous`` only when it
-        has no override and is reached, within this assembly, via paths whose nearest-project
-        presets disagree (the pathological "same part in two differently-preset modules of one
-        assembly" case) — matching :meth:`core.models.parts.Part.resolve_estimation_preset`
-        but scoped to this build context.
-
-        Returns:
-            ``{part_pk: (preset, ambiguous)}``. When ``ambiguous`` is ``True`` the preset is
-            ``None``; otherwise the preset is the override, the single agreed context preset,
-            or ``None`` (no resolvable preset on any path).
-        """
-        override: dict[int, OrcaPrintPreset] = {}
-        context_ids: dict[int, set[int]] = {}
-        preset_objs: dict[int, OrcaPrintPreset] = {}
-        for part, _count, preset in self.resolve_part_presets():
-            if part.print_preset_id is not None:
-                override[part.pk] = part.print_preset
-            elif preset is not None:
-                context_ids.setdefault(part.pk, set()).add(preset.pk)
-                preset_objs[preset.pk] = preset
-
-        out: dict[int, tuple[Optional[OrcaPrintPreset], bool]] = {}
-        for pk in set(override) | set(context_ids):
-            if pk in override:
-                out[pk] = (override[pk], False)
-                continue
-            ids = context_ids.get(pk, set())
-            if len(ids) > 1:
-                out[pk] = (None, True)
-            elif len(ids) == 1:
-                out[pk] = (preset_objs[next(iter(ids))], False)
-            else:
-                out[pk] = (None, False)
-        return out
-
-    def _resolve_presets_walk(
-        self,
-        nearest: Project,
-        multiplier: int,
-        _path: set[int],
-        _out: list[tuple[Part, int, Optional[OrcaPrintPreset]]],
-        _resolve,
-    ) -> None:
-        """Depth-first helper for :meth:`resolve_part_presets` (nearest-project carrier).
-
-        ``nearest`` is the project directly containing the parts at this node. Direct parts
-        (``part_links``) resolve against ``nearest``; child modules recurse with the child as
-        the new ``nearest`` and the edge quantity folded into ``multiplier``. ``_path`` guards
-        a corrupt persisted cycle (a node on its own stack contributes nothing further).
-
-        Args:
-            nearest: Project directly containing the parts collected at this node.
-            multiplier: Product of edge quantities on the path to this node.
-            _path: PKs on the current recursion stack (path-local cycle guard).
-            _out: Accumulator receiving ``(part, effective_count, resolved_preset)`` tuples.
-            _resolve: The leaf resolver ``resolve_part_preset`` (injected to avoid re-import).
-        """
-        if self.pk in _path:
-            return
-        next_path = _path | {self.pk}
-        for link in self.part_links.select_related("part").all():
-            preset = _resolve(link.part, nearest)
-            _out.append((link.part, multiplier * link.quantity, preset))
-        for edge in self.child_links.select_related("child_project").all():
-            edge.child_project._resolve_presets_walk(
-                nearest=edge.child_project,
-                multiplier=multiplier * edge.quantity,
-                _path=next_path,
-                _out=_out,
-                _resolve=_resolve,
-            )
+        return [
+            (part, factor * part.quantity)
+            for node, factor in self._walk_subtree(multiplier)
+            for part in node.parts.all()
+        ]
 
     @property
     def total_parts_count(self) -> int:
-        """Total number of individual parts needed (sum of edge quantities, including sub-projects).
+        """Total number of individual parts needed, including sub-projects.
 
-        The composition-edge quantity is authoritative (Phase 6a): the effective count from
-        :meth:`_collect_parts_with_multiplier` already folds ``ProjectPart.quantity`` and the
-        child-edge chain, so it is summed directly (no extra ``× Part.quantity``).
+        For a sub-project this is its need for the whole tree (see
+        :meth:`chain_multiplier`), consistent with :meth:`build_progress`.
         """
-        return sum(mult for _p, mult in self._collect_parts_with_multiplier())
+        return sum(needed for _p, needed in self._collect_parts_with_multiplier(self.chain_multiplier()))
 
-    @property
-    def printed_parts_count(self) -> int:
-        """Total number of parts already printed to completion (including sub-projects).
+    def chain_multiplier(self) -> int:
+        """Return how many instances of this project the whole tree needs.
 
-        ``printed_quantity`` is a global (job-based) scalar per part; it is capped at the
-        edge-authoritative effective count per collected path so a part printed more times
-        than an assembly needs never pushes :attr:`progress_percent` past 100%.
+        ``1`` for a top-level project; for a sub-project the product of its own
+        ``quantity`` and the quantities of every sub-project above it (the root's
+        quantity is ignored).
         """
-        return sum(min(p.printed_quantity, mult) for p, mult in self._collect_parts_with_multiplier())
+        if self.parent_id is None:
+            return 1
+        factor = self.quantity
+        for ancestor in self.ancestors()[1:]:
+            factor *= ancestor.quantity
+        return factor
 
-    @property
-    def progress_percent(self) -> int:
-        """Project completion percentage (0-100)."""
-        total = self.total_parts_count
-        if total == 0:
-            return 0
-        return int(self.printed_parts_count / total * 100)
+    def build_progress(self) -> dict:
+        """Per-part print progress of the subtree.
 
-    def variant_progress(self) -> dict:
-        """Per-assembly print progress using this project as the build context.
-
-        ``needed`` per part = the **edge-authoritative effective count** from
-        :meth:`_collect_parts_with_multiplier` (``ProjectPart.quantity`` folded with the
-        child-edge chain, Phase 6a); ``printed`` = quantities attributed to THIS assembly via
-        ``PrintJobPart.target_assembly`` (see :meth:`Part.printed_quantity_for`). Each
-        part is capped at its need when computing the overall percentage, so
-        over-printing one part never pushes the assembly past 100%.
-
-        The global :attr:`total_parts_count` / :attr:`progress_percent` /
-        :attr:`aggregated_status` are unaffected — this is an additional,
-        context-aware view.
+        ``needed`` per part is its count for the **whole tree** (part quantity ×
+        every sub-project quantity up to the root, see :meth:`chain_multiplier`),
+        because ``printed`` is :attr:`Part.printed_quantity` — all completed jobs of
+        the part, which serve the whole build. Each part is capped at its need, so
+        over-printing one part never pushes the project past 100%.
 
         Returns:
             Dict with keys ``percent`` (int 0–100), ``needed`` (int), ``printed``
             (int) and ``parts`` (list of ``{part, needed, printed, remaining}`` dicts).
         """
-        from collections import defaultdict
-
-        needed_by_part: dict[int, int] = defaultdict(int)
-        part_objs: dict[int, Part] = {}
-        for part, mult in self._collect_parts_with_multiplier():
-            needed_by_part[part.pk] += mult
-            part_objs[part.pk] = part
-
         rows: list[dict] = []
         total_needed = 0
         total_printed = 0
-        for pk, needed in needed_by_part.items():
-            part = part_objs[pk]
-            printed = part.printed_quantity_for(self)
+        for part, needed in self._collect_parts_with_multiplier(self.chain_multiplier()):
+            printed = part.printed_quantity
             total_needed += needed
             total_printed += min(printed, needed)
             rows.append(
@@ -574,9 +423,18 @@ class Project(models.Model):
                     "remaining": max(0, needed - printed),
                 }
             )
-
         percent = int(total_printed / total_needed * 100) if total_needed else 0
         return {"percent": percent, "needed": total_needed, "printed": total_printed, "parts": rows}
+
+    @property
+    def printed_parts_count(self) -> int:
+        """Total number of parts printed to completion, capped per part at its need."""
+        return self.build_progress()["printed"]
+
+    @property
+    def progress_percent(self) -> int:
+        """Project completion percentage (0-100)."""
+        return self.build_progress()["percent"]
 
     # Project-level aggregated status constants
     STATUS_EMPTY = "empty"
@@ -594,18 +452,14 @@ class Project(models.Model):
         Status priority (highest to lowest):
         - ``error``: at least one part has an estimation error
         - ``estimating``: at least one part is currently being estimated
-        - ``complete``: all parts have been printed *for this assembly*
-        - ``in_progress``: at least one part has been printed *for this assembly*
+        - ``complete``: all parts have been printed
+        - ``in_progress``: at least one part has been printed
         - ``ready``: all parts have filament estimates, none printed yet
         - ``pending``: parts exist but estimates are missing / not started
         - ``empty``: no parts in the project (and no sub-projects with parts)
 
-        The printed/complete signals are **per-assembly** (Phase 6a): a part counts as
-        printed/complete here only for prints attributed to THIS project via
-        ``PrintJobPart.target_assembly`` (see :meth:`variant_progress`). Prints left
-        unattributed (``target_assembly`` NULL) no longer flip a project to
-        in-progress/complete. The estimation signals (error/estimating/ready) stay global to
-        the parts themselves.
+        The printed/complete signals come from :meth:`build_progress` (all completed
+        jobs per part); the estimation signals come from the parts themselves.
 
         Returns:
             One of the STATUS_* constants.
@@ -629,8 +483,7 @@ class Project(models.Model):
             if not part.filament_used_grams:
                 all_estimated = False
 
-        # Per-assembly printed/complete signals: only prints attributed to THIS project.
-        rows = self.variant_progress()["parts"]
+        rows = self.build_progress()["parts"]
         all_complete = bool(rows) and all(row["remaining"] == 0 for row in rows)
         any_printed = any(row["printed"] > 0 for row in rows)
 
@@ -665,29 +518,29 @@ class Project(models.Model):
 
     @property
     def total_filament_grams(self) -> float:
-        """Total filament required for all parts in the project (grams), including sub-projects."""
+        """Total filament (grams) for all parts incl. sub-projects, scaled like :attr:`total_parts_count`."""
         return sum(
-            p.filament_used_grams * mult for p, mult in self._collect_parts_with_multiplier() if p.filament_used_grams
+            p.filament_used_grams * mult
+            for p, mult in self._collect_parts_with_multiplier(self.chain_multiplier())
+            if p.filament_used_grams
         )
 
     @property
     def total_filament_meters(self) -> float:
-        """Total filament required for all parts in the project (meters), including sub-projects."""
+        """Total filament (meters) for all parts incl. sub-projects, scaled like :attr:`total_parts_count`."""
         return sum(
-            p.filament_used_meters * mult for p, mult in self._collect_parts_with_multiplier() if p.filament_used_meters
+            p.filament_used_meters * mult
+            for p, mult in self._collect_parts_with_multiplier(self.chain_multiplier())
+            if p.filament_used_meters
         )
 
     def filament_requirements(self) -> list[dict]:
         """Per-filament-type breakdown of total and remaining filament needs.
 
-        Groups parts (including those from sub-projects, scaled by the composition
-        edge quantities) by ``spoolman_filament_id`` and calculates how much filament
-        is needed in total and how much is still remaining.
-
-        ``total`` uses the edge-authoritative effective count (Phase 6a); ``remaining`` is
-        **per-assembly** — it uses ``needed − printed_for(self)`` from
-        :meth:`variant_progress` (prints attributed to THIS project), not the global
-        ``Part.remaining_quantity``.
+        Groups parts (including those from sub-projects, scaled by the sub-project
+        quantities) by ``spoolman_filament_id`` and calculates how much filament
+        is needed in total and how much is still remaining (``needed − printed``
+        per part, from :meth:`build_progress`).
 
         Returns:
             List of dicts with keys: filament_id, filament_name, color,
@@ -696,15 +549,10 @@ class Project(models.Model):
         """
         from collections import defaultdict
 
-        # (part, effective_count) — folds edge quantities and sub-project chain
-        part_mults = self._collect_parts_with_multiplier()
-
-        # Per-assembly remaining instances per part (needed − printed-for-this-assembly).
-        remaining_by_pk: dict[int, int] = {row["part"].pk: row["remaining"] for row in self.variant_progress()["parts"]}
-
-        buckets: dict[Optional[int], list[tuple]] = defaultdict(list)
-        for part, mult in part_mults:
-            buckets[part.spoolman_filament_id].append((part, mult))
+        buckets: dict[Optional[int], list[tuple[Part, int, int]]] = defaultdict(list)
+        for row in self.build_progress()["parts"]:
+            part = row["part"]
+            buckets[part.spoolman_filament_id].append((part, row["needed"], row["remaining"]))
 
         # Resolve filament names from SpoolmanFilamentMapping
         filament_ids = [fid for fid in buckets if fid is not None]
@@ -722,22 +570,13 @@ class Project(models.Model):
             if mapping and mapping.spoolman_filament_name:
                 filament_name = mapping.spoolman_filament_name
 
-            total_g = sum((p.filament_used_grams or 0) * mult for p, mult in pm_list)
-            total_m = sum((p.filament_used_meters or 0) * mult for p, mult in pm_list)
-
-            # Remaining is per-assembly and per DISTINCT part (variant_progress already
-            # aggregated needed/printed across all paths), so iterate unique parts to avoid
-            # double-counting a part reached via several paths.
-            distinct_parts = {p.pk: p for p, _ in pm_list}
-            remaining_g = sum(
-                (p.filament_used_grams or 0) * remaining_by_pk.get(pk, 0) for pk, p in distinct_parts.items()
-            )
-            remaining_m = sum(
-                (p.filament_used_meters or 0) * remaining_by_pk.get(pk, 0) for pk, p in distinct_parts.items()
-            )
+            total_g = sum((p.filament_used_grams or 0) * needed for p, needed, _r in pm_list)
+            total_m = sum((p.filament_used_meters or 0) * needed for p, needed, _r in pm_list)
+            remaining_g = sum((p.filament_used_grams or 0) * remaining for p, _n, remaining in pm_list)
+            remaining_m = sum((p.filament_used_meters or 0) * remaining for p, _n, remaining in pm_list)
 
             # Collect material from parts and color from mapping (single source of truth)
-            parts = [p for p, _ in pm_list]
+            parts = [p for p, _n, _r in pm_list]
             materials = sorted({p.material for p in parts if p.material})
 
             # Prefer the cached Spoolman color from the mapping over stale Part.color snapshots
@@ -776,57 +615,31 @@ class Project(models.Model):
     # Document & hardware aggregation
     # ------------------------------------------------------------------
 
-    def _collect_documents(self, _path: set[int] | None = None) -> list[tuple[ProjectDocument, Project]]:
-        """Recursively collect documents from this project and its child modules (DAG).
-
-        Traverses ``child_links`` (composition edges) instead of the legacy
-        ``subprojects`` FK. A path-local guard makes a corrupt persisted cycle
-        terminate; a module shared via several paths contributes its documents once
-        per path, matching the parts/hardware collectors.
-
-        Args:
-            _path: PKs on the current recursion stack (path-local cycle guard).
+    def _collect_documents(self) -> list[tuple[ProjectDocument, Project]]:
+        """Recursively collect documents from this project and its sub-projects.
 
         Returns:
             List of ``(ProjectDocument, project)`` tuples so the template can
             group documents by their owning project using a stable identifier.
         """
-        if _path is None:
-            _path = set()
-        if self.pk in _path:
-            return []
-        next_path = _path | {self.pk}
-        result = [(doc, self) for doc in self.documents.all()]
-        for edge in self.child_links.all():
-            result.extend(edge.child_project._collect_documents(next_path))
-        return result
+        return [(doc, node) for node, _factor in self._walk_subtree() for doc in node.documents.all()]
 
-    def _collect_hardware_with_multiplier(
-        self,
-        multiplier: int = 1,
-        _path: set[int] | None = None,
-    ) -> list[tuple[ProjectHardware, int]]:
-        """Recursively collect hardware assignments over the DAG with quantity multiplier.
-
-        Traverses ``child_links`` (composition edges) instead of the legacy
-        ``subprojects`` FK, multiplying each edge ``quantity`` along the path. A
-        path-local guard makes a corrupt persisted cycle terminate.
+    def _collect_hardware_with_multiplier(self, multiplier: int = 1) -> list[tuple[ProjectHardware, int]]:
+        """Recursively collect hardware assignments with the sub-project quantity multiplier.
 
         Args:
             multiplier: Accumulated parent quantity factor.
-            _path: PKs on the current recursion stack (path-local cycle guard).
 
         Returns:
             List of ``(ProjectHardware, effective_multiplier)`` tuples.
         """
-        if _path is None:
-            _path = set()
-        if self.pk in _path:
-            return []
-        next_path = _path | {self.pk}
-        result = [(hw, multiplier) for hw in self.hardware_assignments.select_related("hardware_part", "project").all()]
-        for edge in self.child_links.all():
-            result.extend(edge.child_project._collect_hardware_with_multiplier(multiplier * edge.quantity, next_path))
+        result: list[tuple[ProjectHardware, int]] = []
+        for node, factor in self._walk_subtree(multiplier):
+            for hw in node.hardware_assignments.select_related("hardware_part").all():
+                # Reuse the walked node (its parent chain is already cached) so
+                # ``hw.project.path_label`` costs no extra query per sub-project.
+                hw.project = node
+                result.append((hw, factor))
         return result
 
     @property
@@ -846,7 +659,8 @@ class Project(models.Model):
 
         Returns:
             List of dicts with keys: hardware_part, total_quantity,
-            total_price, projects (list of contributing project names).
+            total_price, projects (sorted tree path labels of the contributing
+            projects, e.g. ``"Truck › Axle"``).
         """
         from collections import defaultdict
 
@@ -859,7 +673,7 @@ class Project(models.Model):
             bucket = buckets[key]
             bucket["hardware_part"] = hw.hardware_part
             bucket["total_quantity"] += hw.quantity * mult
-            bucket["projects"].append(hw.project.name)
+            bucket["projects"].append(hw.project.path_label)
 
         results = []
         for bucket in buckets.values():

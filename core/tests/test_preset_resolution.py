@@ -1,9 +1,9 @@
-"""Tests for top-down, per-build-path print preset resolution (Variant B)."""
+"""Tests for bottom-up print preset resolution on the project tree."""
 
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 
-from core.models import OrcaPrintPreset, Part, Project, ProjectComponent, ProjectPart
-from core.models.parts import resolve_part_preset
+from core.models import OrcaPrintPreset, Part, Project
 
 
 def _preset(name: str) -> OrcaPrintPreset:
@@ -15,46 +15,52 @@ def _preset(name: str) -> OrcaPrintPreset:
     )
 
 
-class ResolvePartPresetLeafTests(TestCase):
-    def test_override_wins_over_nearest_project(self) -> None:
+class BottomUpPresetResolutionTests(TestCase):
+    """``Part.effective_print_preset``: own preset, else nearest ancestor default."""
+
+    def test_part_override_wins(self) -> None:
         override = _preset("Override")
-        nearest = _preset("Nearest")
-        project = Project.objects.create(name="M", default_print_preset=nearest)
-        part = Part.objects.create(name="p", print_preset=override)
-        self.assertEqual(resolve_part_preset(part, project), override)
+        project = Project.objects.create(name="M", default_print_preset=_preset("Project"))
+        part = Part.objects.create(name="p", project=project, print_preset=override)
+        self.assertEqual(part.effective_print_preset, override)
+        self.assertEqual(part.effective_print_preset_id, override.pk)
 
-    def test_falls_back_to_nearest_project_preset(self) -> None:
-        nearest = _preset("Nearest")
-        project = Project.objects.create(name="M", default_print_preset=nearest)
-        part = Part.objects.create(name="p")
-        self.assertEqual(resolve_part_preset(part, project), nearest)
+    def test_inherits_from_own_project(self) -> None:
+        preset = _preset("Project")
+        project = Project.objects.create(name="M", default_print_preset=preset)
+        part = Part.objects.create(name="p", project=project)
+        self.assertEqual(part.effective_print_preset, preset)
+        self.assertEqual(part.effective_print_preset_id, preset.pk)
 
-    def test_no_override_no_project_returns_none(self) -> None:
-        part = Part.objects.create(name="p")
-        self.assertIsNone(resolve_part_preset(part, None))
+    def test_inherits_from_nearest_ancestor_skipping_empty_levels(self) -> None:
+        preset_a = _preset("A")
+        root = Project.objects.create(name="R", default_print_preset=preset_a)
+        mid = Project.objects.create(name="M", parent=root)
+        leaf = Project.objects.create(name="L", parent=mid)
+        part = Part.objects.create(name="p", project=leaf)
+        self.assertEqual(part.effective_print_preset, preset_a)
 
+        preset_b = _preset("B")
+        mid.default_print_preset = preset_b
+        mid.save()
+        part = Part.objects.get(pk=part.pk)
+        self.assertEqual(part.effective_print_preset, preset_b)
+        self.assertEqual(part.effective_print_preset_id, preset_b.pk)
 
-class ResolvePartPresetsPerPathTests(TestCase):
-    def test_nearest_project_preset_carried_per_path(self) -> None:
-        cabin_preset = _preset("CabinPreset")
-        frame_preset = _preset("FramePreset")
-        truck = Project.objects.create(name="Truck", default_print_preset=_preset("TruckPreset"))
-        cabin = Project.objects.create(name="Cabin", default_print_preset=cabin_preset)
-        frame = Project.objects.create(name="Frame", default_print_preset=frame_preset)
-        ProjectComponent.objects.create(parent_project=truck, child_project=cabin, quantity=1)
-        ProjectComponent.objects.create(parent_project=truck, child_project=frame, quantity=1)
-        bolt = Part.objects.create(name="bolt")  # no override
-        ProjectPart.objects.create(project=cabin, part=bolt, quantity=4)
-        ProjectPart.objects.create(project=frame, part=bolt, quantity=10)
+    def test_none_when_no_preset_anywhere(self) -> None:
+        root = Project.objects.create(name="R")
+        sub = Project.objects.create(name="S", parent=root)
+        part = Part.objects.create(name="p", project=sub)
+        self.assertIsNone(part.effective_print_preset)
+        self.assertIsNone(part.effective_print_preset_id)
 
-        resolved = truck.resolve_part_presets()
-        presets = sorted((mult, preset.name) for _p, mult, preset in resolved)
-        self.assertEqual(presets, [(4, "CabinPreset"), (10, "FramePreset")])
-
-    def test_part_override_beats_nearest_on_every_path(self) -> None:
-        override = _preset("Override")
-        cabin = Project.objects.create(name="Cabin", default_print_preset=_preset("CabinPreset"))
-        bolt = Part.objects.create(name="bolt", print_preset=override)
-        ProjectPart.objects.create(project=cabin, part=bolt, quantity=2)
-        resolved = cabin.resolve_part_presets()
-        self.assertEqual([(p.name, m, pr.name) for p, m, pr in resolved], [("bolt", 2, "Override")])
+    def test_is_estimable_requires_stl_and_resolved_preset(self) -> None:
+        bare_root = Project.objects.create(name="Bare")
+        root = Project.objects.create(name="R", default_print_preset=_preset("A"))
+        stl = SimpleUploadedFile("p.stl", b"solid p")
+        no_stl = Part.objects.create(name="no stl", project=root)
+        no_preset = Part.objects.create(name="no preset", project=bare_root, stl_file=stl)
+        ok = Part.objects.create(name="ok", project=root, stl_file=SimpleUploadedFile("q.stl", b"solid q"))
+        self.assertFalse(no_stl.is_estimable())
+        self.assertFalse(no_preset.is_estimable())
+        self.assertTrue(ok.is_estimable())

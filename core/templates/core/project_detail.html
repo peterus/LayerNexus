@@ -7,6 +7,7 @@
 <nav aria-label="breadcrumb" class="mb-3">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
+    {% for ancestor in ancestors %}<li class="breadcrumb-item"><a href="{% url 'core:project_detail' ancestor.pk %}">{{ ancestor.name }}</a></li>{% endfor %}
     <li class="breadcrumb-item active">{{ project.name }}</li>
   </ol>
 </nav>
@@ -103,16 +104,16 @@
       <i class="bi bi-diagram-3 me-2"></i>Build progress
       <i class="bi bi-chevron-down ms-2 small"></i>
     </button>
-    {% if variant_progress.needed %}<span class="badge bg-primary">{{ variant_progress.percent }}%</span>{% endif %}
+    {% if build_progress.needed %}<span class="badge bg-primary">{{ build_progress.percent }}%</span>{% endif %}
   </div>
   <div class="collapse {% if build_progress_expanded %}show{% endif %}" id="buildProgressBody">
     <div class="card-body">
-      {% if variant_progress.needed %}
+      {% if build_progress.needed %}
       <p class="text-body-secondary small mb-2">
-        Prints attributed to this assembly ({{ variant_progress.printed }} of {{ variant_progress.needed }} parts).
+        Completed prints ({{ build_progress.printed }} of {{ build_progress.needed }} parts).
       </p>
       <div class="progress mb-3" style="height: 10px;">
-        <div class="progress-bar bg-primary" role="progressbar" style="width: {{ variant_progress.percent }}%;" aria-valuenow="{{ variant_progress.percent }}" aria-valuemin="0" aria-valuemax="100"></div>
+        <div class="progress-bar bg-primary" role="progressbar" style="width: {{ build_progress.percent }}%;" aria-valuenow="{{ build_progress.percent }}" aria-valuemin="0" aria-valuemax="100"></div>
       </div>
       <div class="table-responsive">
         <table class="table table-sm align-middle mb-0">
@@ -125,7 +126,7 @@
             </tr>
           </thead>
           <tbody>
-            {% for row in variant_progress.parts %}
+            {% for row in build_progress.parts %}
             <tr>
               <td><a href="{% url 'core:part_detail' row.part.pk %}" class="text-decoration-none">{{ row.part.name|default:"Unnamed part" }}</a></td>
               <td class="text-end">{{ row.printed }}</td>
@@ -138,7 +139,7 @@
       </div>
       {% else %}
       <p class="text-body-secondary small mb-0">
-        No parts to build in this assembly yet. Attribute prints to this project when adding parts to a job to track per-variant progress here.
+        No parts to build in this project yet.
       </p>
       {% endif %}
     </div>
@@ -226,15 +227,12 @@
   <h4 class="mb-0"><i class="bi bi-diagram-3 me-2"></i>Sub-Projects</h4>
   {% if perms.core.can_manage_projects %}
   <div class="d-flex gap-2">
-    {% if can_edit_assembly %}
-    <button type="button" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addComponentModal"><i class="bi bi-diagram-2 me-1"></i>Add existing module</button>
-    {% endif %}
     <a href="{% url 'core:subproject_create' project.pk %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Add Sub-Project</a>
   </div>
   {% endif %}
 </div>
 
-{% if child_modules %}
+{% if subprojects %}
 <div class="table-responsive mb-4">
   <table class="table table-hover align-middle">
     <thead>
@@ -248,8 +246,7 @@
       </tr>
     </thead>
     <tbody>
-      {% for edge in component_edges %}
-      {% with sub=edge.child_project sub_quantity=edge.quantity %}
+      {% for sub in subprojects %}
       <tr>
         <td>
           {% if sub.image %}
@@ -265,15 +262,7 @@
           {% endif %}
         </td>
         <td class="text-center">
-          {% if can_edit_assembly %}
-          <form method="post" action="{% url 'core:project_component_quantity' edge.pk %}" class="d-inline-flex align-items-center gap-1 justify-content-center">
-            {% csrf_token %}
-            <input type="number" name="quantity" value="{{ sub_quantity }}" min="1" class="form-control form-control-sm text-center" style="width:64px;" aria-label="Module quantity">
-            <button type="submit" class="btn btn-sm btn-outline-secondary" title="Update quantity"><i class="bi bi-check-lg"></i></button>
-          </form>
-          {% else %}
-          <span class="badge bg-secondary">×{{ sub_quantity }}</span>
-          {% endif %}
+          <span class="badge bg-secondary">×{{ sub.quantity }}</span>
         </td>
         <td class="text-center">{{ sub.direct_part_count }}</td>
         <td class="text-center">
@@ -291,17 +280,10 @@
           <a href="{% url 'core:project_detail' sub.pk %}" class="btn btn-sm btn-outline-secondary" title="View"><i class="bi bi-eye"></i></a>
           {% if perms.core.can_manage_projects %}
           <a href="{% url 'core:project_update' sub.pk %}" class="btn btn-sm btn-outline-secondary" title="Edit"><i class="bi bi-pencil"></i></a>
-          {% if can_edit_assembly %}
-          <form method="post" action="{% url 'core:project_component_remove' edge.pk %}" class="d-inline" onsubmit="return confirm('Remove this module from the assembly? The module itself is not deleted.');">
-            {% csrf_token %}
-            <button type="submit" class="btn btn-sm btn-outline-warning" title="Remove from assembly"><i class="bi bi-x-lg"></i></button>
-          </form>
-          {% endif %}
           <a href="{% url 'core:project_delete' sub.pk %}" class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash"></i></a>
           {% endif %}
         </td>
       </tr>
-      {% endwith %}
       {% endfor %}
     </tbody>
   </table>
@@ -317,15 +299,12 @@
   <h4 class="mb-0"><i class="bi bi-puzzle me-2"></i>Parts</h4>
   {% if perms.core.can_manage_projects %}
   <div class="d-flex gap-2">
-    {% if can_edit_assembly %}
-    <button type="button" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addPartModal"><i class="bi bi-puzzle me-1"></i>Add existing part</button>
-    {% endif %}
     <a href="{% url 'core:part_create' project.pk %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Add Part</a>
   </div>
   {% endif %}
 </div>
 
-{% if direct_parts %}
+{% if parts %}
 <div class="table-responsive">
   <table class="table table-hover align-middle">
     <thead>
@@ -340,8 +319,8 @@
       </tr>
     </thead>
     <tbody>
-      {% for edge in part_edges %}
-      {% with part=edge.part part_quantity=edge.quantity prow=variant_rows_by_pk|dict_get:edge.part.pk %}
+      {% for part in parts %}
+      {% with prow=build_rows_by_pk|dict_get:part.pk %}
       <tr>
         <td class="text-center">
           {% if part.spoolman_filament_id and filament_colors|dict_get:part.spoolman_filament_id %}
@@ -357,17 +336,9 @@
           {% if part.material %}<span class="badge bg-secondary bg-opacity-25 text-body ms-1">{{ part.material }}</span>{% endif %}
         </td>
         <td class="text-center">
-          {% if can_edit_assembly %}
-          <form method="post" action="{% url 'core:project_part_quantity' edge.pk %}" class="d-inline-flex align-items-center gap-1 justify-content-center">
-            {% csrf_token %}
-            <input type="number" name="quantity" value="{{ part_quantity }}" min="1" class="form-control form-control-sm text-center" style="width:64px;" aria-label="Part quantity">
-            <button type="submit" class="btn btn-sm btn-outline-secondary" title="Update quantity"><i class="bi bi-check-lg"></i></button>
-          </form>
-          {% else %}
-          {{ part_quantity }}
-          {% endif %}
+          {{ part.quantity }}
         </td>
-        <td class="text-center" title="Printed for this assembly / needed here">{{ prow.printed|default:0 }}/{{ prow.needed|default:part_quantity }}</td>
+        <td class="text-center" title="Printed / needed">{{ prow.printed|default:0 }}/{{ prow.needed|default:part.quantity }}</td>
         <td>
           {% if part.estimation_status == 'error' %}
           <span class="badge bg-danger" title="{{ part.estimation_error }}"><i class="bi bi-exclamation-triangle me-1"></i>Estimation Error</span>
@@ -394,12 +365,6 @@
           <a href="{% url 'core:part_detail' part.pk %}" class="btn btn-sm btn-outline-secondary" title="View"><i class="bi bi-eye"></i></a>
           {% if perms.core.can_manage_projects %}
           <a href="{% url 'core:part_update' part.pk %}" class="btn btn-sm btn-outline-secondary" title="Edit"><i class="bi bi-pencil"></i></a>
-          {% if can_edit_assembly %}
-          <form method="post" action="{% url 'core:project_part_remove' edge.pk %}" class="d-inline" onsubmit="return confirm('Remove this part from the assembly? The part itself is not deleted.');">
-            {% csrf_token %}
-            <button type="submit" class="btn btn-sm btn-outline-warning" title="Remove from assembly"><i class="bi bi-x-lg"></i></button>
-          </form>
-          {% endif %}
           <a href="{% url 'core:part_delete' part.pk %}" class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash"></i></a>
           {% endif %}
         </td>
@@ -616,63 +581,4 @@
   </small>
 </div>
 
-{% if can_edit_assembly %}
-{# Add existing module modal #}
-<div class="modal fade" id="addComponentModal" tabindex="-1" aria-labelledby="addComponentModalLabel" aria-hidden="true">
-  <div class="modal-dialog">
-    <div class="modal-content">
-      <form method="post" action="{% url 'core:project_add_component' project.pk %}">
-        {% csrf_token %}
-        <div class="modal-header">
-          <h5 class="modal-title" id="addComponentModalLabel"><i class="bi bi-diagram-2 me-2"></i>Add existing module</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-        </div>
-        <div class="modal-body">
-          <div class="mb-3">
-            <label for="{{ add_component_form.child_project.id_for_label }}" class="form-label">Module</label>
-            {{ add_component_form.child_project }}
-          </div>
-          <div class="mb-3">
-            <label for="{{ add_component_form.quantity.id_for_label }}" class="form-label">Quantity</label>
-            {{ add_component_form.quantity }}
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-          <button type="submit" class="btn btn-primary"><i class="bi bi-plus-lg me-1"></i>Add module</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-
-{# Add existing part modal #}
-<div class="modal fade" id="addPartModal" tabindex="-1" aria-labelledby="addPartModalLabel" aria-hidden="true">
-  <div class="modal-dialog">
-    <div class="modal-content">
-      <form method="post" action="{% url 'core:project_add_part' project.pk %}">
-        {% csrf_token %}
-        <div class="modal-header">
-          <h5 class="modal-title" id="addPartModalLabel"><i class="bi bi-puzzle me-2"></i>Add existing part</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-        </div>
-        <div class="modal-body">
-          <div class="mb-3">
-            <label for="{{ add_part_form.part.id_for_label }}" class="form-label">Part</label>
-            {{ add_part_form.part }}
-          </div>
-          <div class="mb-3">
-            <label for="{{ add_part_form.quantity.id_for_label }}" class="form-label">Quantity</label>
-            {{ add_part_form.quantity }}
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-          <button type="submit" class="btn btn-primary"><i class="bi bi-plus-lg me-1"></i>Add part</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-{% endif %}
 {% endblock %}

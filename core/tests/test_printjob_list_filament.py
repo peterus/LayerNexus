@@ -41,9 +41,15 @@ class PrintJobListFilamentTests(TestDataMixin, TestCase):
         SpoolmanFilamentMapping.objects.create(
             spoolman_filament_id=2, spoolman_filament_name="Signal Red PETG", spoolman_color_hex="ff0000"
         )
-        self.part_a = Part.objects.create(name="PA", material="PLA", color="black", spoolman_filament_id=1)
-        self.part_b = Part.objects.create(name="PB", material="PETG", color="red", spoolman_filament_id=2)
-        self.part_none = Part.objects.create(name="PN", material="ABS", color="#abcdef")
+        self.part_a = Part.objects.create(
+            project=self.project, quantity=1, name="PA", material="PLA", color="black", spoolman_filament_id=1
+        )
+        self.part_b = Part.objects.create(
+            project=self.project, quantity=1, name="PB", material="PETG", color="red", spoolman_filament_id=2
+        )
+        self.part_none = Part.objects.create(
+            project=self.project, quantity=1, name="PN", material="ABS", color="#abcdef"
+        )
         self.job_a = PrintJob.objects.create(name="JobA")
         self.job_b = PrintJob.objects.create(name="JobB")
         self.job_mixed = PrintJob.objects.create(name="JobMixed")
@@ -71,7 +77,9 @@ class PrintJobListFilamentTests(TestDataMixin, TestCase):
         self.assertEqual([b["label"] for b in job.filament_badges], ["Galaxy Black PLA", "Signal Red PETG"])
 
     def test_duplicate_filament_in_job_shown_once(self):
-        other = Part.objects.create(name="PA2", material="PLA", spoolman_filament_id=1)
+        other = Part.objects.create(
+            project=self.project, quantity=1, name="PA2", material="PLA", spoolman_filament_id=1
+        )
         PrintJobPart.objects.create(print_job=self.job_a, part=other)
         job = next(j for j in self._jobs() if j.pk == self.job_a.pk)
         self.assertEqual(len(job.filament_badges), 1)
@@ -81,8 +89,8 @@ class PrintJobListFilamentTests(TestDataMixin, TestCase):
         self.assertEqual(job.filament_badges, [{"label": "ABS", "hex": "#abcdef"}])
 
     def test_unmapped_parts_same_material_different_text_color_distinguishable(self):
-        red = Part.objects.create(name="R", material="PLA", color="red")
-        blue = Part.objects.create(name="B", material="PLA", color="blue")
+        red = Part.objects.create(project=self.project, quantity=1, name="R", material="PLA", color="red")
+        blue = Part.objects.create(project=self.project, quantity=1, name="B", material="PLA", color="blue")
         job = PrintJob.objects.create(name="Colours")
         PrintJobPart.objects.create(print_job=job, part=red)
         PrintJobPart.objects.create(print_job=job, part=blue)

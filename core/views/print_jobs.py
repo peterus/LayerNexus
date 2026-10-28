@@ -62,8 +62,9 @@ class PrintJobListView(LoginRequiredMixin, ListView):
     """List print jobs with server-side filtering and pagination.
 
     Supported GET params: ``q`` (job or part name) plus the repeatable
-    multi-select params ``status``, ``printer`` (pk), ``project`` (pk of the
-    assembly a job contributes to) and ``filament`` (Spoolman filament id, or ``none``
+    multi-select params ``status``, ``printer`` (pk), ``project`` (pk of a
+    top-level project; a job matches when any of its parts lies in that project's
+    subtree) and ``filament`` (Spoolman filament id, or ``none``
     for jobs with a part that has no filament assigned).  Nothing selected means no filter; invalid
     values are ignored.  Newest jobs come first.
     """
@@ -111,7 +112,7 @@ class PrintJobListView(LoginRequiredMixin, ListView):
             params.setlist(key, [value] if isinstance(value, str) else [v for v in value or [] if isinstance(v, str)])
         filters = self._sanitize(params)
         filters["printer"] = self._existing(PrinterProfile, filters["printer"])
-        filters["project"] = self._existing(Project, filters["project"])
+        filters["project"] = self._existing_roots(filters["project"])
         available = {option["value"] for option in self._filament_options()}
         filters["filament"] = [v for v in filters["filament"] if v in available]
         return filters if any(filters.values()) else {}
@@ -124,9 +125,29 @@ class PrintJobListView(LoginRequiredMixin, ListView):
         found = {str(pk) for pk in model.objects.filter(pk__in=[int(pk) for pk in pks]).values_list("pk", flat=True)}
         return [pk for pk in pks if pk in found]
 
+    @staticmethod
+    def _existing_roots(pks: list[str]) -> list[str]:
+        """Return the pks (as strings, in order) of existing top-level projects."""
+        if not pks:
+            return []
+        found = {
+            str(pk)
+            for pk in Project.objects.filter(pk__in=[int(pk) for pk in pks], parent__isnull=True).values_list(
+                "pk", flat=True
+            )
+        }
+        return [pk for pk in pks if pk in found]
+
     def _filters(self) -> dict[str, str | list[str]]:
-        """Return the sanitized filter values from the query string."""
-        return self._sanitize(self.request.GET)
+        """Return the sanitized filter values from the query string (cached per request).
+
+        Project values that are not (or no longer) top-level projects are dropped.
+        """
+        if not hasattr(self, "_cached_filters"):
+            filters = self._sanitize(self.request.GET)
+            filters["project"] = self._existing_roots(filters["project"])
+            self._cached_filters = filters
+        return self._cached_filters
 
     def _sanitize(self, params: QueryDict) -> dict[str, str | list[str]]:
         """Sanitize raw filter params (a QueryDict) into validated values."""
@@ -163,7 +184,10 @@ class PrintJobListView(LoginRequiredMixin, ListView):
         if filters["printer"]:
             queryset = queryset.filter(printer_id__in=[int(v) for v in filters["printer"]])
         if filters["project"]:
-            queryset = queryset.filter(job_parts__target_assembly_id__in=[int(v) for v in filters["project"]])
+            project_ids: set[int] = set()
+            for root in Project.objects.filter(pk__in=[int(v) for v in filters["project"]]):
+                project_ids |= root.subtree_ids()
+            queryset = queryset.filter(job_parts__part__project_id__in=project_ids)
         if filters["filament"]:
             condition = Q(
                 job_parts__part__spoolman_filament_id__in=[int(v) for v in filters["filament"] if v != self.no_filament]
@@ -238,7 +262,7 @@ class PrintJobListView(LoginRequiredMixin, ListView):
         context.update(filters)
         context["status_choices"] = PrintJob.STATUS_CHOICES
         context["printers"] = PrinterProfile.objects.order_by("name")
-        context["projects"] = Project.objects.filter(attributed_job_parts__isnull=False).distinct().order_by("name")
+        context["projects"] = Project.objects.filter(parent__isnull=True).order_by("name")
         context["status_summary"] = self._summary(filters["status"], "All statuses")
         context["printer_summary"] = self._summary(filters["printer"], "All printers")
         context["project_summary"] = self._summary(filters["project"], "All projects")
@@ -297,13 +321,14 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
 
     def get_queryset(self):
         return PrintJob.objects.select_related("machine_profile", "printer__orca_machine_profile").prefetch_related(
-            "job_parts__part", "plates"
+            "job_parts__part__project", "plates"
         )
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         job = self.object
-        context["job_parts"] = job.job_parts.select_related("part")
+        # Cover the ancestor chain so ``path_label`` renders without a query per row.
+        context["job_parts"] = job.job_parts.select_related("part__project__parent__parent__parent")
         context["plates"] = job.plates.all()
         context["bed_dimensions"] = job.bed_dimensions
         has_parts = job.job_parts.exists()
@@ -318,7 +343,7 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
         # Resolve effective print preset and filament profile from first part
         first_jp = job.job_parts.select_related("part__print_preset").first()
         if first_jp:
-            # Prefer the preset pinned on the job (Variant B); fall back to the first
+            # Prefer the preset pinned on the job; fall back to the first
             # part's own preset only for legacy jobs created before pinning existed.
             context["effective_print_preset"] = job.print_preset or first_jp.part.effective_print_preset
             if first_jp.part.spoolman_filament_id:
@@ -394,23 +419,6 @@ class AddPartToJobView(RoleRequiredMixin, View):
 
     permission_required = "core.add_printjob"
 
-    @staticmethod
-    def _resolve_target_assembly(request: HttpRequest) -> "Project | None":
-        """Resolve the optional ``target_assembly`` POST param to a ``Project``.
-
-        Args:
-            request: The incoming request; may carry a ``target_assembly`` PK.
-
-        Returns:
-            The referenced :class:`~core.models.Project`, or ``None`` when the param
-            is absent, blank, or does not point at an existing project (invalid input
-            is treated as "unattributed" rather than raising).
-        """
-        raw = request.POST.get("target_assembly")
-        if not raw:
-            return None
-        return Project.objects.filter(pk=raw).first()
-
     def post(self, request: HttpRequest, part_pk: int) -> HttpResponse:
         """Handle adding a part to a print job."""
         part = get_object_or_404(Part, pk=part_pk)
@@ -427,33 +435,17 @@ class AddPartToJobView(RoleRequiredMixin, View):
         job = form.cleaned_data.get("job")
         quantity = form.cleaned_data["quantity"]
 
-        # Resolve the incoming part's preset for the standalone (part-path) flow. When the
-        # part is in projects with different presets a dropdown choice is required; validate
-        # the posted id against the offered candidates so a forged/invalid id cannot bypass
-        # the resolver or raise an IntegrityError.
-        auto_preset, preset_choices = part.resolve_job_preset_candidates()
-        chosen_raw = request.POST.get("print_preset") or None
-        if preset_choices:
-            choice_ids = {str(p.pk) for p in preset_choices}
-            if chosen_raw not in choice_ids:
-                messages.error(
-                    request,
-                    "This part is used in projects with different presets — choose one of the offered presets.",
-                )
-                return redirect("core:part_detail", pk=part.pk)
-            incoming_preset_id: int | None = int(chosen_raw)
-        else:
-            # No dropdown was shown, so any posted value is ignored in favor of the resolution.
-            incoming_preset_id = auto_preset.pk if auto_preset is not None else None
-            if incoming_preset_id is None:
-                # No override and no containing-project default: the job would slice with a
-                # None preset and fail. Refuse rather than create an unsliceable job.
-                messages.error(
-                    request,
-                    f"Part '{part.name}' has no resolvable print preset "
-                    f"(no override and no project default) — set a preset before adding it to a job.",
-                )
-                return redirect("core:part_detail", pk=part.pk)
+        # The job is pinned to the part's bottom-up resolved preset.
+        incoming_preset_id = part.effective_print_preset_id
+        if incoming_preset_id is None:
+            # No override and no project default up the chain: the job would slice with a
+            # None preset and fail. Refuse rather than create an unsliceable job.
+            messages.error(
+                request,
+                f"Part '{part.name}' has no resolvable print preset "
+                f"(no override and no project default) — set a preset before adding it to a job.",
+            )
+            return redirect("core:part_detail", pk=part.pk)
 
         if not job:
             # Create a new draft job pinned to the resolved preset.
@@ -469,17 +461,14 @@ class AddPartToJobView(RoleRequiredMixin, View):
             messages.error(request, "Can only add parts to draft jobs.")
             return redirect("core:part_detail", pk=part.pk)
 
-        # Resolve the optional target assembly (per-variant print attribution).
-        target_assembly = self._resolve_target_assembly(request)
-
         # Do the compatibility check, the empty-draft pin, and the part insert in one
-        # transaction so concurrent adds can't interleave (Variant B "one preset per job").
+        # transaction so concurrent adds can't interleave ("one preset per job").
         try:
             with transaction.atomic():
                 existing_parts = list(job.job_parts.select_related("part").all())
                 if existing_parts:
-                    # Compare the resolved incoming preset against the job's pinned preset
-                    # (Variant B), or — for a legacy unpinned job — the existing parts' presets.
+                    # Compare the resolved incoming preset against the job's pinned preset,
+                    # or — for a legacy unpinned job — the existing parts' presets.
                     filament_conflict = any(
                         jp.part.spoolman_filament_id != part.spoolman_filament_id for jp in existing_parts
                     )
@@ -506,15 +495,11 @@ class AddPartToJobView(RoleRequiredMixin, View):
                 job_part, created = PrintJobPart.objects.get_or_create(
                     print_job=job,
                     part=part,
-                    defaults={"quantity": quantity, "target_assembly": target_assembly},
+                    defaults={"quantity": quantity},
                 )
                 if not created:
                     job_part.quantity += quantity
-                    update_fields = ["quantity"]
-                    if target_assembly is not None:
-                        job_part.target_assembly = target_assembly
-                        update_fields.append("target_assembly")
-                    job_part.save(update_fields=update_fields)
+                    job_part.save(update_fields=["quantity"])
         except _IncompatiblePartError:
             messages.error(
                 request,
@@ -554,12 +539,11 @@ class RemovePartFromJobView(RoleRequiredMixin, View):
 class CreateJobsFromProjectView(RoleRequiredMixin, View):
     """Bulk-create draft print jobs from all eligible parts in a project.
 
-    Groups parts by ``(effective_print_preset_id, spoolman_filament_id)``
-    so that each job contains only compatible parts.  Parts without a
-    model file or with a **per-assembly remaining of 0** are skipped, and the
-    created ``PrintJobPart``s are attributed to this project via
-    ``target_assembly`` so their prints count toward this assembly's progress
-    (Phase 6a).
+    Groups the subtree's parts by ``(effective_print_preset_id, spoolman_filament_id)``
+    so that each job contains only compatible parts.  Each part gets
+    ``needed − printed`` copies (``needed`` from the tree multiplier, ``printed``
+    from all its completed jobs); parts without a model file, without a
+    resolvable preset, or with nothing remaining are skipped.
 
     Each job is named ``"<Project> — <Material / Preset>"``.
     """
@@ -567,61 +551,40 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
     permission_required = "core.add_printjob"
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
-        """Create one draft job per preset/filament group."""
-        project = get_object_or_404(Project, pk=pk)
+        """Create one draft job per preset/filament group.
 
-        # Resolve each part's preset PER build path (Variant B). A part reached via two
-        # modules with different nearest presets contributes to two bundles, so aggregate
-        # the needed count per ``(part, resolved preset)`` instead of collapsing by part id
-        # (which would assign the whole quantity to whichever path was seen last).
-        needed_by_key: dict[tuple[int, int], int] = defaultdict(int)
-        part_objs: dict[int, Part] = {}
+        The tree read and all inserts run in one transaction, so a concurrent subtree
+        delete cannot leave a half-filled draft job behind.
+        """
+        with transaction.atomic():
+            return self._create_jobs(request, pk)
+
+    def _create_jobs(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Build the preset/filament groups for ``pk`` and create the draft jobs."""
+        project = get_object_or_404(Project.objects.prefetch_related(*Project.aggregate_prefetch_lookups()), pk=pk)
+
+        groups: dict[tuple[int, int | None], list[tuple[Part, int]]] = defaultdict(list)
         skipped_no_preset = 0
-        for part, count, preset in project.resolve_part_presets():
+        # ``build_progress`` scales the need to the whole tree (also when started on a
+        # sub-project), matching the tree-wide ``printed`` count.
+        for row in project.build_progress()["parts"]:
+            part = row["part"]
             if not part.stl_file:
                 continue
-            if preset is None:
-                # No resolvable preset on this path (no override, project default is NULL).
-                # Skip rather than create a job that would slice with None.
+            preset_id = part.effective_print_preset_id
+            if preset_id is None:
+                # No override and no project default up the chain: skip rather than
+                # create a job that would slice with None.
                 skipped_no_preset += 1
                 continue
-            part_objs[part.pk] = part
-            needed_by_key[(part.pk, preset.pk)] += count
-
-        # Subtract prints attributed to THIS assembly. Prints from a job pinned to a given
-        # preset reduce that preset's bundle; prints from legacy unpinned jobs (preset
-        # ``None``) are allocated greedily across the remaining bundles. This keeps a
-        # part printed under one preset from wrongly depleting a different preset's bundle.
-        keys_by_part: dict[int, list[int | None]] = defaultdict(list)
-        for part_pk, preset_id in needed_by_key:
-            keys_by_part[part_pk].append(preset_id)
-
-        groups: dict[tuple[int | None, int | None], list[tuple[Part, int]]] = defaultdict(list)
-        for part_pk, preset_ids in keys_by_part.items():
-            part = part_objs[part_pk]
-            printed_by_preset = part.printed_quantity_for_by_preset(project)
-            # Prints from jobs with no pinned preset (``None`` key) are legacy and applied
-            # greedily below; they must NOT also be matched directly by a None-preset bundle
-            # (that would double-count them).
-            legacy_printed = printed_by_preset.get(None, 0)
-            remainders: list[tuple[int | None, int]] = []
-            for preset_id in preset_ids:
-                needed = needed_by_key[(part_pk, preset_id)]
-                direct = printed_by_preset.get(preset_id, 0) if preset_id is not None else 0
-                remainders.append((preset_id, max(0, needed - direct)))
-            # Apply legacy (unpinned-job) prints greedily to whatever remainder is left.
-            for idx, (preset_id, remaining) in enumerate(remainders):
-                used = min(legacy_printed, remaining)
-                legacy_printed -= used
-                remainders[idx] = (preset_id, remaining - used)
-            for preset_id, remaining in remainders:
-                if remaining > 0:
-                    groups[(preset_id, part.spoolman_filament_id)].append((part, remaining))
+            remaining = row["remaining"]
+            if remaining > 0:
+                groups[(preset_id, part.spoolman_filament_id)].append((part, remaining))
 
         if skipped_no_preset:
             messages.warning(
                 request,
-                f"Skipped {skipped_no_preset} part path(s) with no resolvable print preset "
+                f"Skipped {skipped_no_preset} part(s) with no resolvable print preset "
                 f"(no override and no project default) — set a preset to include them.",
             )
 
@@ -663,7 +626,6 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
                     print_job=job,
                     part=part,
                     quantity=remaining,
-                    target_assembly=project,
                 )
                 parts_added += 1
 
