@@ -3,10 +3,13 @@
 from django import forms
 from django.core.files.uploadedfile import UploadedFile
 
-from core.models import Part
+from core.forms.projects import path_sorted_choices
+from core.models import Part, Project
 
 __all__ = [
     "PartForm",
+    "PartCopyForm",
+    "AddExistingPartForm",
 ]
 
 
@@ -65,3 +68,40 @@ class PartForm(forms.ModelForm):
             else:
                 self.add_error("name", "Name is required when no model file is uploaded.")
         return cleaned_data
+
+
+class PartCopyForm(forms.Form):
+    """Copy a part into a project (its own project by default)."""
+
+    project = forms.ModelChoiceField(queryset=Project.objects.none(), label="Copy into project")
+
+    def __init__(self, *args, source: Part, **kwargs) -> None:
+        """Offer every project, preselecting the source part's project.
+
+        Args:
+            source: The part being copied.
+        """
+        super().__init__(*args, **kwargs)
+        field = self.fields["project"]
+        field.queryset = Project.objects.order_by("name")
+        field.initial = source.project_id
+        labels = Project.path_label_map()
+        field.choices = path_sorted_choices(field.queryset, lambda p: labels[p.pk], field.empty_label)
+
+
+class AddExistingPartForm(forms.Form):
+    """Pick any existing part to deep-copy into the current project."""
+
+    part = forms.ModelChoiceField(queryset=Part.objects.none(), label="Part to copy")
+
+    def __init__(self, *args, **kwargs) -> None:
+        """Offer every part, labelled ``"<project path> › <part name>"``."""
+        super().__init__(*args, **kwargs)
+        field = self.fields["part"]
+        field.queryset = Part.objects.order_by("name")
+        labels = Project.path_label_map()
+        field.choices = path_sorted_choices(
+            field.queryset.only("pk", "name", "project_id"),
+            lambda part: " › ".join(filter(None, [labels.get(part.project_id), part.name])),
+            field.empty_label,
+        )

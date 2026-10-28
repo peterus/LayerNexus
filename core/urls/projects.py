@@ -3,6 +3,9 @@
 from django.urls import path
 
 from core.views import (
+    ProjectAddExistingPartView,
+    ProjectAddExistingSubprojectView,
+    ProjectCopyView,
     ProjectCostView,
     ProjectCreateView,
     ProjectDeleteView,
@@ -30,6 +33,17 @@ urlpatterns = [
         "projects/<int:pk>/cost/",
         ProjectCostView.as_view(),
         name="project_cost",
+    ),
+    path("projects/<int:pk>/copy/", ProjectCopyView.as_view(), name="project_copy"),
+    path(
+        "projects/<int:pk>/parts/add-existing/",
+        ProjectAddExistingPartView.as_view(),
+        name="project_add_existing_part",
+    ),
+    path(
+        "projects/<int:pk>/subprojects/add-existing/",
+        ProjectAddExistingSubprojectView.as_view(),
+        name="project_add_existing_subproject",
     ),
     path(
         "projects/<int:parent_pk>/subprojects/new/",

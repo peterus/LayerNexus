@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% load core_tags %}
+{% load core_tags static %}
 
 {% block title %}{{ project.name }} — {{ APP_NAME }}{% endblock %}
 
@@ -43,6 +43,7 @@
     </form>
     {% endif %}
     {% if perms.core.can_manage_projects %}
+    <a href="{% url 'core:project_copy' project.pk %}" class="btn btn-outline-secondary"><i class="bi bi-copy me-1"></i>Copy</a>
     <a href="{% url 'core:project_update' project.pk %}" class="btn btn-outline-secondary"><i class="bi bi-pencil me-1"></i>Edit</a>
     <a href="{% url 'core:project_delete' project.pk %}" class="btn btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</a>
     {% endif %}
@@ -227,6 +228,7 @@
   <h4 class="mb-0"><i class="bi bi-diagram-3 me-2"></i>Sub-Projects</h4>
   {% if perms.core.can_manage_projects %}
   <div class="d-flex gap-2">
+    <button type="button" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addExistingSubprojectModal"><i class="bi bi-copy me-1"></i>Add Existing Sub-Project</button>
     <a href="{% url 'core:subproject_create' project.pk %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Add Sub-Project</a>
   </div>
   {% endif %}
@@ -299,6 +301,7 @@
   <h4 class="mb-0"><i class="bi bi-puzzle me-2"></i>Parts</h4>
   {% if perms.core.can_manage_projects %}
   <div class="d-flex gap-2">
+    <button type="button" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addExistingPartModal"><i class="bi bi-copy me-1"></i>Add Existing Part</button>
     <a href="{% url 'core:part_create' project.pk %}" class="btn btn-primary btn-sm"><i class="bi bi-plus-lg me-1"></i>Add Part</a>
   </div>
   {% endif %}
@@ -581,4 +584,61 @@
   </small>
 </div>
 
+{% if add_existing_part_form %}
+<div class="modal fade" id="addExistingPartModal" tabindex="-1" aria-labelledby="addExistingPartModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" action="{% url 'core:project_add_existing_part' project.pk %}">
+        {% csrf_token %}
+        <div class="modal-header">
+          <h5 class="modal-title" id="addExistingPartModalLabel">Add existing part</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="text-body-secondary small">The chosen part is copied into {{ project.name }} as an independent part, including its model file. The original stays where it is.</p>
+          <input type="search" class="form-control mb-2" placeholder="Filter parts…" aria-label="Filter parts" data-picker-filter="add-existing-part-select">
+          <select name="part" id="add-existing-part-select" class="form-select" size="12" required aria-label="Part to copy">
+            {% for value, label in add_existing_part_form.part.field.choices %}{% if value %}<option value="{{ value }}">{{ label }}</option>{% endif %}{% endfor %}
+          </select>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i class="bi bi-copy me-1"></i>Add copy</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if add_existing_subproject_form %}
+<div class="modal fade" id="addExistingSubprojectModal" tabindex="-1" aria-labelledby="addExistingSubprojectModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" action="{% url 'core:project_add_existing_subproject' project.pk %}">
+        {% csrf_token %}
+        <div class="modal-header">
+          <h5 class="modal-title" id="addExistingSubprojectModalLabel">Add existing sub-project</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="text-body-secondary small">The chosen project is copied into {{ project.name }} as an independent sub-project, with all its sub-projects, parts, documents and hardware. The original stays where it is.</p>
+          <input type="search" class="form-control mb-2" placeholder="Filter projects…" aria-label="Filter projects" data-picker-filter="add-existing-subproject-select">
+          <select name="source" id="add-existing-subproject-select" class="form-select" size="12" required aria-label="Project to copy">
+            {% for value, label in add_existing_subproject_form.source.field.choices %}{% if value %}<option value="{{ value }}">{{ label }}</option>{% endif %}{% endfor %}
+          </select>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i class="bi bi-copy me-1"></i>Add copy</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/picker-filter.js' %}"></script>
 {% endblock %}

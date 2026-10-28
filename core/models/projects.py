@@ -172,6 +172,31 @@ class Project(models.Model):
         """Return the project path from the root down to self, joined by ``" › "``."""
         return " › ".join(p.name for p in [*self.ancestors(), self])
 
+    @classmethod
+    def path_label_map(cls) -> dict[int, str]:
+        """Return :attr:`path_label` for every project, computed with a single query.
+
+        Used by pickers that list many projects or parts, where calling
+        :attr:`path_label` per row would walk the parent chain once per row. A
+        visited-set guard makes a corrupt persisted cycle terminate.
+
+        Returns:
+            Mapping of project PK to its ``"Root › … › Name"`` path label.
+        """
+        rows = {pk: (name, parent_id) for pk, name, parent_id in cls.objects.values_list("pk", "name", "parent_id")}
+        labels: dict[int, str] = {}
+        for pk in rows:
+            chain: list[str] = []
+            visited: set[int] = set()
+            current: int | None = pk
+            while current is not None and current in rows and current not in visited:
+                visited.add(current)
+                name, parent_id = rows[current]
+                chain.append(name)
+                current = parent_id
+            labels[pk] = " › ".join(reversed(chain))
+        return labels
+
     def direct_part_count(self) -> int:
         """Return the number of parts directly in this project."""
         return self.parts.count()

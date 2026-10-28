@@ -4,6 +4,7 @@ from django.urls import path
 
 from core.views import (
     CreateJobsFromProjectView,
+    PartCopyView,
     PartCreateView,
     PartDeleteView,
     PartDetailView,
@@ -21,6 +22,7 @@ urlpatterns = [
     path("parts/<int:pk>/", PartDetailView.as_view(), name="part_detail"),
     path("parts/<int:pk>/edit/", PartUpdateView.as_view(), name="part_update"),
     path("parts/<int:pk>/delete/", PartDeleteView.as_view(), name="part_delete"),
+    path("parts/<int:pk>/copy/", PartCopyView.as_view(), name="part_copy"),
     path("parts/<int:pk>/re-estimate/", PartReEstimateView.as_view(), name="part_re_estimate"),
     path(
         "projects/<int:pk>/re-estimate/",
