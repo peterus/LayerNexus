@@ -76,14 +76,23 @@ class ProjectViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter]
     search_fields = ["name", "description"]
 
-    #: Actions that walk the whole subtree and therefore get the aggregate prefetch.
-    _TREE_ACTIONS = frozenset({"re_estimate", "requirements", "validate", "tree"})
+    #: Actions that need parts plus their print history (progress / printed counts).
+    _AGGREGATE_ACTIONS = frozenset({"re_estimate", "requirements"})
+    #: Actions that only list the subtree's projects, parts (and hardware).
+    _STRUCTURE_ACTIONS = frozenset({"validate", "tree"})
 
     def get_queryset(self) -> Any:
-        """Prefetch the subtree for the actions that aggregate over it (no N+1)."""
+        """Prefetch the subtree for the actions that walk it (no N+1)."""
         queryset = super().get_queryset()
-        if self.action in self._TREE_ACTIONS:
+        if self.action in self._AGGREGATE_ACTIONS:
             queryset = queryset.prefetch_related(*Project.aggregate_prefetch_lookups())
+        elif self.action in self._STRUCTURE_ACTIONS:
+            lookups: list[str] = []
+            prefix = ""
+            for _ in range(4):
+                lookups += [f"{prefix}parts", f"{prefix}subprojects"]
+                prefix += "subprojects__"
+            queryset = queryset.prefetch_related(*lookups)
         return queryset
 
     @extend_schema(

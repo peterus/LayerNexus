@@ -400,8 +400,9 @@ class ProjectTreeAggregationTests(TestCase):
     def test_needed_is_part_qty_times_chain(self):
         """needed = part quantity × every sub-project quantity up the chain."""
         self.assertEqual(self.root.total_parts_count, 24)
-        self.assertEqual(self.sub.total_parts_count, 12)
-        self.assertEqual(self.leaf.total_parts_count, 4)
+        # Sub-projects count their need for the whole tree (consistent with progress).
+        self.assertEqual(self.sub.total_parts_count, 24)
+        self.assertEqual(self.leaf.total_parts_count, 24)
         self.assertEqual(self.root._collect_parts_with_multiplier(), [(self.part, 24)])
 
     def test_printed_progress_counts_all_completed_jobs_without_attribution(self):
@@ -432,6 +433,15 @@ class ProjectTreeAggregationTests(TestCase):
         self.assertEqual(self.sub.progress_percent, 50)
         self.assertEqual(self.root.progress_percent, 50)
         self.assertEqual(self.leaf.aggregated_status, Project.STATUS_IN_PROGRESS)
+
+    def test_subproject_totals_match_progress_and_filament(self):
+        """On a sub-project, totals, progress need and filament totals agree."""
+        self._complete_job(6)
+        reqs = self.sub.filament_requirements()
+        self.assertEqual(self.sub.total_parts_count, self.sub.build_progress()["needed"])
+        self.assertEqual(self.sub.total_filament_grams, reqs[0]["total_grams"])
+        self.assertEqual(reqs[0]["total_grams"], 48.0)
+        self.assertEqual(reqs[0]["remaining_grams"], 36.0)
 
     def test_remaining_filament_uses_build_progress(self):
         """Remaining filament = filament per part × parts still to print."""

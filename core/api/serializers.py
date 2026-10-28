@@ -73,6 +73,12 @@ class ProjectSerializer(serializers.ModelSerializer):
         )
         if parent is None and preset is None:
             raise serializers.ValidationError({"default_print_preset": ["Required for top-level projects."]})
+        if parent is None:
+            # Quantity only means something below a parent; keep top-level projects at 1
+            # so a later re-parent never reactivates a stale multiplier.
+            if attrs.get("quantity", 1) != 1:
+                raise serializers.ValidationError({"quantity": ["Top-level projects always have quantity 1."]})
+            attrs["quantity"] = 1
         if self.instance is not None and parent is not None and parent.pk in self.instance.subtree_ids():
             raise serializers.ValidationError(
                 {"parent": ["A project cannot be a sub-project of itself or one of its descendants."]}

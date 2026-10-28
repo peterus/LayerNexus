@@ -327,7 +327,8 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         job = self.object
-        context["job_parts"] = job.job_parts.select_related("part__project")
+        # Cover the ancestor chain so ``path_label`` renders without a query per row.
+        context["job_parts"] = job.job_parts.select_related("part__project__parent__parent__parent")
         context["plates"] = job.plates.all()
         context["bed_dimensions"] = job.bed_dimensions
         has_parts = job.job_parts.exists()
@@ -550,7 +551,16 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
     permission_required = "core.add_printjob"
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
-        """Create one draft job per preset/filament group."""
+        """Create one draft job per preset/filament group.
+
+        The tree read and all inserts run in one transaction, so a concurrent subtree
+        delete cannot leave a half-filled draft job behind.
+        """
+        with transaction.atomic():
+            return self._create_jobs(request, pk)
+
+    def _create_jobs(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Build the preset/filament groups for ``pk`` and create the draft jobs."""
         project = get_object_or_404(Project.objects.prefetch_related(*Project.aggregate_prefetch_lookups()), pk=pk)
 
         groups: dict[tuple[int, int | None], list[tuple[Part, int]]] = defaultdict(list)

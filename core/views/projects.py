@@ -235,8 +235,9 @@ class ProjectDeleteView(ProjectManageMixin, DeleteView):
     def get_context_data(self, **kwargs) -> dict:
         """Add the deletion counts and the jobs that block the delete."""
         context = super().get_context_data(**kwargs)
-        context["summary"] = self.object.deletion_summary()
-        context["blocking_jobs"] = list(self.object.blocking_jobs().order_by("-created_at"))
+        ids = self.object.subtree_ids()
+        context["summary"] = self.object.deletion_summary(ids)
+        context["blocking_jobs"] = list(self.object.blocking_jobs(ids).order_by("-created_at"))
         return context
 
     def form_valid(self, form: django_forms.Form) -> HttpResponse:

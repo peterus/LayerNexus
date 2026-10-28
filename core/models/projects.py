@@ -283,10 +283,13 @@ class Project(models.Model):
         """Return the PKs of this project and all of its descendants."""
         return {self.pk} | self.get_descendant_ids()
 
-    def blocking_jobs(self) -> QuerySet[PrintJob]:
+    def blocking_jobs(self, ids: set[int] | None = None) -> QuerySet[PrintJob]:
         """Return unfinished print jobs that contain a part of this project's subtree.
 
         A project cannot be deleted while any of these exist.
+
+        Args:
+            ids: Precomputed :meth:`subtree_ids`, to avoid walking the tree again.
 
         Returns:
             Distinct queryset of :class:`~core.models.printing.PrintJob` rows whose
@@ -295,13 +298,16 @@ class Project(models.Model):
         from core.models.printing import PrintJob
 
         return (
-            PrintJob.objects.filter(job_parts__part__project_id__in=self.subtree_ids())
+            PrintJob.objects.filter(job_parts__part__project_id__in=self.subtree_ids() if ids is None else ids)
             .exclude(status__in=PrintJob.TERMINAL_STATUSES)
             .distinct()
         )
 
-    def deletion_summary(self) -> dict[str, int]:
+    def deletion_summary(self, ids: set[int] | None = None) -> dict[str, int]:
         """Count what deleting this project would remove along with it.
+
+        Args:
+            ids: Precomputed :meth:`subtree_ids`, to avoid walking the tree again.
 
         Returns:
             Dict with keys ``subprojects``, ``parts``, ``documents``, ``hardware`` and
@@ -311,7 +317,8 @@ class Project(models.Model):
         from core.models.hardware import ProjectHardware
         from core.models.printing import PrintJobPart
 
-        ids = self.subtree_ids()
+        if ids is None:
+            ids = self.subtree_ids()
         return {
             "subprojects": len(ids) - 1,
             "parts": Part.objects.filter(project_id__in=ids).count(),
@@ -367,8 +374,12 @@ class Project(models.Model):
 
     @property
     def total_parts_count(self) -> int:
-        """Total number of individual parts needed, including sub-projects."""
-        return sum(needed for _p, needed in self._collect_parts_with_multiplier())
+        """Total number of individual parts needed, including sub-projects.
+
+        For a sub-project this is its need for the whole tree (see
+        :meth:`chain_multiplier`), consistent with :meth:`build_progress`.
+        """
+        return sum(needed for _p, needed in self._collect_parts_with_multiplier(self.chain_multiplier()))
 
     def chain_multiplier(self) -> int:
         """Return how many instances of this project the whole tree needs.
@@ -507,16 +518,20 @@ class Project(models.Model):
 
     @property
     def total_filament_grams(self) -> float:
-        """Total filament required for all parts in the project (grams), including sub-projects."""
+        """Total filament (grams) for all parts incl. sub-projects, scaled like :attr:`total_parts_count`."""
         return sum(
-            p.filament_used_grams * mult for p, mult in self._collect_parts_with_multiplier() if p.filament_used_grams
+            p.filament_used_grams * mult
+            for p, mult in self._collect_parts_with_multiplier(self.chain_multiplier())
+            if p.filament_used_grams
         )
 
     @property
     def total_filament_meters(self) -> float:
-        """Total filament required for all parts in the project (meters), including sub-projects."""
+        """Total filament (meters) for all parts incl. sub-projects, scaled like :attr:`total_parts_count`."""
         return sum(
-            p.filament_used_meters * mult for p, mult in self._collect_parts_with_multiplier() if p.filament_used_meters
+            p.filament_used_meters * mult
+            for p, mult in self._collect_parts_with_multiplier(self.chain_multiplier())
+            if p.filament_used_meters
         )
 
     def filament_requirements(self) -> list[dict]:

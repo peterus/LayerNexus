@@ -86,6 +86,43 @@ class ApiTreeContractTests(APITestCase):
         self.sub = Project.objects.create(name="S", parent=self.root, quantity=2)
         self.leaf = Project.objects.create(name="T", parent=self.sub, quantity=3)
 
+    def test_root_quantity_is_always_one(self) -> None:
+        resp = self.client.patch(f"/api/v1/projects/{self.root.pk}/", {"quantity": 5}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("quantity", resp.data)
+        resp = self.client.patch(
+            f"/api/v1/projects/{self.sub.pk}/",
+            {"parent": None, "default_print_preset": self.preset.pk},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.quantity, 1)
+
+    def test_subproject_requirements_are_consistent(self) -> None:
+        Part.objects.create(name="p", project=self.leaf, quantity=4, filament_used_grams=1.0)
+        resp = self.client.get(f"/api/v1/projects/{self.sub.pk}/requirements/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["total_parts_count"], 24)
+        self.assertEqual(resp.data["total_filament_grams"], resp.data["filament_requirements"][0]["total_grams"])
+
+    def test_tree_and_validate_query_count_flat(self) -> None:
+        """tree/validate cost the same number of queries regardless of the part count."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def count(action: str) -> int:
+            with CaptureQueriesContext(connection) as ctx:
+                resp = self.client.get(f"/api/v1/projects/{self.root.pk}/{action}/")
+            self.assertEqual(resp.status_code, 200)
+            return len(ctx.captured_queries)
+
+        Part.objects.create(name="first", project=self.leaf)
+        before = {action: count(action) for action in ("tree", "validate")}
+        for i in range(3):
+            Part.objects.create(name=f"p{i}", project=self.sub)
+        self.assertEqual({action: count(action) for action in ("tree", "validate")}, before)
+
     def test_unresolved_preset_rejected(self) -> None:
         """Only resolved, instantiable presets can be assigned through the API."""
         raw = OrcaPrintPreset.objects.create(name="Raw", orca_name="Raw", instantiation=False)

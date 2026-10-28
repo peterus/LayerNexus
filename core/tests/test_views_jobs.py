@@ -74,6 +74,25 @@ class PrintJobViewTests(TestDataMixin, TestCase):
         self.assertContains(resp, "R › S")
         self.assertContains(resp, reverse("core:project_detail", args=[sub.pk]))
 
+    def test_job_detail_project_paths_no_query_per_part(self):
+        """Rendering path labels does not cost a query per job part."""
+        root = Project.objects.create(name="R", created_by=self.user)
+        mid = Project.objects.create(name="M", parent=root, created_by=self.user)
+        leaf = Project.objects.create(name="L", parent=mid, created_by=self.user)
+        url = reverse("core:printjob_detail", args=[self.job.pk])
+
+        def count() -> int:
+            with CaptureQueriesContext(connection) as ctx:
+                self.client.get(url)
+            return len(ctx.captured_queries)
+
+        PrintJobPart.objects.create(print_job=self.job, part=Part.objects.create(project=leaf, name="a"), quantity=1)
+        few = count()
+        for i in range(4):
+            part = Part.objects.create(project=leaf, name=f"b{i}")
+            PrintJobPart.objects.create(print_job=self.job, part=part, quantity=1)
+        self.assertEqual(count(), few)
+
 
 class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
     """Tests for the bulk 'Create Print Job(s)' action on a project."""
