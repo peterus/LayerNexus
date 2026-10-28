@@ -49,8 +49,11 @@ class DashboardView(LoginRequiredMixin, TemplateView):
         projects = Project.objects.all()
         # The dashboard cards render aggregated_status / progress_percent for each
         # shown project, which recurse through parts + completed jobs. Prefetch the
-        # aggregate tree so those five cards don't fan out into an N+1.
-        context["projects"] = projects.prefetch_related(*Project.aggregate_prefetch_lookups())[:5]
+        # aggregate tree so those five cards don't fan out into an N+1. Sub-project cards
+        # also walk their ancestors (chain multiplier), so join that chain too.
+        context["projects"] = projects.select_related("parent__parent__parent").prefetch_related(
+            *Project.aggregate_prefetch_lookups()
+        )[:5]
         context["recent_jobs"] = PrintJob.objects.all()[:10]
         context["printer_profiles"] = PrinterProfile.objects.all()
 
