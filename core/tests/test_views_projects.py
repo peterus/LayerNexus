@@ -143,15 +143,41 @@ class ProjectViewTests(TestDataMixin, TestCase):
         self.assertEqual(edge.quantity, 3)
         self.assertEqual(child.created_by_id, self.user.pk)
 
-    def test_detail_shows_used_in_for_shared_module(self):
-        from core.models import ProjectComponent
+    def test_no_used_in_context_anywhere(self):
+        # Tree rollback: the edge-based "Used in" navigation is gone from every view.
+        assembly = Project.objects.create(name="Assembly", created_by=self.user)
+        ProjectComponent.objects.create(parent_project=assembly, child_project=self.project)
+        urls = [
+            reverse("core:project_detail", kwargs={"pk": self.project.pk}),
+            reverse("core:project_update", kwargs={"pk": self.project.pk}),
+            reverse("core:project_delete", kwargs={"pk": self.project.pk}),
+            reverse("core:project_cost", kwargs={"pk": self.project.pk}),
+            reverse("core:subproject_create", kwargs={"parent_pk": self.project.pk}),
+            reverse("core:part_detail", kwargs={"pk": self.part.pk}),
+            reverse("core:part_update", kwargs={"pk": self.part.pk}),
+            reverse("core:part_delete", kwargs={"pk": self.part.pk}),
+        ]
+        for url in urls:
+            with self.subTest(url=url):
+                resp = self.client.get(url)
+                self.assertEqual(resp.status_code, 200)
+                self.assertNotIn("used_in", resp.context)
+                self.assertNotContains(resp, "Used in:")
 
-        cabin = Project.objects.create(name="Cabin", created_by=self.user)
-        truck = Project.objects.create(name="Truck A", created_by=self.user)
-        ProjectComponent.objects.create(parent_project=truck, child_project=cabin)
-        resp = self.client.get(reverse("core:project_detail", kwargs={"pk": cabin.pk}))
+    def test_project_form_cancel_targets(self):
+        # Edit cancels back to the project itself; create cancels to the project list.
+        edit = self.client.get(reverse("core:project_update", kwargs={"pk": self.project.pk}))
+        detail_url = reverse("core:project_detail", kwargs={"pk": self.project.pk})
+        self.assertContains(edit, f'<a href="{detail_url}" class="btn btn-outline-secondary">Cancel</a>', html=True)
+        create = self.client.get(reverse("core:project_create"))
+        list_url = reverse("core:project_list")
+        self.assertContains(create, f'<a href="{list_url}" class="btn btn-outline-secondary">Cancel</a>', html=True)
+
+    def test_part_detail_has_no_usage_table(self):
+        resp = self.client.get(reverse("core:part_detail", kwargs={"pk": self.part.pk}))
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "Truck A")  # used-in assembly shown
+        self.assertNotIn("part_usage", resp.context)
+        self.assertNotContains(resp, "Used in assemblies")
 
     def test_list_shows_only_top_level_edge_based(self):
         from core.models import ProjectComponent
@@ -172,29 +198,10 @@ class ProjectViewTests(TestDataMixin, TestCase):
         resp = self.client.get(reverse("core:project_detail", kwargs={"pk": proj.pk}))
         self.assertContains(resp, "X")  # the referenced part is listed
 
-    def test_duplicate_as_variant_view_get_shows_form(self):
-        truck = Project.objects.create(name="Truck A", created_by=self.user)
-        resp = self.client.get(reverse("core:project_duplicate", kwargs={"pk": truck.pk}))
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "Truck A (Variant)")  # suggested name pre-filled
-
-    def test_duplicate_as_variant_view_creates_variant(self):
-        from core.models import ProjectComponent
-
-        truck = Project.objects.create(name="Truck A", created_by=self.user)
-        cabin = Project.objects.create(name="Cabin", created_by=self.user)
-        ProjectComponent.objects.create(parent_project=truck, child_project=cabin, quantity=1)
-        resp = self.client.post(reverse("core:project_duplicate", kwargs={"pk": truck.pk}), {"name": "Truck B"})
-        self.assertEqual(resp.status_code, 302)
-        variant = Project.objects.get(name="Truck B")
-        self.assertEqual(variant.child_links.get().child_project_id, cabin.pk)
-        self.assertEqual(variant.created_by_id, self.user.pk)
-        self.assertIn(str(variant.pk), resp["Location"])  # redirects to the new project
-
-    def test_detail_shows_duplicate_button_for_manager(self):
+    def test_detail_has_no_duplicate_button(self):
         proj = Project.objects.create(name="Truck A", created_by=self.user)
         resp = self.client.get(reverse("core:project_detail", kwargs={"pk": proj.pk}))
-        self.assertContains(resp, "Duplicate as variant")
+        self.assertNotContains(resp, "Duplicate as variant")
 
 
 class ProjectReEstimateViewTests(TestDataMixin, TestCase):
@@ -389,17 +396,6 @@ class AssemblyEditorViewTests(TestDataMixin, TestCase):
         resp = self.client.get(reverse("core:project_detail", kwargs={"pk": proj.pk}))
         self.assertEqual(resp.status_code, 200)
         self.assertNotContains(resp, "Add existing module")
-
-    def test_project_delete_confirm_warns_used_in(self):
-        from core.models import ProjectComponent
-
-        cabin = Project.objects.create(name="Cabin", created_by=self.user)
-        truck = Project.objects.create(name="Truck", created_by=self.user)
-        ProjectComponent.objects.create(parent_project=truck, child_project=cabin)
-        resp = self.client.get(reverse("core:project_delete", kwargs={"pk": cabin.pk}))
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "Truck")
-        self.assertContains(resp, "used in")
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])

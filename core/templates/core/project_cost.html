@@ -7,7 +7,6 @@
   <li class="breadcrumb-item"><a href="{% url 'core:project_detail' project.pk %}">{{ project.name }}</a></li>
   <li class="breadcrumb-item active">Cost Estimate</li>
 </ol></nav>
-{% include "core/includes/_used_in.html" %}
 <h1 class="h3 mb-4"><i class="bi bi-currency-dollar me-2"></i>Cost Estimate: {{ project.name }}</h1>
 
 <div class="alert alert-info"><i class="bi bi-info-circle me-1"></i>Cost estimates require parts to have filament and time data from slicing, and printers to have a cost profile configured.</div>

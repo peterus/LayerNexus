@@ -7,7 +7,7 @@ from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponse
-from django.shortcuts import get_object_or_404, redirect, render
+from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.views import View
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
@@ -52,7 +52,6 @@ __all__ = [
     "ProjectPartDeleteView",
     "ProjectComponentUpdateView",
     "ProjectPartUpdateView",
-    "ProjectDuplicateAsVariantView",
 ]
 
 
@@ -96,19 +95,17 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
         return Project.objects.prefetch_related(*Project.aggregate_prefetch_lookups())
 
     def get_context_data(self, **kwargs) -> dict:
-        """Add filament requirements, child modules, "used in" assemblies, and lookups.
+        """Add filament requirements, child modules, and lookups.
 
         Display/navigation reads the composition edges: ``child_modules``
         (``(child_project, quantity)`` pairs) and ``direct_parts``
         (``(part, quantity)`` pairs) replace the legacy ``subprojects``/``parts`` FK
-        relations, and ``used_in`` (the containing assemblies) replaces the single-path
-        ``ancestors`` breadcrumb.
+        relations.
         """
         context = super().get_context_data(**kwargs)
         context["filament_requirements"] = self.object.filament_requirements()
         context["child_modules"] = self.object.child_modules()
         context["direct_parts"] = self.object.direct_parts()
-        context["used_in"] = self.object.parent_assemblies()
 
         # Per-variant build progress (Phase 4): print quantities attributed to THIS
         # project as the assembly context. The global aggregate status/progress above
@@ -219,11 +216,9 @@ class SubProjectCreateView(ProjectManageMixin, CreateView):
         return get_object_or_404(Project, pk=self.kwargs["parent_pk"])
 
     def get_context_data(self, **kwargs) -> dict:
-        """Add parent project and edge-based "used in" assemblies to template context."""
+        """Add the parent project to template context."""
         context = super().get_context_data(**kwargs)
-        parent = self.get_parent()
-        context["parent"] = parent
-        context["used_in"] = parent.parent_assemblies() + [parent]
+        context["parent"] = self.get_parent()
         return context
 
     def get_form(self, form_class=None) -> SubProjectForm:
@@ -263,12 +258,6 @@ class ProjectUpdateView(ProjectManageMixin, UpdateView):
     form_class = ProjectEditForm
     template_name = "core/project_form.html"
 
-    def get_context_data(self, **kwargs) -> dict:
-        """Add edge-based "used in" assemblies to template context."""
-        context = super().get_context_data(**kwargs)
-        context["used_in"] = self.object.parent_assemblies()
-        return context
-
     def get_form(self, form_class=None) -> ProjectEditForm:
         """Return the edit form with resolved print-preset choices.
 
@@ -297,12 +286,6 @@ class ProjectDeleteView(ProjectManageMixin, DeleteView):
 
     model = Project
     template_name = "core/project_confirm_delete.html"
-
-    def get_context_data(self, **kwargs) -> dict:
-        """Add edge-based "used in" assemblies to template context."""
-        context = super().get_context_data(**kwargs)
-        context["used_in"] = self.object.parent_assemblies()
-        return context
 
     def get_success_url(self) -> str:
         """Redirect to a containing assembly if referenced, otherwise the project list.
@@ -333,7 +316,6 @@ class ProjectCostView(LoginRequiredMixin, DetailView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["used_in"] = self.object.parent_assemblies()
         project = self.object
         parts_with_qty = list(project.direct_parts())
         cost_breakdown = []
@@ -547,42 +529,3 @@ class ProjectPartUpdateView(ProjectManageMixin, UpdateView):
         """Redirect back with an error instead of rendering a (non-existent) form template."""
         messages.error(self.request, "Invalid quantity.")
         return redirect("core:project_detail", pk=self.object.project_id)
-
-
-class ProjectDuplicateAsVariantView(ProjectManageMixin, View):
-    """Duplicate a project as a new variant (shares child blocks via new edges)."""
-
-    http_method_names = ["get", "post"]
-
-    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
-        """Render a small confirm form pre-filled with a suggested variant name.
-
-        Args:
-            request: The incoming HTTP request.
-            pk: Primary key of the source project to duplicate.
-
-        Returns:
-            The rendered duplicate-confirmation page.
-        """
-        source = get_object_or_404(Project, pk=pk)
-        return render(
-            request,
-            "core/project_duplicate.html",
-            {"source": source, "suggested_name": f"{source.name} (Variant)"},
-        )
-
-    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
-        """Create the variant and redirect to its detail page.
-
-        Args:
-            request: The incoming HTTP request.
-            pk: Primary key of the source project to duplicate.
-
-        Returns:
-            Redirect to the newly created variant's detail page.
-        """
-        source = get_object_or_404(Project, pk=pk)
-        name = (request.POST.get("name") or f"{source.name} (Variant)").strip() or f"{source.name} (Variant)"
-        variant = source.duplicate_as_variant(name, created_by=request.user)
-        messages.success(request, f"Created variant “{variant.name}”. Swap the parts that differ.")
-        return redirect("core:project_detail", pk=variant.pk)

@@ -29,12 +29,6 @@ class PartViewTests(TestDataMixin, TestCase):
         resp = self.client.get(reverse("core:part_detail", kwargs={"pk": self.part.pk}))
         self.assertEqual(resp.status_code, 200)
 
-    def test_part_detail_shows_used_in_breakdown(self):
-        # Phase 6a: per-assembly "Used in" breakdown replaces global quantity/remaining.
-        resp = self.client.get(reverse("core:part_detail", kwargs={"pk": self.part.pk}))
-        self.assertContains(resp, "Used in assemblies")
-        self.assertContains(resp, self.project.name)
-
     def test_part_create_get(self):
         resp = self.client.get(reverse("core:part_create", args=[self.project.pk]))
         self.assertEqual(resp.status_code, 200)
@@ -54,6 +48,13 @@ class PartViewTests(TestDataMixin, TestCase):
     def test_part_update_get(self):
         resp = self.client.get(reverse("core:part_update", args=[self.part.pk]))
         self.assertEqual(resp.status_code, 200)
+
+    def test_part_update_breadcrumb_links_back_to_part(self):
+        resp = self.client.get(reverse("core:part_update", args=[self.part.pk]))
+        part_url = reverse("core:part_detail", args=[self.part.pk])
+        self.assertContains(
+            resp, f'<li class="breadcrumb-item"><a href="{part_url}">{self.part.name}</a></li>', html=True
+        )
 
     def test_part_update_post(self):
         resp = self.client.post(
@@ -78,6 +79,15 @@ class PartViewTests(TestDataMixin, TestCase):
         resp = self.client.post(reverse("core:part_delete", args=[pk]))
         self.assertEqual(resp.status_code, 302)
         self.assertFalse(Part.objects.filter(pk=pk).exists())
+
+    def test_part_delete_redirects_to_project_list(self):
+        resp = self.client.post(reverse("core:part_delete", args=[self.part.pk]))
+        self.assertRedirects(resp, reverse("core:project_list"))
+
+    def test_nav_has_no_parts_library_link(self):
+        resp = self.client.get(reverse("core:project_list"))
+        self.assertNotContains(resp, "Parts Library")
+        self.assertNotContains(resp, 'href="/parts/"')
 
 
 class PartReEstimateViewTests(TestDataMixin, TestCase):
@@ -111,91 +121,3 @@ class PartReEstimateViewTests(TestDataMixin, TestCase):
         self.part.refresh_from_db()
         # No preset available → warning redirect, values untouched
         self.assertEqual(self.part.filament_used_grams, 50.0)
-
-
-@override_settings(ALLOWED_HOSTS=["testserver"])
-class PartLibraryViewTests(TestDataMixin, TestCase):
-    """Tests for the read-only parts library (Phase 3b)."""
-
-    def setUp(self):
-        super().setUp()
-        self.client.login(username="testuser", password="testpass123")
-
-    def test_part_library_lists_all_parts(self):
-        Part.objects.create(name="LibPartA")
-        resp = self.client.get(reverse("core:part_library"))
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "LibPartA")
-
-    def test_part_library_shows_used_in_count(self):
-        # self.part is linked to self.project via ProjectPart edge from TestDataMixin -> used_in_count == 1
-        resp = self.client.get(reverse("core:part_library"))
-        self.assertEqual(resp.status_code, 200)
-        obj = next(p for p in resp.context["parts"] if p.pk == self.part.pk)
-        self.assertEqual(obj.used_in_count, 1)
-
-    def test_part_library_requires_login(self):
-        self.client.logout()
-        resp = self.client.get(reverse("core:part_library"))
-        self.assertEqual(resp.status_code, 302)
-
-    def test_part_library_search_by_name(self):
-        Part.objects.create(name="AlphaGear", material="PLA")
-        Part.objects.create(name="BetaBracket", material="PETG")
-        resp = self.client.get(reverse("core:part_library"), {"q": "AlphaGear"})
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "AlphaGear")
-        self.assertNotContains(resp, "BetaBracket")
-
-    def test_part_library_search_empty_returns_all(self):
-        Part.objects.create(name="AlphaGear", material="PLA")
-        Part.objects.create(name="BetaBracket", material="PETG")
-        resp = self.client.get(reverse("core:part_library"), {"q": ""})
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "AlphaGear")
-        self.assertContains(resp, "BetaBracket")
-
-    def test_part_library_search_by_material(self):
-        Part.objects.create(name="AlphaGear", material="PLA")
-        Part.objects.create(name="BetaBracket", material="PETG")
-        resp = self.client.get(reverse("core:part_library"), {"q": "PETG"})
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "BetaBracket")
-        self.assertNotContains(resp, "AlphaGear")
-
-    def test_part_library_search_is_case_insensitive(self):
-        Part.objects.create(name="AlphaGear", material="PLA")
-        resp = self.client.get(reverse("core:part_library"), {"q": "alphagear"})
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "AlphaGear")
-
-    def test_part_library_search_query_in_context(self):
-        resp = self.client.get(reverse("core:part_library"), {"q": "AlphaGear"})
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.context["q"], "AlphaGear")
-
-    def test_part_library_search_no_results_message(self):
-        Part.objects.create(name="AlphaGear", material="PLA")
-        resp = self.client.get(reverse("core:part_library"), {"q": "NoSuchThing"})
-        self.assertEqual(resp.status_code, 200)
-        self.assertNotContains(resp, "AlphaGear")
-        self.assertContains(resp, "No parts match")
-
-
-@override_settings(ALLOWED_HOSTS=["testserver"])
-class PartDeleteUsedInTests(TestDataMixin, TestCase):
-    """Node-delete confirm page warns 'used in N assemblies' (Phase 3b)."""
-
-    def setUp(self):
-        super().setUp()
-        self.client.login(username="testuser", password="testpass123")
-
-    def test_delete_confirm_warns_used_in(self):
-        from core.models import Project, ProjectPart
-
-        assembly = Project.objects.create(name="TruckAssembly", created_by=self.user)
-        ProjectPart.objects.create(project=assembly, part=self.part)
-        resp = self.client.get(reverse("core:part_delete", kwargs={"pk": self.part.pk}))
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "TruckAssembly")
-        self.assertContains(resp, "used in")

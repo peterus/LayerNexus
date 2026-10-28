@@ -10,7 +10,6 @@
     <li class="breadcrumb-item active">Delete Document</li>
   </ol>
 </nav>
-{% include "core/includes/_used_in.html" %}
 {% url 'core:project_detail' project.pk as cancel %}
 {% include "core/includes/_confirm_delete.html" with object_name=document.name object_type="Document" cancel_url=cancel warning_message="The file will be permanently removed. This action cannot be undone." delete_label="Delete Document" %}
 {% endblock %}

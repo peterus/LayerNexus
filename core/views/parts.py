@@ -7,12 +7,11 @@ from django import forms as django_forms
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db.models import Count, Q, QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.views import View
-from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
+from django.views.generic import CreateView, DeleteView, DetailView, UpdateView
 
 from core.forms import PartForm
 from core.mixins import ProjectManageMixin
@@ -30,40 +29,12 @@ from core.views.helpers import _trigger_part_estimation
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "PartLibraryListView",
     "PartDetailView",
     "PartCreateView",
     "PartUpdateView",
     "PartDeleteView",
     "PartReEstimateView",
 ]
-
-
-class PartLibraryListView(LoginRequiredMixin, ListView):
-    """Read-only library of all parts as reusable building blocks."""
-
-    model = Part
-    template_name = "core/parts_library.html"
-    context_object_name = "parts"
-    paginate_by = 50
-
-    def get_queryset(self) -> QuerySet:
-        """Return parts ordered by name, annotated with their assembly-link count.
-
-        When a search term is present (GET param ``q``), the queryset is filtered
-        case-insensitively across the part name and material.
-        """
-        queryset = Part.objects.annotate(used_in_count=Count("project_links", distinct=True)).order_by("name")
-        query = self.request.GET.get("q", "").strip()
-        if query:
-            queryset = queryset.filter(Q(name__icontains=query) | Q(material__icontains=query))
-        return queryset
-
-    def get_context_data(self, **kwargs) -> dict:
-        """Add the current search term to the context so the field/pagination retain it."""
-        context = super().get_context_data(**kwargs)
-        context["q"] = self.request.GET.get("q", "").strip()
-        return context
 
 
 class _SpoolmanFilamentMixin:
@@ -140,7 +111,6 @@ class PartDetailView(LoginRequiredMixin, DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         part = self.object
-        context["used_in"] = part.containing_projects()
 
         context["print_presets"] = OrcaPrintPreset.objects.filter(
             state=OrcaPrintPreset.STATE_RESOLVED,
@@ -195,26 +165,7 @@ class PartDetailView(LoginRequiredMixin, DetailView):
         # Candidate assemblies for per-variant print attribution: the top-level
         # assemblies (projects with no parent edges) that transitively contain this
         # part. Blank selection = unattributed.
-        candidate_assemblies = self._candidate_assemblies(part)
-        context["candidate_assemblies"] = candidate_assemblies
-
-        # Per-assembly "Used in" breakdown (Phase 6a): this part's needed/printed/remaining
-        # within each top-level assembly that transitively contains it, replacing the global
-        # quantity/remaining/is_complete display.
-        usage: list[dict] = []
-        for assembly in candidate_assemblies:
-            for row in assembly.variant_progress()["parts"]:
-                if row["part"].pk == part.pk:
-                    usage.append(
-                        {
-                            "assembly": assembly,
-                            "needed": row["needed"],
-                            "printed": row["printed"],
-                            "remaining": row["remaining"],
-                        }
-                    )
-                    break
-        context["part_usage"] = usage
+        context["candidate_assemblies"] = self._candidate_assemblies(part)
 
         auto_preset, preset_choices = part.resolve_job_preset_candidates()
         context["job_preset_auto"] = auto_preset
@@ -295,7 +246,6 @@ class PartCreateView(_SpoolmanFilamentMixin, ProjectManageMixin, CreateView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["project"] = self.project
-        context["used_in"] = self.project.parent_assemblies()
         context["spoolman_configured"] = self._spoolman_configured
         context["spoolman_colors"] = self._spoolman_colors
         context["spoolman_colors_json"] = json.dumps(self._spoolman_colors)
@@ -353,7 +303,6 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["used_in"] = self.object.containing_projects()
         context["spoolman_configured"] = self._spoolman_configured
         context["spoolman_colors"] = self._spoolman_colors
         context["spoolman_colors_json"] = json.dumps(self._spoolman_colors)
@@ -366,19 +315,8 @@ class PartDeleteView(ProjectManageMixin, DeleteView):
     model = Part
     template_name = "core/part_confirm_delete.html"
 
-    def get_context_data(self, **kwargs):
-        """Add the assemblies that reference this part (its "used in") to context.
-
-        Reads the part's own composition edges (``containing_projects``) so the
-        confirm page can warn that deleting the node removes it from every
-        assembly that references it — not just its legacy owning project.
-        """
-        context = super().get_context_data(**kwargs)
-        context["used_in"] = self.object.containing_projects()
-        return context
-
     def get_success_url(self):
-        return reverse_lazy("core:part_library")
+        return reverse_lazy("core:project_list")
 
     def form_valid(self, form):
         messages.success(self.request, "Part deleted.")
