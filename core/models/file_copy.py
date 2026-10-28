@@ -65,7 +65,9 @@ def duplicate_field_file(field_file: FieldFile, tracker: CopiedFiles) -> str | N
     except FileNotFoundError:
         logger.warning("deep_copy: missing file %s", name)
         return None
-    # Write errors (disk full, permissions) propagate so the whole copy fails and cleans up.
+    # Write errors (disk full, permissions) propagate so the whole copy fails and cleans up
+    # the files written so far. A partially written target of the failing save itself is
+    # not tracked (its name is only known on success) and is left for orphan-media cleanup.
     with source as fh:
         new_name = storage.save(
             field_file.field.generate_filename(None, PurePosixPath(name).name),

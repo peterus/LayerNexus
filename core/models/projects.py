@@ -8,7 +8,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
-from django.db.models import CheckConstraint, Q, QuerySet
+from django.db.models import CheckConstraint, Q, QuerySet, prefetch_related_objects
 
 from core.models.file_copy import CopiedFiles, duplicate_field_file
 from core.models.parts import Part
@@ -421,11 +421,15 @@ class Project(models.Model):
         """Return every subtree node (parents first) with its documents and parts.
 
         Walks via the cycle-guarded :meth:`_walk_subtree`, before anything is created.
+        Each node's hardware assignments and each part's time estimates are
+        prefetched here too, so the row transaction issues no further reads.
 
         Returns:
             ``(node, documents, parts)`` tuples in depth-first order.
         """
-        return [(node, list(node.documents.all()), list(node.parts.all())) for node, _factor in self._walk_subtree()]
+        nodes = [node for node, _factor in self._walk_subtree()]
+        prefetch_related_objects(nodes, "documents", "hardware_assignments", "parts__time_estimates")
+        return [(node, list(node.documents.all()), list(node.parts.all())) for node in nodes]
 
     @staticmethod
     def _copy_subtree_files(

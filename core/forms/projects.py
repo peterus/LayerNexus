@@ -146,6 +146,9 @@ class AddExistingSubprojectForm(forms.Form):
         super().__init__(*args, **kwargs)
         field = self.fields["source"]
         field.queryset = Project.objects.exclude(pk__in=project.subtree_ids()).order_by("name")
+        if self.is_bound:
+            # Only POSTed to validate one PK, never re-rendered: skip building the picker.
+            return
         labels = Project.path_label_map() if labels is None else labels
         field.choices = path_sorted_choices(
             field.queryset.only("pk", "name"), lambda p: labels.get(p.pk, p.name), field.empty_label

@@ -294,6 +294,26 @@ class DeepCopyTests(TestCase):
         self.assertEqual((Project.objects.count(), Part.objects.count(), ProjectDocument.objects.count()), before)
         self.assertEqual(_media_files(), before_files)
 
+    def test_deep_copy_recheck_under_lock_rejects_and_cleans_up(self) -> None:
+        """The target is re-checked inside the transaction (tree may change after the file copy)."""
+        other = Project.objects.create(name="O", default_print_preset=self.preset_b)
+        before_files = _media_files()
+        before = (Project.objects.count(), Part.objects.count(), ProjectDocument.objects.count())
+        real_check = Project._assert_copy_target
+        calls = {"n": 0}
+
+        def check_twice(project: Project, parent: Project | None) -> None:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise ValidationError({"parent": "moved into the subtree meanwhile"})
+            real_check(project, parent)
+
+        with mock.patch.object(Project, "_assert_copy_target", check_twice), self.assertRaises(ValidationError):
+            self.root.deep_copy(parent=other)
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual((Project.objects.count(), Part.objects.count(), ProjectDocument.objects.count()), before)
+        self.assertEqual(_media_files(), before_files)
+
     def test_part_deep_copy_failure_removes_new_file(self) -> None:
         before_files = _media_files()
         count = Part.objects.count()
