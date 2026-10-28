@@ -51,6 +51,11 @@ After copying, the copy is fully independent of the original.
    database (tables, columns, migrations-generated schema). See "Removal list".
 7. Production data migrates without loss. Prod was cleaned up on 2026-10-28,
    and nothing there is shared any more.
+8. **Move** (added 2026-10-28): a part or sub-project can be re-parented in
+   the web UI, keeping its print history (see "Move").
+9. **No orphaned files** (added 2026-10-28): deleting rows deletes their media
+   files, and a one-off command cleans up existing orphans (see "File
+   cleanup").
 
 ## Non-goals
 
@@ -58,9 +63,9 @@ After copying, the copy is fully independent of the original.
   confirmed nothing depends on the current contract. Breaking changes are fine.
 - No "linked copy" or "update copies from original" feature. Copies are
   independent forever.
-- No cleanup of orphaned media files on disk. This covers STL files and
-  documents of parts and projects deleted on 2026-10-28 or earlier. It could be
-  a separate small job later.
+- No "archive project" feature. It is a good idea (hide finished projects
+  while keeping their print history) but deliberately deferred to a separate
+  feature.
 - No change to the print queue, scheduled start, KlipperScreen, slicing or
   Spoolman logic beyond what is needed to drop `target_assembly`.
 
@@ -279,6 +284,61 @@ UI:
 - Success redirect: to the parent project if there is one, else to the project
   list.
 - No more 500 from `ProtectedError`.
+
+### Move (added 2026-10-28)
+
+- The part edit form gets a "project" field, a select over all projects with
+  the `path_label` label. The sub-project edit form gets a "parent" field: a
+  select over all projects except its own subtree. A top-level project's edit
+  form shows "parent" too, but it is optional, so a root can become a
+  sub-project. Moving a sub-project to "no parent" makes it a root, and then a
+  `default_print_preset` is required, either its own or the one entered in
+  the same form.
+- Validation: a project can never be moved into its own subtree. This is the
+  same cycle check as the API.
+- Print history and files stay with the moved row. Nothing is copied.
+- After a move, parts whose `effective_print_preset` changed are re-queued
+  for estimation. This is the same helper as for copy
+  (`_requeue_stale_estimates`).
+- RBAC: `ProjectManageMixin`, as on the existing edit views.
+- The API already allows re-parenting via `PATCH parent` / `PATCH project`,
+  with the same validation and re-estimate behaviour.
+
+### File cleanup (added 2026-10-28)
+
+Media files covered:
+
+- `Part.stl_file`
+- `FileVersion.file`
+- `ProjectDocument.file`
+- `Project.image`
+
+`PrintJob` / plate files (`gcode_file`, plate `thumbnail`) belong to the kept
+job history and are **not** touched, unless their own row is deleted.
+
+- **On delete:** when one of these rows is deleted, including through CASCADE
+  from a subtree delete, its file is removed from storage
+  **after the transaction commits** (`transaction.on_commit`), and only if no
+  remaining row in any of these fields references the same storage name. A
+  `FileVersion` may share a path with its part's `stl_file`. Replacing a file
+  on edit (new STL upload, new image) also removes the old file under the same
+  rule, unless it is kept as a `FileVersion`.
+- **One-off command** `manage.py cleanup_orphan_media`:
+  - scans the upload directories of the fields above (`stl_files/`,
+    `file_versions/`, `project_documents/`, `project_images/`, and whatever
+    `upload_to` values the code actually uses);
+  - lists files that no DB row references;
+  - **dry-run by default.** It prints the paths and the total size, and
+    deletes only with `--delete`.
+  - The coordinator runs it on prod after the deploy: dry-run first, then
+    `--delete`.
+- Tests:
+  - delete a part, a project subtree and a document, and check that the files
+    are gone after commit;
+  - a shared storage name is kept;
+  - a rolled-back delete keeps its files;
+  - the command finds orphans, the dry run deletes nothing, and `--delete`
+    removes only the orphans.
 
 ### Print jobs
 

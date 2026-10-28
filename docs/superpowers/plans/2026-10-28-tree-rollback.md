@@ -47,7 +47,8 @@
 - **PR 1 — Prune DAG-only UI (no schema change).** This PR only removes features that do not need the schema: the parts library, the "Used in" UI and duplicate-as-variant. Doing this first makes PR 2 smaller, and each removal is easy to review on its own. Duplicate-as-variant is unavailable until PR 3 adds copy. That gap is acceptable because the owner is the only user.
 - **PR 2 — Strict tree.** This PR holds the model, the migrations and **every** consumer of the edge models: views, forms, templates, API serializers and endpoints, worker, dashboard and admin. Once `ProjectPart`/`ProjectComponent` are dropped, nothing that references them can import. The **subtree delete guard also lives here**, not in the copy PR: `Project.parent` and `Part.project` become `CASCADE` in this PR. Without the guard, a prod deploy between PR 2 and PR 3 could silently cascade-delete parts in queued or printing jobs. Inside the PR, tasks follow expand → switch consumers → contract, so each commit keeps the touched test modules green.
 - **PR 3 — Deep copy.** Model copy methods, the copy UI for projects and parts, "add existing" done as a copy, and the API copy endpoints.
-- **PR 4 — Docs and leftovers.** README, user guide, `CLAUDE.md`, superseded plans and specs, and a stale-comment sweep.
+- **PR 4 — Move and file cleanup** (added 2026-10-28, spec Goals 8/9). Re-parenting in the web UI, deleting files on row delete, and the `cleanup_orphan_media` command.
+- **PR 5 — Docs and leftovers.** README, user guide, `CLAUDE.md`, superseded plans and specs, and a stale-comment sweep.
 
 ## File Structure
 
@@ -630,11 +631,70 @@ Branch: `feat/tree-rollback-3-copy`, based on `main` after PR 2 is merged.
 
 ---
 
-## PR 4 — Docs and leftovers
+## PR 4 — Move and file cleanup
+
+Base: main after PR 3 has merged. Spec sections: "Move" and "File cleanup".
+
+### Task 16: Move parts and sub-projects in the web UI
+
+**Files:**
+- Modify: `core/forms/parts.py` (`PartForm`), `core/forms/projects.py` (`SubProjectForm`, `ProjectEditForm`), `core/views/parts.py` (`PartUpdateView`), `core/views/projects.py` (`ProjectUpdateView`), `part_form.html`, `project_form.html`
+- Test: `core/tests/test_views_move.py` (new)
+
+**Interfaces:**
+- Consumes: `Project.subtree_ids`, `Project.path_label`, `Project.effective_default_print_preset`, `_requeue_stale_estimates` (Task 13), and the cycle check used by `ProjectSerializer.validate` (Task 10).
+- Produces:
+  - `PartForm` gets a `project` field, but only on update: `ModelChoiceField(queryset=Project.objects.order_by("name"))`, labelled with `path_label`. On create, the project still comes from the URL.
+  - `ProjectEditForm` gets a `parent` field: `ModelChoiceField(required=False, empty_label="(top-level project)")`. Its queryset excludes `instance.subtree_ids()`.
+  - `ProjectEditForm.clean()` raises a `ValidationError` on `default_print_preset` when `parent` is empty and neither the form nor the instance provides a preset.
+
+- [ ] **Step 1: Write failing tests** in `test_views_move.py`:
+  - `test_move_part_to_other_project_keeps_print_history` (the `PrintJobPart` count for the part is unchanged and `part.project` is the new project)
+  - `test_move_subproject_to_other_parent`
+  - `test_move_into_own_subtree_rejected` (the form error is on `parent`; the DB is unchanged)
+  - `test_move_subproject_to_root_requires_preset` (no own preset and an empty preset field → form error; with a preset → OK)
+  - `test_move_root_under_other_project` (it becomes a sub-project and its preset may stay)
+  - `test_move_requeues_parts_with_changed_preset` (patch `core.views.helpers._start_orcaslicer_worker`)
+  - `test_move_forbidden_for_operator` (403)
+- [ ] **Step 2: Run** `DEBUG=1 uv run python manage.py test core.tests.test_views_move`. Expected: FAIL.
+- [ ] **Step 3: Implement.** After a successful save in `form_valid`, if `project`/`parent` changed, call `_requeue_stale_estimates` on the moved part, or on `Part.objects.filter(project_id__in=obj.subtree_ids())` for a project.
+- [ ] **Step 4: Run** the same command. Expected: PASS. Then run the full suite: `DEBUG=1 uv run python manage.py test core`.
+- [ ] **Step 5: Commit** `git commit -m "feat(ui): move parts and sub-projects between projects"`.
+
+### Task 17: Delete media files with their rows + `cleanup_orphan_media`
+
+**Files:**
+- Create: `core/signals.py` (or extend the existing signal module if `core/apps.py` already wires one), `core/management/commands/cleanup_orphan_media.py`
+- Modify: `core/apps.py` (`ready()` imports the signals), `core/views/parts.py` / `core/views/projects.py` only if file replacement on edit is not covered by signals
+- Test: `core/tests/test_media_cleanup.py` (new)
+
+**Interfaces:**
+- Produces:
+  - `MEDIA_FIELDS: list[tuple[type[Model], str]] = [(Part, "stl_file"), (FileVersion, "file"), (ProjectDocument, "file"), (Project, "image")]` in `core/signals.py`.
+  - `file_is_referenced(name: str) -> bool`: True if any row in any `MEDIA_FIELDS` field still has this storage name.
+  - `post_delete` receivers for each model in `MEDIA_FIELDS`: `transaction.on_commit(lambda: _delete_if_unreferenced(storage, name))`.
+  - `pre_save` receivers for `Part.stl_file` and `Project.image`: when the stored name changes, delete the old file on commit if it is unreferenced. A `FileVersion` that keeps the old path counts as a reference.
+  - Command `cleanup_orphan_media [--delete]`. It walks the `upload_to` directories of `MEDIA_FIELDS` under `MEDIA_ROOT`. It prints each orphan path and then `"N orphaned files, X MB"`, and deletes only with `--delete`. Exit code 0.
+
+- [ ] **Step 1: Write failing tests** in `test_media_cleanup.py`. Use `override_settings(MEDIA_ROOT=tmpdir)`, a `TestCase` with `captureOnCommitCallbacks(execute=True)`, and a `TransactionTestCase` for the rollback case:
+  - `test_deleting_part_removes_stl_after_commit`
+  - `test_subtree_delete_removes_all_files` (part STL, document, project image)
+  - `test_file_shared_with_fileversion_is_kept`
+  - `test_rolled_back_delete_keeps_file`
+  - `test_replacing_stl_removes_old_file_unless_versioned`
+  - `test_print_job_gcode_untouched_on_part_delete`
+  - `test_cleanup_command_dry_run_lists_and_keeps` (output contains the orphan path; the file still exists)
+  - `test_cleanup_command_delete_removes_only_orphans`
+- [ ] **Step 2: Run** `DEBUG=1 uv run python manage.py test core.tests.test_media_cleanup`. Expected: FAIL.
+- [ ] **Step 3: Implement** using the signatures above. Check the actual `upload_to` values in `core/models` and do not guess the directory names.
+- [ ] **Step 4: Run** the same command. Expected: PASS. Then run the full suite: `DEBUG=1 uv run python manage.py test core`.
+- [ ] **Step 5: Commit** `git commit -m "feat: delete media files with their rows; cleanup_orphan_media command"`. Open PR 4. Hand-off note for the coordinator: after deploying, run `cleanup_orphan_media` on prod as a dry run, review the output, then run it with `--delete`.
+
+## PR 5 — Docs and leftovers
 
 Branch: `docs/tree-rollback-4`.
 
-### Task 16: Docs, superseded plans, stale-comment sweep
+### Task 18: Docs, superseded plans, stale-comment sweep
 
 **Files:**
 - Modify: `README.md` (features + the API section: the table from line 240 onward, the prose near line 272 and the curl example near lines 279–304), `docs/user-guide/projects.md` (preset inheritance, copy, delete with blocking jobs, no shared parts), `CLAUDE.md` (models list: make sure no `composition.py`; keep the aggregation-pattern line), `docs/superpowers/specs/2026-09-20-project-variants-dag-composition-design.md` and `docs/superpowers/specs/2026-09-22-project-preset-resolution-design.md` (add the banner `> **Superseded by** \`2026-10-28-tree-rollback-design.md\`.` on the first line under the title)
@@ -644,14 +704,14 @@ Branch: `docs/tree-rollback-4`.
 **Interfaces:** none.
 
 - [ ] **Step 1: Update the README API table.** Remove the `components` and `/projects/{id}/parts/` rows and the `duplicate` row. Add `POST /projects/{id}/copy/ {name?, parent?}` and `POST /parts/{id}/copy/ {project}`. Note that `parts` require `project`, and `projects` accept `parent` and `quantity`, with the preset required only for roots. Drop `variant_progress` from `requirements`. In the curl example, replace the `components/` call with `-d "parent=$ASM&quantity=1"` on `POST /projects/`, and replace step 6 with a `copy` call. The `project=…&quantity=…` part example becomes correct as written.
-- [ ] **Step 2: Rewrite the user guide.** `docs/user-guide/projects.md` lines 16–38 describe bottom-up preset inheritance (only top-level projects require a preset; "inherited from parent"). Add the sections "Copying projects and parts" and "Deleting a project" (subtree, counts, blocked by unfinished jobs, finished history kept).
+- [ ] **Step 2: Rewrite the user guide.** `docs/user-guide/projects.md` lines 16–38 describe bottom-up preset inheritance (only top-level projects require a preset; "inherited from parent"). Add the sections "Copying projects and parts", "Moving parts and sub-projects" and "Deleting a project" (subtree, counts, blocked by unfinished jobs, finished history kept, files removed). Mention `manage.py cleanup_orphan_media [--delete]` in README admin/maintenance notes.
 - [ ] **Step 3: Run the stale-comment grep, which must print nothing.**
   ```bash
   grep -rnE "composition edge|Phase[ -][1-6]|Phase-[1-6]|legacy FK|legacy .parent|DAG|Variant B|build path" core --include='*.py' --include='*.html' | grep -v "core/migrations/"
   ```
   Fix each hit in the docstrings and comments.
 - [ ] **Step 4: Run** `uv run ruff format --check . && DEBUG=1 uv run python manage.py test core`. Expected: green.
-- [ ] **Step 5: Commit** `git commit -m "docs: tree rollback — README, user guide, superseded DAG docs"`, then open PR 4.
+- [ ] **Step 5: Commit** `git commit -m "docs: tree rollback — README, user guide, superseded DAG docs"`, then open PR 5.
 
 ---
 
