@@ -6,11 +6,11 @@ from django.contrib.auth.models import Permission, User
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from core.models import OrcaPrintPreset, Part, Project, ProjectPart
+from core.models import OrcaPrintPreset, Part, PrintJob, PrintJobPart, Project
 
 
 class ApiProjectPartTests(APITestCase):
-    """CRUD round-trips for projects and parts plus the assembly tree."""
+    """CRUD round-trips for projects and parts."""
 
     def setUp(self) -> None:
         """Create a manage-capable user and authenticate the client with its token."""
@@ -45,15 +45,16 @@ class ApiProjectPartTests(APITestCase):
         self.assertFalse(Project.objects.filter(pk=pk).exists())
 
     def test_part_crud_roundtrip(self) -> None:
-        """Create a standalone part, patch scalar fields and delete it."""
+        """Create a part in a project, patch scalar fields and delete it."""
+        project = Project.objects.create(name="Module", default_print_preset=self.preset)
         resp = self.client.post(
             "/api/v1/parts/",
-            {"name": "Gear", "material": "PLA", "color": "red"},
+            {"project": project.pk, "name": "Gear", "material": "PLA", "color": "red"},
             format="json",
         )
         self.assertEqual(resp.status_code, 201, resp.data)
         pk = resp.data["id"]
-        self.assertNotIn("quantity", resp.data)
+        self.assertEqual(resp.data["quantity"], 1)
 
         resp = self.client.patch(
             f"/api/v1/parts/{pk}/",
@@ -68,56 +69,141 @@ class ApiProjectPartTests(APITestCase):
         self.assertEqual(resp.status_code, 204)
         self.assertFalse(Part.objects.filter(pk=pk).exists())
 
-    def test_part_attach_to_project_via_edge(self) -> None:
-        """A part can be attached to a project by creating a ProjectPart edge directly."""
-        project = Project.objects.create(name="Module")
+
+class ApiTreeContractTests(APITestCase):
+    """The tree contract: parent/quantity on projects, project/quantity on parts."""
+
+    def setUp(self) -> None:
+        """Authenticate a manage-capable user; build R (preset) → S → T."""
+        self.user = User.objects.create_user("designer", password="x")
+        self.user.user_permissions.add(Permission.objects.get(codename="can_manage_projects"))
+        token = Token.objects.create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        self.preset = OrcaPrintPreset.objects.create(
+            name="P", orca_name="P", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        self.root = Project.objects.create(name="R", default_print_preset=self.preset)
+        self.sub = Project.objects.create(name="S", parent=self.root, quantity=2)
+        self.leaf = Project.objects.create(name="T", parent=self.sub, quantity=3)
+
+    def test_create_part_requires_project(self) -> None:
         resp = self.client.post("/api/v1/parts/", {"name": "Bracket"}, format="json")
-        self.assertEqual(resp.status_code, 201)
-        part_pk = resp.data["id"]
-        ProjectPart.objects.create(project=project, part_id=part_pk, quantity=3)
-        self.assertTrue(project.part_links.filter(part_id=part_pk).exists())
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("project", resp.data)
 
-    def test_patch_project_keeps_component_edges(self) -> None:
-        """Regression: a PATCH on a project must not wipe its composition edges.
+    def test_create_part_with_project_and_quantity(self) -> None:
+        resp = self.client.post(
+            "/api/v1/parts/", {"name": "Bracket", "project": self.leaf.pk, "quantity": 4}, format="json"
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        part = Part.objects.get(pk=resp.data["id"])
+        self.assertEqual(part.project_id, self.leaf.pk)
+        self.assertEqual(part.quantity, 4)
+        self.assertEqual(part.effective_print_preset_id, self.preset.pk)
 
-        A leftover Phase-6 dual-write shim in ``Project.save`` deleted the parent
-        ``ProjectComponent`` edges of any project whose legacy ``parent`` FK was
-        ``None`` — which is every edge-based module — so editing a scalar field via
-        the API silently corrupted assemblies.
-        """
-        truck = Project.objects.create(name="Truck")
-        cabin = Project.objects.create(name="Cabin")
-        truck.child_links.create(child_project=cabin, quantity=2)
+    def test_create_root_requires_preset(self) -> None:
+        resp = self.client.post("/api/v1/projects/", {"name": "Bare"}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("default_print_preset", resp.data)
 
-        resp = self.client.patch(f"/api/v1/projects/{cabin.pk}/", {"name": "Cabin v2"}, format="json")
+    def test_create_subproject_without_preset_ok(self) -> None:
+        resp = self.client.post(
+            "/api/v1/projects/", {"name": "Axle", "parent": self.root.pk, "quantity": 2}, format="json"
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        sub = Project.objects.get(pk=resp.data["id"])
+        self.assertEqual(sub.parent_id, self.root.pk)
+        self.assertEqual(sub.quantity, 2)
+        self.assertIsNone(sub.default_print_preset_id)
+
+    def test_patch_subproject_to_root_without_preset_400(self) -> None:
+        resp = self.client.patch(f"/api/v1/projects/{self.sub.pk}/", {"parent": None}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("default_print_preset", resp.data)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.parent_id, self.root.pk)
+
+    def test_patch_subproject_to_root_with_preset_ok(self) -> None:
+        resp = self.client.patch(
+            f"/api/v1/projects/{self.sub.pk}/",
+            {"parent": None, "default_print_preset": self.preset.pk},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.sub.refresh_from_db()
+        self.assertIsNone(self.sub.parent_id)
+
+    def test_patch_root_clear_preset_400(self) -> None:
+        resp = self.client.patch(f"/api/v1/projects/{self.root.pk}/", {"default_print_preset": None}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("default_print_preset", resp.data)
+
+    def test_patch_parent_cycle_400(self) -> None:
+        resp = self.client.patch(f"/api/v1/projects/{self.root.pk}/", {"parent": self.leaf.pk}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("parent", resp.data)
+        resp = self.client.patch(f"/api/v1/projects/{self.sub.pk}/", {"parent": self.sub.pk}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("parent", resp.data)
+        self.root.refresh_from_db()
+        self.assertIsNone(self.root.parent_id)
+
+    def test_patch_reparent_ok(self) -> None:
+        other = Project.objects.create(name="Other", default_print_preset=self.preset)
+        resp = self.client.patch(f"/api/v1/projects/{self.leaf.pk}/", {"parent": other.pk}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.leaf.refresh_from_db()
+        self.assertEqual(self.leaf.parent_id, other.pk)
+
+    def test_tree_is_nested_subprojects(self) -> None:
+        part = Part.objects.create(name="Screw holder", project=self.leaf, quantity=5)
+        resp = self.client.get(f"/api/v1/projects/{self.root.pk}/tree/")
         self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["id"], self.root.pk)
+        sub = resp.data["subprojects"][0]
+        self.assertEqual(sub["id"], self.sub.pk)
+        self.assertEqual(sub["quantity"], 2)
+        leaf = sub["subprojects"][0]
+        self.assertEqual(leaf["id"], self.leaf.pk)
+        self.assertEqual(leaf["quantity"], 3)
+        self.assertEqual(leaf["parts"], [{"part": part.pk, "name": "Screw holder", "quantity": 5}])
+        self.assertNotIn("components", resp.data)
 
-        self.assertEqual(cabin.parent_links.count(), 1)
-        edge = cabin.parent_links.get()
-        self.assertEqual(edge.parent_project_id, truck.pk)
-        self.assertEqual(edge.quantity, 2)
-
-    def test_project_tree(self) -> None:
-        """The tree endpoint returns nested child modules, direct parts and hardware."""
-        parent = Project.objects.create(name="Assembly")
-        child = Project.objects.create(name="Sub")
-        parent.child_links.create(child_project=child, quantity=2)
-        part = Part.objects.create(name="Screw holder")
-        child.part_links.get_or_create(part=part, defaults={"quantity": 1})
-
-        resp = self.client.get(f"/api/v1/projects/{parent.pk}/tree/")
+    def test_tree_terminates_on_corrupt_cycle(self) -> None:
+        Project.objects.filter(pk=self.root.pk).update(parent=self.leaf)  # bypasses save()
+        resp = self.client.get(f"/api/v1/projects/{self.root.pk}/tree/")
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.data["id"], parent.pk)
-        self.assertEqual(len(resp.data["components"]), 1)
-        component = resp.data["components"][0]
-        self.assertEqual(component["quantity"], 2)
-        self.assertEqual(component["child"]["id"], child.pk)
-        self.assertEqual(len(component["child"]["parts"]), 1)
-        self.assertEqual(component["child"]["parts"][0]["part"], part.pk)
+        self.assertEqual(resp.data["subprojects"][0]["subprojects"][0]["subprojects"], [])
+
+    def test_edge_endpoints_gone(self) -> None:
+        for suffix in ("components/", "parts/", "components/1/", "parts/1/"):
+            with self.subTest(suffix=suffix):
+                resp = self.client.get(f"/api/v1/projects/{self.root.pk}/{suffix}")
+                self.assertEqual(resp.status_code, 404)
+
+    def test_api_delete_project_with_unfinished_job_409(self) -> None:
+        part = Part.objects.create(name="deep", project=self.leaf)
+        job = PrintJob.objects.create(name="busy", status=PrintJob.STATUS_SLICED)
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
+        resp = self.client.delete(f"/api/v1/projects/{self.root.pk}/")
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["blocking_jobs"], [job.pk])
+        self.assertTrue(Project.objects.filter(pk=self.leaf.pk).exists())
+
+    def test_api_delete_project_cascades_subtree_204(self) -> None:
+        part = Part.objects.create(name="deep", project=self.leaf)
+        job = PrintJob.objects.create(name="done", status=PrintJob.STATUS_COMPLETED)
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
+        resp = self.client.delete(f"/api/v1/projects/{self.sub.pk}/")
+        self.assertEqual(resp.status_code, 204)
+        self.assertFalse(Project.objects.filter(pk__in=[self.sub.pk, self.leaf.pk]).exists())
+        self.assertFalse(Part.objects.filter(pk=part.pk).exists())
+        self.assertTrue(Project.objects.filter(pk=self.root.pk).exists())
+        self.assertTrue(PrintJob.objects.filter(pk=job.pk).exists())
 
 
 class ProjectSerializerPresetRequiredTests(APITestCase):
-    """The ProjectSerializer requires default_print_preset (Variant B)."""
+    """The ProjectSerializer requires default_print_preset on top-level projects."""
 
     def test_create_project_without_preset_is_rejected(self) -> None:
         from core.api.serializers import ProjectSerializer

@@ -45,8 +45,23 @@ class ApiRequirementsTests(APITestCase):
         self.assertEqual(fil["filament_id"], 7)
         self.assertTrue(all(set(p) >= {"id", "name"} for p in fil["parts"]))
         self.assertIn("hardware_requirements", data)
-        self.assertIn("percent", data["variant_progress"])
-        self.assertTrue(all(set(row["part"]) >= {"id", "name"} for row in data["variant_progress"]["parts"]))
+
+    def test_requirements_has_no_variant_progress(self) -> None:
+        """The DAG-era per-variant progress is gone from the payload."""
+        project = Project.objects.create(name="Assembly")
+        resp = self.client.get(f"/api/v1/projects/{project.pk}/requirements/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("variant_progress", resp.data)
+
+    def test_totals_use_tree_multiplier(self) -> None:
+        """Totals multiply part quantity by every sub-project quantity up the chain."""
+        root = Project.objects.create(name="R")
+        sub = Project.objects.create(name="S", parent=root, quantity=2)
+        leaf = Project.objects.create(name="T", parent=sub, quantity=3)
+        Part.objects.create(project=leaf, quantity=4, name="p", filament_used_grams=1.5)
+        resp = self.client.get(f"/api/v1/projects/{root.pk}/requirements/")
+        self.assertEqual(resp.data["total_parts_count"], 24)
+        self.assertEqual(resp.data["total_filament_grams"], 36.0)
 
     def test_validate_flags_missing_stl(self) -> None:
         """A part without an STL is reported as an issue and the project is not ``ok``."""

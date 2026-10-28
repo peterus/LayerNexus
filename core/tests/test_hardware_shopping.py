@@ -6,7 +6,6 @@ from core.models import (
     HardwarePart,
     HardwareShoppingItem,
     Project,
-    ProjectComponent,
     ProjectHardware,
 )
 from core.models.hardware import ShoppingItemNotRequired, ShoppingQuantityChanged, ShoppingRow
@@ -17,8 +16,7 @@ class ShoppingListTestBase(TestCase):
 
     def setUp(self) -> None:
         self.root = Project.objects.create(name="R")
-        self.child = Project.objects.create(name="C")
-        self.edge = ProjectComponent.objects.create(parent_project=self.root, child_project=self.child, quantity=2)
+        self.child = Project.objects.create(name="C", parent=self.root, quantity=2)
         self.m3 = HardwarePart.objects.create(name="M3", category=HardwarePart.CATEGORY_SCREWS)
         self.bearing = HardwarePart.objects.create(name="Bearing", category=HardwarePart.CATEGORY_BEARINGS)
         self.magnet = HardwarePart.objects.create(name="Magnet", category=HardwarePart.CATEGORY_MAGNETS)
@@ -32,7 +30,7 @@ class ShoppingListTestBase(TestCase):
 
 
 class BuildListTests(ShoppingListTestBase):
-    def test_build_list_sums_over_children_with_edge_quantity(self) -> None:
+    def test_build_list_sums_over_children_with_sub_project_quantity(self) -> None:
         self.assertEqual(self.row(self.root, self.m3).quantity, 10)
         self.assertEqual(self.row(self.root, self.bearing).quantity, 2)
         for r in HardwareShoppingItem.build_list(self.root):
@@ -42,7 +40,7 @@ class BuildListTests(ShoppingListTestBase):
     def test_build_list_merges_part_used_directly_and_in_child(self) -> None:
         rows = [r for r in HardwareShoppingItem.build_list(self.root) if r.hardware_part.pk == self.m3.pk]
         self.assertEqual(len(rows), 1)
-        self.assertEqual(sorted(rows[0].projects), ["C", "R"])
+        self.assertEqual(rows[0].projects, ["R", "R › C"])
 
     def test_build_list_orders_by_category_choices_then_name(self) -> None:
         names = [r.hardware_part.name for r in HardwareShoppingItem.build_list(self.root)]
@@ -121,11 +119,11 @@ class ChangedQuantityTests(ShoppingListTestBase):
         self.assertEqual((m3.status, m3.previous_quantity, m3.quantity), ("open", 10, 11))
         self.assertEqual(self.row(self.root, self.bearing).status, "ordered")
 
-    def test_changed_edge_quantity_resets_affected_rows(self) -> None:
+    def test_changed_sub_project_quantity_resets_affected_rows(self) -> None:
         HardwareShoppingItem.set_status(self.root, self.m3.pk, "ordered")
         HardwareShoppingItem.set_status(self.root, self.bearing.pk, "ordered")
-        self.edge.quantity = 3
-        self.edge.save()
+        self.child.quantity = 3
+        self.child.save()
         m3, bearing = self.row(self.root, self.m3), self.row(self.root, self.bearing)
         self.assertEqual((m3.status, m3.previous_quantity), ("open", 10))
         self.assertEqual((bearing.status, bearing.previous_quantity), ("open", 2))

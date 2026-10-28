@@ -4,7 +4,7 @@ from django.contrib.auth.models import Group
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
-from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate, Project, ProjectPart
+from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate, Project
 from core.tests.mixins import TestDataMixin
 
 
@@ -30,8 +30,7 @@ class DashboardViewTests(TestDataMixin, TestCase):
         root = Project.objects.create(name="Deep Root")
         sub = Project.objects.create(name="Deep Sub", parent=root, quantity=2)
         for proj in (root, sub):
-            part = Part.objects.create(name=f"{proj.name}-p")
-            ProjectPart.objects.create(project=proj, part=part, quantity=2)
+            part = Part.objects.create(name=f"{proj.name}-p", project=proj, quantity=2)
             job = PrintJob.objects.create(status="completed")
             PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
             PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
@@ -80,6 +79,26 @@ class StatisticsViewTests(TestDataMixin, TestCase):
         self.assertIn("total_projects", r.context)
         self.assertIn("total_parts", r.context)
         self.assertIn("total_jobs", r.context)
+
+    def test_total_parts_sums_part_quantities(self):
+        """total_parts is the sum of Part.quantity over all parts, including sub-project parts."""
+        sub = Project.objects.create(name="Sub", parent=self.project, quantity=5)
+        Part.objects.create(name="Sub Part", project=sub, quantity=4)
+        # Fixture parts: 3 + 1; new part: 4 (sub-project quantity is not multiplied in).
+        r = self.client.get(reverse("core:statistics"))
+        self.assertEqual(r.context["total_parts"], 8)
+        r = self.client.get(reverse("core:dashboard"))
+        self.assertEqual(r.context["total_parts"], 8)
+
+    def test_material_breakdown_from_parts(self):
+        """material_breakdown groups all parts by material with count and summed quantity."""
+        Part.objects.create(name="PLA 2", project=self.other_project, quantity=2, material="PLA")
+        Part.objects.create(name="PETG 1", project=self.other_project, quantity=7, material="PETG")
+        self.other_part.material = "PETG"
+        self.other_part.save()
+        r = self.client.get(reverse("core:statistics"))
+        breakdown = {row["material"]: (row["count"], row["total_qty"]) for row in r.context["material_breakdown"]}
+        self.assertEqual(breakdown, {"PLA": (2, 5), "PETG": (2, 8)})
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])

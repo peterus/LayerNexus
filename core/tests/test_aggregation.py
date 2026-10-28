@@ -199,6 +199,19 @@ class ProjectCycleGuardTests(TestCase):
         self.assertIsNone(a.effective_default_print_preset)
         self.assertIsNone(a.effective_default_print_preset_id)
 
+    def test_aggregate_collectors_guarded_against_corrupt_cycle(self):
+        """A persisted cycle must not hang or RecursionError the aggregates."""
+        a = Project.objects.create(name="A")
+        b = Project.objects.create(name="B", parent=a)
+        Part.objects.create(project=a, quantity=1, name="ap")
+        Part.objects.create(project=b, quantity=1, name="bp")
+        Project.objects.filter(pk=a.pk).update(parent=b)  # a <-> b cycle
+        a.refresh_from_db()
+        self.assertEqual(a.total_parts_count, 2)
+        self.assertIsInstance(a.aggregated_status, str)
+        self.assertEqual(a._collect_documents(), [])
+        self.assertEqual(a._collect_hardware_with_multiplier(), [])
+
 
 class ProjectAggregatedStatusTests(TestDataMixin, TestCase):
     """Tests for the Project.aggregated_status property."""

@@ -62,15 +62,15 @@ class FilamentSummaryTests(_DialogTestBase):
         self.assertEqual(filament_summary(self.job), "Filament: PLA red")
 
     def test_filament_summary_multiple_distinct(self):
-        same = Part.objects.create(name="Same", material="PLA", color="red")
-        other = Part.objects.create(name="Other", material="PETG", color="Black")
+        same = Part.objects.create(project=self.project, name="Same", material="PLA", color="red")
+        other = Part.objects.create(project=self.project, name="Other", material="PETG", color="Black")
         PrintJobPart.objects.create(print_job=self.job, part=same)
         PrintJobPart.objects.create(print_job=self.job, part=other)
         self.assertEqual(filament_summary(self.job), "Filament: PETG Black, PLA red")
 
     def test_filament_summary_none(self):
         job = PrintJob.objects.create(name="Empty", created_by=self.user)
-        bare = Part.objects.create(name="Bare")
+        bare = Part.objects.create(project=self.project, name="Bare")
         PrintJobPart.objects.create(print_job=job, part=bare)
         self.assertEqual(filament_summary(job), "Filament: not specified")
 

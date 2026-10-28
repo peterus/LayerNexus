@@ -217,5 +217,15 @@ class ProjectTreeSerializer(serializers.ModelSerializer):
         ]
 
     def get_subprojects(self, obj: Project) -> list[dict[str, Any]]:
-        """Return the nested tree of each direct sub-project."""
-        return [ProjectTreeSerializer(sub, context=self.context).data for sub in obj.subprojects.all()]
+        """Return the nested tree of each direct sub-project.
+
+        The ids already on the current path are carried in the context, so a corrupt
+        persisted cycle terminates instead of recursing forever.
+        """
+        path: frozenset[int] = self.context.get("_tree_path", frozenset()) | {obj.pk}
+        child_context = {**self.context, "_tree_path": path}
+        return [
+            ProjectTreeSerializer(sub, context=child_context).data
+            for sub in obj.subprojects.all()
+            if sub.pk not in path
+        ]

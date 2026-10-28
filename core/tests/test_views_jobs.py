@@ -15,9 +15,9 @@ from core.models import (
     PrintJobPart,
     PrintJobPlate,
     Project,
-    ProjectPart,
 )
 from core.tests.mixins import TestDataMixin
+from core.views.print_jobs import PrintJobListView
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -63,6 +63,16 @@ class PrintJobViewTests(TestDataMixin, TestCase):
     def test_update_get(self):
         resp = self.client.get(reverse("core:printjob_update", args=[self.job.pk]))
         self.assertEqual(resp.status_code, 200)
+
+    def test_job_detail_shows_root_path(self):
+        """The job detail Project column shows the root-down path of the part's project."""
+        root = Project.objects.create(name="R", created_by=self.user)
+        sub = Project.objects.create(name="S", parent=root, quantity=1, created_by=self.user)
+        part = Part.objects.create(project=sub, quantity=1, name="Sub Part")
+        PrintJobPart.objects.create(print_job=self.job, part=part, quantity=1)
+        resp = self.client.get(reverse("core:printjob_detail", args=[self.job.pk]))
+        self.assertContains(resp, "R › S")
+        self.assertContains(resp, reverse("core:project_detail", args=[sub.pk]))
 
 
 class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
@@ -130,15 +140,14 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
         self.assertEqual(job.job_parts.first().part, self.part)
 
     def test_skips_fully_printed_parts(self):
-        """Parts with a per-assembly remaining of 0 are skipped."""
-        # Mark part as fully printed FOR this project via a completed, attributed job plate.
-        # Edge quantity is 3 (from TestDataMixin).
+        """Parts with a remaining of 0 (needed − printed) are skipped."""
+        # Mark part as fully printed via a completed job plate. Part quantity is 3 (TestDataMixin).
         job = PrintJob.objects.create(
             name="Old Job",
             status=PrintJob.STATUS_DRAFT,
             created_by=self.user,
         )
-        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=3, target_assembly=self.project)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=3)
         PrintJobPlate.objects.create(print_job=job, plate_number=1, status="completed")
 
         resp = self.client.post(self._url())
@@ -148,25 +157,18 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
         self.assertEqual(new_jobs.count(), 1)  # only the old one
 
     def test_uses_remaining_quantity(self):
-        """Job quantity equals the per-assembly remaining (needed − printed)."""
+        """Job quantity equals the remaining (needed − printed)."""
         self.client.post(self._url())
         job = PrintJob.objects.filter(created_by=self.user).first()
         jp = job.job_parts.first()
-        # Nothing printed yet; remaining == edge quantity (3 from TestDataMixin).
+        # Nothing printed yet; remaining == part quantity (3 from TestDataMixin).
         self.assertEqual(jp.quantity, 3)
 
-    def test_job_parts_attributed_to_project(self):
-        """Created job parts carry target_assembly == the source project (Phase 6a)."""
-        self.client.post(self._url())
-        job = PrintJob.objects.filter(created_by=self.user).first()
-        jp = job.job_parts.first()
-        self.assertEqual(jp.target_assembly_id, self.project.pk)
-
-    def test_uses_per_assembly_remaining(self):
-        """Quantity is needed − printed-for-this-assembly, not the global remaining."""
-        # 3 needed (edge quantity from TestDataMixin), 1 already printed FOR this project → 2 remaining.
+    def test_create_jobs_subtracts_global_printed(self):
+        """Quantity is needed − printed across all completed jobs (no attribution)."""
+        # 3 needed (part quantity from TestDataMixin), 1 already printed in any completed job → 2 remaining.
         done = PrintJob.objects.create(status="completed", created_by=self.user)
-        PrintJobPart.objects.create(print_job=done, part=self.part, quantity=1, target_assembly=self.project)
+        PrintJobPart.objects.create(print_job=done, part=self.part, quantity=1)
         PrintJobPlate.objects.create(print_job=done, plate_number=1, status="completed")
 
         self.client.post(self._url())
@@ -175,7 +177,54 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
         )
         jp = new_job.job_parts.get(part=self.part)
         self.assertEqual(jp.quantity, 2)
-        self.assertEqual(jp.target_assembly_id, self.project.pk)
+        self.assertFalse(hasattr(jp, "target_assembly"))
+
+    def test_create_jobs_groups_by_inherited_preset_and_filament(self):
+        """Parts in root R and in sub S (own preset) land in two jobs, each pinned to its preset."""
+        preset_r = self.project.default_print_preset
+        preset_s = OrcaPrintPreset.objects.create(
+            name="Sub", orca_name="Sub", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        sub = Project.objects.create(
+            name="S", parent=self.project, quantity=2, default_print_preset=preset_s, created_by=self.user
+        )
+        sub_part = Part.objects.create(
+            project=sub, quantity=2, name="Sub Part", stl_file=SimpleUploadedFile("sub.stl", b"solid sub")
+        )
+
+        resp = self.client.post(self._url())
+        self.assertRedirects(resp, reverse("core:project_detail", args=[self.project.pk]))
+        jobs = PrintJob.objects.filter(created_by=self.user)
+        self.assertEqual(jobs.count(), 2)
+        by_preset = {j.print_preset_id: j for j in jobs}
+        self.assertEqual(set(by_preset), {preset_r.pk, preset_s.pk})
+        self.assertEqual(by_preset[preset_r.pk].job_parts.get().part, self.part)
+        self.assertEqual(by_preset[preset_r.pk].job_parts.get().quantity, 3)
+        # needed = part quantity 2 × sub-project quantity 2.
+        self.assertEqual(by_preset[preset_s.pk].job_parts.get().part, sub_part)
+        self.assertEqual(by_preset[preset_s.pk].job_parts.get().quantity, 4)
+
+    def test_create_jobs_skips_part_without_resolvable_preset(self):
+        """A part with no own preset and no default up the chain is skipped, others still bundle."""
+        self.project.default_print_preset = None
+        self.project.save(update_fields=["default_print_preset"])
+        own = OrcaPrintPreset.objects.create(
+            name="Own", orca_name="Own", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        with_preset = Part.objects.create(
+            project=self.project,
+            quantity=1,
+            name="Own Preset",
+            print_preset=own,
+            stl_file=SimpleUploadedFile("own.stl", b"solid own"),
+        )
+
+        resp = self.client.post(self._url())
+        self.assertEqual(resp.status_code, 302)
+        job = PrintJob.objects.get(created_by=self.user)
+        self.assertEqual(job.print_preset_id, own.pk)
+        self.assertEqual([jp.part for jp in job.job_parts.all()], [with_preset])
+        self.assertFalse(job.job_parts.filter(part=self.part).exists())
 
     def test_no_eligible_parts_shows_warning(self):
         """When no parts are eligible, a warning message is shown."""
@@ -234,7 +283,7 @@ class CreateJobsResolvedPresetTests(TestDataMixin, TestCase):
 
 
 class AddPartToJobPresetTests(TestDataMixin, TestCase):
-    """Part-path job creation resolves the preset, offering a dropdown when ambiguous."""
+    """Part-path job creation pins the part's bottom-up resolved preset."""
 
     def setUp(self):
         super().setUp()
@@ -245,64 +294,40 @@ class AddPartToJobPresetTests(TestDataMixin, TestCase):
             name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
         )
 
-    def test_candidates_single_project_auto(self):
-        from core.models import Part, Project
-
-        preset = self._preset("P")
-        project = Project.objects.create(name="Proj", default_print_preset=preset)
-        part = Part.objects.create(project=project, quantity=1, name="p")
-        auto, choices = part.resolve_job_preset_candidates()
-        self.assertEqual(auto, preset)
-        self.assertEqual(choices, [])
-
-    def test_candidates_multiple_different_offers_choices(self):
-        from core.models import Part, Project, ProjectPart
-
-        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
-        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
-        part = Part.objects.create(project=a, quantity=1, name="p")
-        ProjectPart.objects.create(project=b, part=part, quantity=1)
-        auto, choices = part.resolve_job_preset_candidates()
-        self.assertIsNone(auto)
-        self.assertEqual({c.name for c in choices}, {"PA", "PB"})
-
-    def test_add_part_new_job_pins_chosen_preset(self):
-        from core.models import Part, Project, ProjectPart
-
-        pa = self._preset("PA")
-        pb = self._preset("PB")
-        a = Project.objects.create(name="A", default_print_preset=pa)
-        b = Project.objects.create(name="B", default_print_preset=pb)
-        part = Part.objects.create(project=a, quantity=1, name="p")
-        part.stl_file.name = "stl_files/p.stl"
-        part.save(update_fields=["stl_file"])
-        ProjectPart.objects.create(project=b, part=part, quantity=1)
+    def test_add_part_to_job_uses_inherited_preset(self):
+        """A part without own preset in sub S inherits the root's default preset."""
+        preset = self._preset("RootPreset")
+        root = Project.objects.create(name="R", default_print_preset=preset, created_by=self.user)
+        sub = Project.objects.create(name="S", parent=root, quantity=1, created_by=self.user)
+        part = Part.objects.create(project=sub, quantity=1, name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
 
         resp = self.client.post(
             reverse("core:add_part_to_job", kwargs={"part_pk": part.pk}),
-            {"job": "", "quantity": 1, "print_preset": pb.pk},
+            {"job": "", "quantity": 1},
+        )
+        job = PrintJob.objects.latest("created_at")
+        self.assertRedirects(resp, reverse("core:printjob_detail", args=[job.pk]))
+        self.assertEqual(job.print_preset_id, preset.pk)
+        self.assertTrue(job.job_parts.filter(part=part).exists())
+
+    def test_add_part_to_job_ignores_target_assembly_param(self):
+        """A stale ``target_assembly`` POST param is ignored and the add still works."""
+        preset = self._preset("P")
+        project = Project.objects.create(name="Proj", default_print_preset=preset, created_by=self.user)
+        part = Part.objects.create(
+            project=project, quantity=1, name="p", stl_file=SimpleUploadedFile("p.stl", b"solid")
+        )
+
+        resp = self.client.post(
+            reverse("core:add_part_to_job", kwargs={"part_pk": part.pk}),
+            {"job": "", "quantity": 2, "target_assembly": 1},
         )
         self.assertEqual(resp.status_code, 302)
         job = PrintJob.objects.latest("created_at")
-        self.assertEqual(job.print_preset_id, pb.pk)
-
-    def test_add_part_ambiguous_without_choice_is_rejected(self):
-        from core.models import Part, Project, ProjectPart
-
-        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
-        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
-        part = Part.objects.create(project=a, quantity=1, name="p")
-        part.stl_file.name = "stl_files/p.stl"
-        part.save(update_fields=["stl_file"])
-        ProjectPart.objects.create(project=b, part=part, quantity=1)
-
-        before = PrintJob.objects.count()
-        resp = self.client.post(
-            reverse("core:add_part_to_job", kwargs={"part_pk": part.pk}),
-            {"job": "", "quantity": 1},  # no print_preset chosen
-        )
-        self.assertEqual(resp.status_code, 302)
-        self.assertEqual(PrintJob.objects.count(), before)  # no job created
+        jp = job.job_parts.get(part=part)
+        self.assertEqual(jp.quantity, 2)
+        self.assertEqual(job.print_preset_id, preset.pk)
+        self.assertFalse(hasattr(jp, "target_assembly"))
 
 
 class JobDetailEffectivePresetTests(TestCase):
@@ -315,7 +340,8 @@ class JobDetailEffectivePresetTests(TestCase):
         part_preset = OrcaPrintPreset.objects.create(
             name="PartPreset", orca_name="PartPreset", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
         )
-        part = Part.objects.create(name="p", print_preset=part_preset)
+        project = Project.objects.create(name="Proj")
+        part = Part.objects.create(project=project, quantity=1, name="p", print_preset=part_preset)
         job = PrintJob.objects.create(name="J", print_preset=job_preset)
         PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
 
@@ -323,48 +349,6 @@ class JobDetailEffectivePresetTests(TestCase):
         self.client.force_login(user)
         resp = self.client.get(reverse("core:printjob_detail", kwargs={"pk": job.pk}))
         self.assertEqual(resp.context["effective_print_preset"], job_preset)
-
-
-class CreateJobsPerPathPresetTests(TestDataMixin, TestCase):
-    """Project-path job creation splits a shared part across differing per-path presets."""
-
-    def setUp(self):
-        super().setUp()
-        self.client.login(username="testuser", password="testpass123")
-
-    def _preset(self, name):
-        return OrcaPrintPreset.objects.create(
-            name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
-        )
-
-    def test_shared_part_split_into_two_preset_bundles(self):
-        from core.models import Project
-
-        cabin_preset = self._preset("CabinPreset")
-        frame_preset = self._preset("FramePreset")
-        top = Project.objects.create(
-            name="Truck", default_print_preset=self._preset("TruckPreset"), created_by=self.user
-        )
-        cabin = Project.objects.create(
-            parent=top, quantity=1, name="Cabin", default_print_preset=cabin_preset, created_by=self.user
-        )
-        frame = Project.objects.create(
-            parent=top, quantity=1, name="Frame", default_print_preset=frame_preset, created_by=self.user
-        )
-        bolt = Part.objects.create(
-            project=cabin, quantity=4, name="bolt", stl_file=SimpleUploadedFile("bolt.stl", b"solid")
-        )
-        ProjectPart.objects.create(project=frame, part=bolt, quantity=10)
-
-        resp = self.client.post(reverse("core:project_create_jobs", args=[top.pk]))
-        self.assertEqual(resp.status_code, 302)
-        jobs = PrintJob.objects.filter(created_by=self.user)
-        # Two bundles: one per distinct resolved preset — not one collapsed to the last path.
-        presets = sorted(j.print_preset.name for j in jobs)
-        self.assertEqual(presets, ["CabinPreset", "FramePreset"])
-        by_preset = {j.print_preset.name: j for j in jobs}
-        self.assertEqual(by_preset["CabinPreset"].job_parts.get(part=bolt).quantity, 4)
-        self.assertEqual(by_preset["FramePreset"].job_parts.get(part=bolt).quantity, 10)
 
 
 class AddPartToJobCompatibilityTests(TestDataMixin, TestCase):
@@ -381,19 +365,6 @@ class AddPartToJobCompatibilityTests(TestDataMixin, TestCase):
 
     def _url(self, part):
         return reverse("core:add_part_to_job", kwargs={"part_pk": part.pk})
-
-    def test_forged_preset_id_rejected(self):
-        from core.models import Project
-
-        a = Project.objects.create(name="A", default_print_preset=self._preset("PA"))
-        b = Project.objects.create(name="B", default_print_preset=self._preset("PB"))
-        part = Part.objects.create(project=a, quantity=1, name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
-        ProjectPart.objects.create(project=b, part=part, quantity=1)
-        before = PrintJob.objects.count()
-        # 999999 is not among the offered choices → rejected, no job.
-        resp = self.client.post(self._url(part), {"job": "", "quantity": 1, "print_preset": 999999})
-        self.assertEqual(resp.status_code, 302)
-        self.assertEqual(PrintJob.objects.count(), before)
 
     def test_incompatible_with_pinned_job_rejected(self):
         from core.models import Project
@@ -460,7 +431,7 @@ class PartDetailDraftJobFilterTests(TestDataMixin, TestCase):
             name="Mismatch", status=PrintJob.STATUS_DRAFT, created_by=self.user, print_preset=other
         )
         # Give each a part so neither is treated as the always-compatible empty job.
-        other_part = Part.objects.create(name="x")
+        other_part = Part.objects.create(project=proj, quantity=1, name="x")
         PrintJobPart.objects.create(print_job=match, part=other_part, quantity=1)
         PrintJobPart.objects.create(print_job=mismatch, part=other_part, quantity=1)
 
@@ -468,47 +439,6 @@ class PartDetailDraftJobFilterTests(TestDataMixin, TestCase):
         offered = {j.pk for j in resp.context["draft_jobs"]}
         self.assertIn(match.pk, offered)
         self.assertNotIn(mismatch.pk, offered)
-
-
-class CreateJobsPrintedByPresetTests(TestDataMixin, TestCase):
-    """Prints made under one preset's job only deplete that preset's bundle (Copilot #54)."""
-
-    def setUp(self):
-        super().setUp()
-        self.client.login(username="testuser", password="testpass123")
-
-    def _preset(self, name):
-        return OrcaPrintPreset.objects.create(
-            name=name, orca_name=name, state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
-        )
-
-    def test_completed_prints_deplete_only_their_own_preset_bundle(self):
-        from core.models import Project
-
-        cabin_preset = self._preset("CabinPreset")
-        frame_preset = self._preset("FramePreset")
-        top = Project.objects.create(name="Truck", default_print_preset=self._preset("Truck"), created_by=self.user)
-        cabin = Project.objects.create(
-            parent=top, quantity=1, name="Cabin", default_print_preset=cabin_preset, created_by=self.user
-        )
-        frame = Project.objects.create(
-            parent=top, quantity=1, name="Frame", default_print_preset=frame_preset, created_by=self.user
-        )
-        bolt = Part.objects.create(name="bolt", stl_file=SimpleUploadedFile("bolt.stl", b"solid"))
-        ProjectPart.objects.create(project=cabin, part=bolt, quantity=4)  # CabinPreset bundle
-        ProjectPart.objects.create(project=frame, part=bolt, quantity=10)  # FramePreset bundle
-
-        # 3 already printed under a FramePreset-pinned job attributed to Truck.
-        done = PrintJob.objects.create(name="done", status="completed", created_by=self.user, print_preset=frame_preset)
-        PrintJobPart.objects.create(print_job=done, part=bolt, quantity=3, target_assembly=top)
-        PrintJobPlate.objects.create(print_job=done, plate_number=1, status="completed")
-
-        resp = self.client.post(reverse("core:project_create_jobs", args=[top.pk]))
-        self.assertEqual(resp.status_code, 302)
-        jobs = {j.print_preset.name: j for j in PrintJob.objects.filter(status=PrintJob.STATUS_DRAFT)}
-        # Cabin bundle stays at 4 (its prints were NOT touched); Frame bundle is 10-3=7.
-        self.assertEqual(jobs["CabinPreset"].job_parts.get(part=bolt).quantity, 4)
-        self.assertEqual(jobs["FramePreset"].job_parts.get(part=bolt).quantity, 7)
 
 
 class AddPartToJobNoPresetRejectTests(TestDataMixin, TestCase):
@@ -519,8 +449,11 @@ class AddPartToJobNoPresetRejectTests(TestDataMixin, TestCase):
         self.client.login(username="testuser", password="testpass123")
 
     def test_orphan_part_without_preset_rejected(self):
-        # Part in NO project and no override → no resolvable preset.
-        part = Part.objects.create(name="orphan", stl_file=SimpleUploadedFile("o.stl", b"solid"))
+        # Part in a project without default preset (none up the chain) and no override.
+        project = Project.objects.create(name="NoPreset", created_by=self.user)
+        part = Part.objects.create(
+            project=project, quantity=1, name="orphan", stl_file=SimpleUploadedFile("o.stl", b"solid")
+        )
         before = PrintJob.objects.count()
         resp = self.client.post(
             reverse("core:add_part_to_job", kwargs={"part_pk": part.pk}),
@@ -593,7 +526,7 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
         self.url = reverse("core:printjob_list")
         self.job_a = PrintJob.objects.create(name="Alpha", status=PrintJob.STATUS_DRAFT, printer=self.printer)
         self.job_b = PrintJob.objects.create(name="Beta", status=PrintJob.STATUS_COMPLETED)
-        PrintJobPart.objects.create(print_job=self.job_a, part=self.part, quantity=1, target_assembly=self.project)
+        PrintJobPart.objects.create(print_job=self.job_a, part=self.part, quantity=1)
         PrintJobPart.objects.create(print_job=self.job_b, part=self.other_part, quantity=2)
 
     def _jobs(self, **params):
@@ -656,8 +589,9 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
 
     def test_multi_project(self):
         other_project = Project.objects.create(name="Other", created_by=self.user)
+        other_project_part = Part.objects.create(project=other_project, quantity=1, name="Gamma Part")
         job_c = PrintJob.objects.create(name="Gamma", status=PrintJob.STATUS_DRAFT)
-        PrintJobPart.objects.create(print_job=job_c, part=self.part, quantity=1, target_assembly=other_project)
+        PrintJobPart.objects.create(print_job=job_c, part=other_project_part, quantity=1)
         self.assertEqual(self._jobs(project=[self.project.pk, other_project.pk]), [job_c, self.job_a])
         self.assertEqual(self._jobs(project=[other_project.pk, "abc"]), [job_c])
 
@@ -670,9 +604,8 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
         self.assertEqual(self._jobs(status=["draft", "completed"], project=[self.project.pk]), [self.job_a])
 
     def test_multi_project_no_duplicates(self):
-        PrintJobPart.objects.create(
-            print_job=self.job_a, part=self.other_part, quantity=1, target_assembly=self.project
-        )
+        second = Part.objects.create(project=self.project, quantity=1, name="Second Part")
+        PrintJobPart.objects.create(print_job=self.job_a, part=second, quantity=1)
         self.assertEqual(self._jobs(project=[self.project.pk]), [self.job_a])
 
     def test_pagination_keeps_multi_params(self):
@@ -763,6 +696,43 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
         other_project.delete()
         resp = self.client.get(self.url)
         self.assertRedirects(resp, f"{self.url}?project={self.project.pk}", fetch_redirect_response=False)
+
+    def test_filter_project_matches_subtree(self):
+        """A job with a part in a grandchild of the root matches the root filter."""
+        child = Project.objects.create(name="Child", parent=self.project, quantity=1, created_by=self.user)
+        grandchild = Project.objects.create(name="Grandchild", parent=child, quantity=1, created_by=self.user)
+        deep_part = Part.objects.create(project=grandchild, quantity=1, name="Deep Part")
+        job_deep = PrintJob.objects.create(name="Deep", status=PrintJob.STATUS_DRAFT)
+        PrintJobPart.objects.create(print_job=job_deep, part=deep_part, quantity=1)
+
+        self.assertEqual(self._jobs(project=self.project.pk), [job_deep, self.job_a])
+        # job_b only holds a part from another root.
+        self.assertEqual(self._jobs(project=self.other_project.pk), [self.job_b])
+
+    def test_project_filter_choices_are_roots_only(self):
+        """Only top-level projects are offered in the project filter."""
+        sub = Project.objects.create(name="Sub", parent=self.project, quantity=1, created_by=self.user)
+        resp = self.client.get(self.url)
+        choices = list(resp.context["projects"])
+        self.assertIn(self.project, choices)
+        self.assertIn(self.other_project, choices)
+        self.assertNotIn(sub, choices)
+        self.assertNotRegex(resp.content.decode(), rf'name="project" value="{sub.pk}"')
+
+    def test_saved_project_filter_dropped_when_not_root_or_missing(self):
+        """A remembered project filter for a sub-project or a deleted project is dropped silently."""
+        sub = Project.objects.create(name="Sub", parent=self.project, quantity=1, created_by=self.user)
+        gone = Project.objects.create(name="Gone", created_by=self.user)
+        gone_pk = gone.pk
+        gone.delete()
+        for pk in (sub.pk, gone_pk):
+            session = self.client.session
+            session[PrintJobListView.session_key] = {"project": [str(pk)]}
+            session.save()
+            resp = self.client.get(self.url)
+            self.assertEqual(resp.status_code, 200, pk)
+            self.assertFalse(resp.context["filters_active"], pk)
+            self.assertEqual(len(resp.context["print_jobs"]), 2, pk)
 
     def test_saved_filters_are_isolated_between_sessions(self):
         self.client.get(self.url, {"status": "draft"})

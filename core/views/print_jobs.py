@@ -342,7 +342,7 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
         # Resolve effective print preset and filament profile from first part
         first_jp = job.job_parts.select_related("part__print_preset").first()
         if first_jp:
-            # Prefer the preset pinned on the job (Variant B); fall back to the first
+            # Prefer the preset pinned on the job; fall back to the first
             # part's own preset only for legacy jobs created before pinning existed.
             context["effective_print_preset"] = job.print_preset or first_jp.part.effective_print_preset
             if first_jp.part.spoolman_filament_id:

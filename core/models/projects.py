@@ -115,10 +115,10 @@ class Project(models.Model):
         can each pass the check on stale reads and commit a cycle. Fully
         preventing that would need DB-level enforcement (serializable isolation /
         row locks / a recursive-CTE constraint). The upward walks
-        (:meth:`ancestors`, :meth:`effective_default_print_preset`) and
-        :meth:`get_descendant_ids` carry a visited-set guard; the recursive
-        ``_collect_*`` aggregators do not, so a raced cycle surfaces as a
-        ``RecursionError`` (HTTP 500) rather than a hang.
+        (:meth:`ancestors`, :meth:`effective_default_print_preset`),
+        :meth:`get_descendant_ids` and the ``_collect_*`` aggregators (via
+        :meth:`_walk_subtree`) carry a visited-set guard, so a raced cycle
+        degrades to an odd result rather than a hang.
         """
         if self.parent_id is None:
             return
@@ -321,6 +321,32 @@ class Project(models.Model):
             "print_history": PrintJobPart.objects.filter(part__project_id__in=ids).count(),
         }
 
+    def _walk_subtree(self, multiplier: int = 1) -> list[tuple[Project, int]]:
+        """Return every node of the subtree (self first, depth-first) with its multiplier.
+
+        The multiplier of a node is ``multiplier`` times the quantities of all
+        sub-projects from this project down to (and including) that node. A
+        visited-set guard skips a node already seen, so a corrupt persisted cycle
+        terminates instead of recursing forever.
+
+        Args:
+            multiplier: Factor of this project itself.
+
+        Returns:
+            List of ``(project, multiplier)`` tuples in depth-first order.
+        """
+        nodes: list[tuple[Project, int]] = []
+        visited: set[int] = set()
+        stack: list[tuple[Project, int]] = [(self, multiplier)]
+        while stack:
+            node, factor = stack.pop()
+            if node.pk in visited:
+                continue
+            visited.add(node.pk)
+            nodes.append((node, factor))
+            stack.extend((sub, factor * sub.quantity) for sub in reversed(list(node.subprojects.all())))
+        return nodes
+
     def _collect_parts_with_multiplier(self, multiplier: int = 1) -> list[tuple[Part, int]]:
         """Collect all parts of the subtree with their needed count.
 
@@ -334,10 +360,11 @@ class Project(models.Model):
         Returns:
             List of ``(part, needed_count)`` tuples.
         """
-        result: list[tuple[Part, int]] = [(part, multiplier * part.quantity) for part in self.parts.all()]
-        for sub in self.subprojects.all():
-            result.extend(sub._collect_parts_with_multiplier(multiplier * sub.quantity))
-        return result
+        return [
+            (part, factor * part.quantity)
+            for node, factor in self._walk_subtree(multiplier)
+            for part in node.parts.all()
+        ]
 
     @property
     def total_parts_count(self) -> int:
@@ -565,10 +592,7 @@ class Project(models.Model):
             List of ``(ProjectDocument, project)`` tuples so the template can
             group documents by their owning project using a stable identifier.
         """
-        result = [(doc, self) for doc in self.documents.all()]
-        for sub in self.subprojects.all():
-            result.extend(sub._collect_documents())
-        return result
+        return [(doc, node) for node, _factor in self._walk_subtree() for doc in node.documents.all()]
 
     def _collect_hardware_with_multiplier(self, multiplier: int = 1) -> list[tuple[ProjectHardware, int]]:
         """Recursively collect hardware assignments with the sub-project quantity multiplier.
@@ -579,9 +603,13 @@ class Project(models.Model):
         Returns:
             List of ``(ProjectHardware, effective_multiplier)`` tuples.
         """
-        result = [(hw, multiplier) for hw in self.hardware_assignments.select_related("hardware_part", "project").all()]
-        for sub in self.subprojects.all():
-            result.extend(sub._collect_hardware_with_multiplier(multiplier * sub.quantity))
+        result: list[tuple[ProjectHardware, int]] = []
+        for node, factor in self._walk_subtree(multiplier):
+            for hw in node.hardware_assignments.select_related("hardware_part").all():
+                # Reuse the walked node (its parent chain is already cached) so
+                # ``hw.project.path_label`` costs no extra query per sub-project.
+                hw.project = node
+                result.append((hw, factor))
         return result
 
     @property

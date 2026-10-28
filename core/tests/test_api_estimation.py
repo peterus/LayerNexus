@@ -9,7 +9,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from core.models import OrcaPrintPreset, Part, Project, ProjectPart
+from core.models import OrcaPrintPreset, Part, Project
 
 
 def _make_preset() -> OrcaPrintPreset:
@@ -37,7 +37,8 @@ class PartEstimateActionTests(APITestCase):
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
 
         preset = _make_preset()
-        self.part = Part.objects.create(name="Bracket", print_preset=preset)
+        self.project = Project.objects.create(name="Assembly")
+        self.part = Part.objects.create(name="Bracket", project=self.project, print_preset=preset)
         self.part.stl_file.save("bracket.stl", _stl_file(), save=True)
 
     def test_estimate_sets_pending_and_triggers_worker(self) -> None:
@@ -80,7 +81,7 @@ class PartEstimateActionTests(APITestCase):
 
     def test_estimate_without_stl_returns_400_and_preserves_estimate(self) -> None:
         """A part with no STL is rejected with 400 without clearing its prior estimate."""
-        part = Part.objects.create(name="NoSTL", print_preset=_make_preset())
+        part = Part.objects.create(name="NoSTL", project=self.project, print_preset=_make_preset())
         part.filament_used_grams = 3.0
         part.estimation_status = Part.ESTIMATION_SUCCESS
         part.save()
@@ -96,7 +97,7 @@ class PartEstimateActionTests(APITestCase):
 
     def test_estimate_without_preset_returns_400(self) -> None:
         """A part with an STL but no resolvable print preset is rejected with 400."""
-        part = Part.objects.create(name="NoPreset")
+        part = Part.objects.create(name="NoPreset", project=self.project)
         part.stl_file.save("np.stl", _stl_file(), save=True)
 
         with mock.patch("core.api.views._trigger_part_estimation") as triggered:
@@ -166,24 +167,22 @@ class ProjectReEstimateActionTests(APITestCase):
         resp = self.client.post(f"/api/v1/projects/{self.project.pk}/re-estimate/")
         self.assertEqual(resp.status_code, 403)
 
-    def test_reestimate_deduplicates_shared_part(self) -> None:
-        """A part reached via several composition paths is queued exactly once."""
-        # The eligible part is reachable both directly and through a child module,
-        # so ``_collect_parts_with_multiplier`` yields it once per path.
-        child = Project.objects.create(parent=self.project, quantity=1, name="Module")
-        ProjectPart.objects.create(project=child, part=self.part_with_stl, quantity=1)
+    def test_re_estimate_counts_each_part_once(self) -> None:
+        """Each subtree part (including sub-project parts) is queued exactly once."""
+        child = Project.objects.create(parent=self.project, quantity=3, name="Module")
+        nested = Part.objects.create(project=child, quantity=2, name="Nested", print_preset=_make_preset())
+        nested.stl_file.save("nested.stl", _stl_file(), save=True)
 
         with mock.patch("core.api.views._trigger_part_estimation") as triggered:
             resp = self.client.post(f"/api/v1/projects/{self.project.pk}/re-estimate/")
 
         self.assertEqual(resp.status_code, 202, resp.data)
-        self.assertEqual(resp.data["queued"], 1)
-        triggered.assert_called_once()
-        self.assertEqual(triggered.call_args[0][0].pk, self.part_with_stl.pk)
+        self.assertEqual(resp.data["queued"], 2)
+        self.assertEqual(sorted(c[0][0].pk for c in triggered.call_args_list), [self.part_with_stl.pk, nested.pk])
 
 
 class ReEstimateResolverEligibilityTests(APITestCase):
-    """Variant B: legacy parts with a project default become estimable via the API."""
+    """Parts without an own preset are estimable through the nearest project default."""
 
     def setUp(self) -> None:
         """Create a manage-capable user."""
@@ -203,19 +202,29 @@ class ReEstimateResolverEligibilityTests(APITestCase):
         self.assertEqual(resp.status_code, 202, resp.data)
         triggered.assert_called_once()
 
-    def test_estimate_ambiguous_part_returns_202(self) -> None:
-        """An ambiguous part is queued (202) so the worker records the ambiguity."""
-        a = Project.objects.create(name="A", default_print_preset=_make_preset())
-        b_preset = OrcaPrintPreset.objects.create(name="Slow", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True)
-        b = Project.objects.create(name="B", default_print_preset=b_preset)
-        part = Part.objects.create(project=a, quantity=1, name="Shared")  # no override, two differing defaults
-        part.stl_file.save("shared.stl", _stl_file(), save=True)
-        ProjectPart.objects.create(project=b, part=part, quantity=1)
+    def test_estimate_inherits_preset_from_ancestor_returns_202(self) -> None:
+        """A part in a preset-less sub-project inherits the root's preset."""
+        root = Project.objects.create(name="Root", default_print_preset=_make_preset())
+        sub = Project.objects.create(name="Sub", parent=root)
+        part = Part.objects.create(project=sub, quantity=1, name="Deep")
+        part.stl_file.save("deep.stl", _stl_file(), save=True)
 
         with mock.patch("core.api.views._trigger_part_estimation") as triggered:
             resp = self.client.post(f"/api/v1/parts/{part.pk}/estimate/")
         self.assertEqual(resp.status_code, 202, resp.data)
         triggered.assert_called_once()
+
+    def test_estimate_400_without_resolvable_preset(self) -> None:
+        """No preset on the part or anywhere up the tree → 400, nothing queued."""
+        root = Project.objects.create(name="Bare root")
+        sub = Project.objects.create(name="Sub", parent=root)
+        part = Part.objects.create(project=sub, quantity=1, name="Orphan preset")
+        part.stl_file.save("o.stl", _stl_file(), save=True)
+
+        with mock.patch("core.api.views._trigger_part_estimation") as triggered:
+            resp = self.client.post(f"/api/v1/parts/{part.pk}/estimate/")
+        self.assertEqual(resp.status_code, 400, resp.data)
+        triggered.assert_not_called()
 
     def test_project_re_estimate_queues_legacy_part(self) -> None:
         """Project re-estimate queues a legacy part via the project's default preset."""

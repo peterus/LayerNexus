@@ -143,3 +143,21 @@ class TreeMigrationTests(TransactionTestCase):
         self.assertEqual(self.PrintJobPart.objects.count(), 1)
         entry.refresh_from_db()
         self.assertEqual(entry.part_id, part.pk)
+
+    def test_full_forward_to_leaf_keeps_history(self) -> None:
+        """Clean data at 0029 migrates to the leaf: tree fields set, history kept, edges gone."""
+        root, unrelated, sub, part = self._clean_tree()
+        job = self.PrintJob.objects.create(name="Job")
+        self.PrintJobPart.objects.create(print_job=job, part=part, quantity=2)
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
+        from core.models import Part, PrintJobPart, Project
+
+        self.assertEqual(Part.objects.get(pk=part.pk).project_id, sub.pk)
+        self.assertEqual(Project.objects.get(pk=sub.pk).parent_id, root.pk)
+        self.assertEqual(PrintJobPart.objects.filter(part_id=part.pk).count(), 1)
+        tables = connection.introspection.table_names()
+        self.assertNotIn("core_projectpart", tables)
+        self.assertNotIn("core_projectcomponent", tables)

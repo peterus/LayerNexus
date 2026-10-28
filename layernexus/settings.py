@@ -207,10 +207,9 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "LayerNexus API",
     "DESCRIPTION": (
         "Token-authenticated REST API for building LayerNexus projects iteratively. "
-        "Covers projects, sub-project composition edges, parts (incl. STL/3MF upload), "
-        "documents, and hardware. Printing (print jobs, queue, printers) is out of scope. "
-        "BREAKING since Phase 6: Part has no project/quantity fields — "
-        "attach parts to projects via POST /api/v1/projects/{id}/parts/."
+        "Covers a strict project tree (sub-projects via parent/quantity), parts "
+        "(project/quantity, incl. STL/3MF upload), documents, and hardware. "
+        "Printing (print jobs, queue, printers) is out of scope."
     ),
     "VERSION": APP_VERSION,
     "SERVE_INCLUDE_SCHEMA": False,

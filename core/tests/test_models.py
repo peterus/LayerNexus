@@ -539,12 +539,46 @@ class PartEstimatedWithPresetFieldTests(TestCase):
         preset = OrcaPrintPreset.objects.create(
             name="P", orca_name="P", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
         )
-        part = Part.objects.create(name="p", estimated_with_preset=preset)
+        part = Part.objects.create(name="p", project=Project.objects.create(name="Proj"), estimated_with_preset=preset)
         part.refresh_from_db()
         self.assertEqual(part.estimated_with_preset_id, preset.pk)
 
     def test_part_estimated_with_preset_defaults_to_none(self) -> None:
         from core.models import Part
 
-        part = Part.objects.create(name="p")
+        part = Part.objects.create(name="p", project=Project.objects.create(name="Proj"))
         self.assertIsNone(part.estimated_with_preset_id)
+
+
+class StrictTreeSchemaTests(TestCase):
+    """The final tree schema: parts need a project, no edge models, CASCADE parents."""
+
+    def test_part_requires_project(self) -> None:
+        with self.assertRaises(IntegrityError):
+            Part.objects.create(name="x")
+
+    def test_no_edge_models_exported(self) -> None:
+        import core.models
+
+        self.assertFalse(hasattr(core.models, "ProjectPart"))
+        self.assertFalse(hasattr(core.models, "ProjectComponent"))
+
+    def test_parent_on_delete_is_cascade(self) -> None:
+        from django.db import models
+
+        self.assertIs(Project._meta.get_field("parent").remote_field.on_delete, models.CASCADE)
+        self.assertIs(Part._meta.get_field("project").remote_field.on_delete, models.CASCADE)
+
+    def test_project_save_rejects_cycle(self) -> None:
+        from django.core.exceptions import ValidationError
+
+        root = Project.objects.create(name="R")
+        child = Project.objects.create(name="C", parent=root)
+        root.parent = child
+        with self.assertRaises(ValidationError):
+            root.save()
+
+    def test_part_quantity_check_constraint(self) -> None:
+        project = Project.objects.create(name="R")
+        with self.assertRaises(IntegrityError):
+            Part.objects.create(name="zero", project=project, quantity=0)

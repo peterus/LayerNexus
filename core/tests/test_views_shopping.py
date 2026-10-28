@@ -78,8 +78,22 @@ class ShoppingListViewTests(ShoppingViewTestBase):
         ProjectHardware.objects.create(project=child, hardware_part=self.m3, quantity=1)
         self.login(self.operator_user)
         response = self.client.get(self.list_url)
-        self.assertContains(response, f"Used in: Child Module, {self.project.name}")
+        self.assertContains(response, f"Used in: {self.project.name}, {self.project.name} › Child Module")
         self.assertNotContains(response, "bi-info-circle")
+
+    def test_used_in_column_shows_tree_paths(self) -> None:
+        sub = Project.objects.create(parent=self.project, quantity=1, name="S", created_by=self.admin_user)
+        leaf = Project.objects.create(parent=sub, quantity=3, name="L", created_by=self.admin_user)
+        magnet = HardwarePart.objects.create(name="Magnet", category=HardwarePart.CATEGORY_MAGNETS)
+        ProjectHardware.objects.create(project=sub, hardware_part=magnet, quantity=1)
+        ProjectHardware.objects.create(project=leaf, hardware_part=magnet, quantity=2)
+        self.login(self.operator_user)
+        response = self.client.get(self.list_url)
+        root = self.project.name
+        self.assertContains(response, f"Used in: {root} › S, {root} › S › L</div>")
+        # The sub-project's own list shows its path from the tree root as well.
+        response = self.client.get(reverse("core:project_shopping_list", args=[sub.pk]))
+        self.assertContains(response, f"Used in: {root} › S, {root} › S › L</div>")
 
     def test_list_used_in_root_only_and_escaped(self) -> None:
         child = Project.objects.create(parent=self.project, quantity=1, name="<b>X</b>", created_by=self.admin_user)
