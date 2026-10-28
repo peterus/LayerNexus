@@ -206,6 +206,23 @@ class OrcaPrintPresetSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class ProjectCopyRequestSerializer(serializers.Serializer):
+    """Request body of ``POST /projects/{id}/copy/``.
+
+    ``name`` defaults to ``"<name> (copy)"``; ``parent`` omitted or ``null`` copies the
+    project as a new top-level project.
+    """
+
+    name = serializers.CharField(max_length=255, required=False)
+    parent = serializers.PrimaryKeyRelatedField(queryset=Project.objects.all(), allow_null=True, required=False)
+
+
+class PartCopyRequestSerializer(serializers.Serializer):
+    """Request body of ``POST /parts/{id}/copy/``: the target project (required)."""
+
+    project = serializers.PrimaryKeyRelatedField(queryset=Project.objects.all())
+
+
 class ProjectTreeSerializer(serializers.ModelSerializer):
     """Nested read-only view of a project: its parts, hardware and sub-projects (recursive)."""
 
