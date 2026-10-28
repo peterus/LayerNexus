@@ -22,7 +22,9 @@ BACKFILL = [("core", "0030_backfill_tree")]
 class TreeMigrationTests(TransactionTestCase):
     """Run ``0030_backfill_tree`` on historical data built at ``0029``."""
 
-    serialized_rollback = True
+    # No ``serialized_rollback``: these tests need no seeded rows (e.g. role groups), and
+    # restoring the snapshot clashes with content types recreated by an earlier
+    # TransactionTestCase's flush.
 
     def setUp(self) -> None:
         """Migrate back to ``0029`` and expose the historical models."""
