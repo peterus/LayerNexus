@@ -7,13 +7,16 @@ from typing import TYPE_CHECKING, Optional
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django.db.models import CheckConstraint, Q, QuerySet
 
+from core.models.file_copy import CopiedFiles, duplicate_field_file
 from core.models.parts import Part
 from core.models.spoolman import SpoolmanFilamentMapping
 
 if TYPE_CHECKING:
+    from django.contrib.auth.models import User
+
     from core.models.documents import ProjectDocument
     from core.models.hardware import ProjectHardware
     from core.models.orca_profiles import OrcaPrintPreset
@@ -326,6 +329,113 @@ class Project(models.Model):
             "hardware": ProjectHardware.objects.filter(project_id__in=ids).count(),
             "print_history": PrintJobPart.objects.filter(part__project_id__in=ids).count(),
         }
+
+    def deep_copy(
+        self,
+        *,
+        parent: Project | None,
+        name: str | None = None,
+        created_by: User | None = None,
+    ) -> Project:
+        """Copy this project and its whole subtree (content, never history).
+
+        Copies every node's description, image (new file), quantity and preset,
+        its documents (new files), its hardware assignments (same catalog
+        entries) and its parts (see :meth:`Part.deep_copy`). Print history,
+        ``FileVersion`` rows and shopping status are not copied. A file missing on
+        disk leaves the copied field empty and logs a warning.
+
+        When copied as a new top-level project (``parent=None``), the copy gets this
+        project's *effective* preset, so the "roots must have a preset" rule holds.
+
+        Everything runs in one transaction; if it fails, the files written so far are
+        deleted again. (Files are not removed if an *enclosing* transaction of the
+        caller rolls back later.)
+
+        Args:
+            parent: Target parent, or ``None`` to create a new top-level project.
+            name: Name of the top copy; defaults to ``"<name> (copy)"``. Descendants
+                keep their names.
+            created_by: User recorded as creator of every copied node.
+
+        Returns:
+            The new top :class:`Project`.
+
+        Raises:
+            ValidationError: If ``parent`` is this project or one of its descendants.
+        """
+        tracker = CopiedFiles()
+        try:
+            with transaction.atomic():
+                if parent is not None and parent.pk in self.subtree_ids():
+                    raise ValidationError(
+                        {"parent": "A project cannot be copied into itself or one of its sub-projects."}
+                    )
+                return self._deep_copy_into(parent, name or f"{self.name} (copy)", created_by, tracker)
+        except Exception:
+            tracker.delete_all()
+            raise
+
+    def _deep_copy_into(
+        self,
+        parent: Project | None,
+        name: str,
+        created_by: User | None,
+        tracker: CopiedFiles,
+    ) -> Project:
+        """Copy the subtree under ``parent``; the caller provides the transaction.
+
+        The source nodes are snapshotted (via the cycle-guarded :meth:`_walk_subtree`)
+        before anything is created, and each node is copied after its parent.
+
+        Args:
+            parent: Target parent of the top copy, or ``None`` for a new root.
+            name: Name of the top copy.
+            created_by: User recorded as creator of every copied node.
+            tracker: Records every new file for cleanup on failure.
+
+        Returns:
+            The new top :class:`Project`.
+        """
+        from core.models.documents import ProjectDocument
+        from core.models.hardware import ProjectHardware
+
+        nodes = [node for node, _factor in self._walk_subtree()]
+        copies: dict[int, Project] = {}
+        for node in nodes:
+            is_top = node.pk == self.pk
+            if is_top:
+                preset_id = self.effective_default_print_preset_id if parent is None else self.default_print_preset_id
+            else:
+                preset_id = node.default_print_preset_id
+            copy = Project.objects.create(
+                name=name if is_top else node.name,
+                description=node.description,
+                image=duplicate_field_file(node.image, tracker),
+                parent=parent if is_top else copies[node.parent_id],
+                quantity=node.quantity,
+                default_print_preset_id=preset_id,
+                created_by=created_by,
+            )
+            copies[node.pk] = copy
+            for doc in node.documents.all():
+                ProjectDocument.objects.create(
+                    project=copy,
+                    name=doc.name,
+                    file=duplicate_field_file(doc.file, tracker) or "",
+                    uploaded_by_id=doc.uploaded_by_id,
+                )
+            hardware = [
+                ProjectHardware(
+                    project=copy, hardware_part_id=hw.hardware_part_id, quantity=hw.quantity, notes=hw.notes
+                )
+                for hw in node.hardware_assignments.all()
+            ]
+            if hardware:
+                ProjectHardware.objects.bulk_create(hardware)
+            for part in node.parts.all():
+                part.deep_copy(project=copy, _files=tracker)
+        return copies[self.pk]
 
     def _walk_subtree(self, multiplier: int = 1) -> list[tuple[Project, int]]:
         """Return every node of the subtree (self first, depth-first) with its multiplier.

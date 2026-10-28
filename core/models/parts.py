@@ -5,12 +5,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Optional
 
 from django.core.validators import MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django.db.models import CheckConstraint, Q, QuerySet, Sum
+
+from core.models.file_copy import CopiedFiles, duplicate_field_file
 
 if TYPE_CHECKING:
     from core.models.orca_profiles import OrcaPrintPreset
     from core.models.printing import PrintJob, PrintJobPart
+    from core.models.projects import Project
 
 
 def _job_fully_printed(job: PrintJob) -> bool:
@@ -155,6 +158,67 @@ class Part(models.Model):
     def is_estimable(self) -> bool:
         """Return whether this part has an STL file and a resolvable print preset."""
         return bool(self.stl_file) and self.effective_print_preset_id is not None
+
+    def deep_copy(self, *, project: Project, _files: CopiedFiles | None = None) -> Part:
+        """Copy this part (content, never history) into ``project``.
+
+        Copies the scalar fields, the estimate fields and the ``PrintTimeEstimate``
+        rows, and writes the STL/3MF as a new file. Print history (``PrintJobPart``)
+        and ``FileVersion`` rows are not copied. An in-flight estimation
+        (``pending``/``estimating``) or a model file missing on disk resets the copy's
+        estimation status to ``none`` so it is never stuck.
+
+        Args:
+            project: Target project of the copy.
+            _files: Tracker shared with an enclosing :meth:`Project.deep_copy`; when
+                omitted, this call runs in its own transaction and removes the new
+                file again if it fails.
+
+        Returns:
+            The new :class:`Part`.
+        """
+        if _files is None:
+            tracker = CopiedFiles()
+            try:
+                with transaction.atomic():
+                    return self.deep_copy(project=project, _files=tracker)
+            except Exception:
+                tracker.delete_all()
+                raise
+
+        stl_name = duplicate_field_file(self.stl_file, _files)
+        reset = self.estimation_status in (self.ESTIMATION_PENDING, self.ESTIMATION_ESTIMATING) or (
+            bool(self.stl_file) and stl_name is None
+        )
+        copy = Part.objects.create(
+            project=project,
+            name=self.name,
+            quantity=self.quantity,
+            stl_file=stl_name,
+            color=self.color,
+            material=self.material,
+            spoolman_filament_id=self.spoolman_filament_id,
+            print_preset_id=self.print_preset_id,
+            notes=self.notes,
+            filament_used_grams=self.filament_used_grams,
+            filament_used_meters=self.filament_used_meters,
+            estimated_print_time=self.estimated_print_time,
+            estimation_status=self.ESTIMATION_NONE if reset else self.estimation_status,
+            estimation_error="" if reset else self.estimation_error,
+            estimated_with_preset_id=None if reset else self.estimated_with_preset_id,
+        )
+        estimates = [
+            PrintTimeEstimate(
+                part=copy,
+                printer_id=estimate.printer_id,
+                estimated_time=estimate.estimated_time,
+                actual_time=estimate.actual_time,
+            )
+            for estimate in self.time_estimates.all()
+        ]
+        if estimates:
+            PrintTimeEstimate.objects.bulk_create(estimates)
+        return copy
 
     @property
     def color_display(self) -> str:
