@@ -22,10 +22,12 @@ body {
 }
 
 /* Cards containing dropdowns (e.g. list filter bars): no hover-lift, which would create a
-   stacking context per hover and flicker; stay above following cards so open menus overlay them. */
+   stacking context per hover and flicker; stay above following cards so open menus overlay them.
+   Keep the z-index small: it must stay below the navbar dropdowns (Bootstrap .dropdown-menu = 1000),
+   otherwise the Settings/user menus render behind the filter bar. */
 .card.filter-bar {
     position: relative;
-    z-index: 1020;
+    z-index: 2;
 }
 
 .card.filter-bar:hover {
