@@ -1,12 +1,12 @@
-"""Search-filter and duplicate-as-variant tests for the build API."""
+"""Search-filter tests and duplicate-removal checks for the build API."""
 
 from __future__ import annotations
 
-from django.contrib.auth.models import Permission, User
+from django.contrib.auth.models import Group, User
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from core.models import Part, Project, ProjectComponent
+from core.models import Part, Project
 
 
 def _results(data: object) -> list:
@@ -44,52 +44,23 @@ class ApiSearchTests(APITestCase):
         self.assertEqual([p["name"] for p in _results(by_material.data)], ["Gear"])
 
 
-class ApiDuplicateTests(APITestCase):
-    """``POST /projects/{id}/duplicate/`` clones an assembly into a new variant."""
+class ApiDuplicateRemovedTests(APITestCase):
+    """Duplicate-as-variant is gone with the tree rollback (copy replaces it later)."""
 
     def setUp(self) -> None:
-        """Prepare a manage-capable client and a source assembly with a child edge."""
-        self.user = User.objects.create_user("designer", password="x")
-        self.user.user_permissions.add(Permission.objects.get(codename="can_manage_projects"))
+        """Authenticate an Admin — the endpoint must be absent, not merely forbidden."""
+        self.user = User.objects.create_user("admin", password="x")
+        self.user.groups.add(Group.objects.get(name="Admin"))
         token = Token.objects.create(user=self.user)
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
-
         self.source = Project.objects.create(name="Base Truck")
-        self.child = Project.objects.create(name="Hood")
-        ProjectComponent.objects.create(parent_project=self.source, child_project=self.child, quantity=2)
 
-    def test_duplicate_creates_variant(self) -> None:
-        """Duplicating returns 201 with a new project that shares the child edges."""
-        resp = self.client.post(
-            f"/api/v1/projects/{self.source.pk}/duplicate/",
-            {"name": "Truck v2"},
-            format="json",
-        )
-        self.assertEqual(resp.status_code, 201, resp.data)
-        new_id = resp.data["id"]
-        self.assertNotEqual(new_id, self.source.pk)
-        variant = Project.objects.get(pk=new_id)
-        self.assertEqual(variant.name, "Truck v2")
-        self.assertEqual(variant.created_by, self.user)
-        # The child composition edge is shared (same child project, same quantity).
-        edges = list(variant.child_links.all())
-        self.assertEqual(len(edges), 1)
-        self.assertEqual(edges[0].child_project_id, self.child.pk)
-        self.assertEqual(edges[0].quantity, 2)
+    def test_duplicate_endpoint_gone(self) -> None:
+        """``POST /projects/{id}/duplicate/`` returns 404 and creates nothing."""
+        resp = self.client.post(f"/api/v1/projects/{self.source.pk}/duplicate/", {"name": "Truck v2"}, format="json")
+        self.assertEqual(resp.status_code, 404)
+        self.assertFalse(Project.objects.filter(name="Truck v2").exists())
 
-    def test_duplicate_requires_name(self) -> None:
-        """A missing/blank name is rejected with 400."""
-        resp = self.client.post(f"/api/v1/projects/{self.source.pk}/duplicate/", {}, format="json")
-        self.assertEqual(resp.status_code, 400, resp.data)
-
-    def test_duplicate_forbidden_without_manage(self) -> None:
-        """A user without manage permission gets 403 (duplicate is a write)."""
-        viewer = User.objects.create_user("viewer", password="x")
-        token = Token.objects.create(user=viewer)
-        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
-        resp = self.client.post(
-            f"/api/v1/projects/{self.source.pk}/duplicate/",
-            {"name": "Nope"},
-            format="json",
-        )
-        self.assertEqual(resp.status_code, 403, resp.data)
+    def test_model_method_gone(self) -> None:
+        """``Project.duplicate_as_variant`` no longer exists."""
+        self.assertFalse(hasattr(Project, "duplicate_as_variant"))

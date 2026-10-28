@@ -111,3 +111,7 @@ class URLResolutionTests(TestCase):
     def test_part_library_url_removed(self):
         with self.assertRaises(NoReverseMatch):
             reverse("core:part_library")
+
+    def test_project_duplicate_url_removed(self):
+        with self.assertRaises(NoReverseMatch):
+            reverse("core:project_duplicate", args=[1])

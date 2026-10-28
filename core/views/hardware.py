@@ -161,11 +161,10 @@ class ProjectHardwareCreateView(ProjectManageMixin, FormView):
         return get_object_or_404(Project, pk=self.kwargs["project_pk"])
 
     def get_context_data(self, **kwargs) -> dict:
-        """Add project and edge-based "used in" assemblies to context."""
+        """Add the project to context."""
         context = super().get_context_data(**kwargs)
         project = self.get_project()
         context["project"] = project
-        context["used_in"] = project.parent_assemblies()
         return context
 
     def form_valid(self, form: ProjectHardwareForm) -> HttpResponse:
@@ -206,11 +205,10 @@ class ProjectHardwareUpdateView(ProjectManageMixin, UpdateView):
     context_object_name = "assignment"
 
     def get_context_data(self, **kwargs) -> dict:
-        """Add project and edge-based "used in" assemblies to context."""
+        """Add the project to context."""
         context = super().get_context_data(**kwargs)
         project = self.object.project
         context["project"] = project
-        context["used_in"] = project.parent_assemblies()
         context["is_edit"] = True
         return context
 
@@ -233,11 +231,10 @@ class ProjectHardwareDeleteView(ProjectManageMixin, DeleteView):
     context_object_name = "assignment"
 
     def get_context_data(self, **kwargs) -> dict:
-        """Add project and edge-based "used in" assemblies to context."""
+        """Add the project to context."""
         context = super().get_context_data(**kwargs)
         project = self.object.project
         context["project"] = project
-        context["used_in"] = project.parent_assemblies()
         return context
 
     def form_valid(self, form) -> HttpResponse:

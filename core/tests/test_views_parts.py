@@ -29,12 +29,6 @@ class PartViewTests(TestDataMixin, TestCase):
         resp = self.client.get(reverse("core:part_detail", kwargs={"pk": self.part.pk}))
         self.assertEqual(resp.status_code, 200)
 
-    def test_part_detail_shows_used_in_breakdown(self):
-        # Phase 6a: per-assembly "Used in" breakdown replaces global quantity/remaining.
-        resp = self.client.get(reverse("core:part_detail", kwargs={"pk": self.part.pk}))
-        self.assertContains(resp, "Used in assemblies")
-        self.assertContains(resp, self.project.name)
-
     def test_part_create_get(self):
         resp = self.client.get(reverse("core:part_create", args=[self.project.pk]))
         self.assertEqual(resp.status_code, 200)
@@ -120,22 +114,3 @@ class PartReEstimateViewTests(TestDataMixin, TestCase):
         self.part.refresh_from_db()
         # No preset available → warning redirect, values untouched
         self.assertEqual(self.part.filament_used_grams, 50.0)
-
-
-@override_settings(ALLOWED_HOSTS=["testserver"])
-class PartDeleteUsedInTests(TestDataMixin, TestCase):
-    """Node-delete confirm page warns 'used in N assemblies' (Phase 3b)."""
-
-    def setUp(self):
-        super().setUp()
-        self.client.login(username="testuser", password="testpass123")
-
-    def test_delete_confirm_warns_used_in(self):
-        from core.models import Project, ProjectPart
-
-        assembly = Project.objects.create(name="TruckAssembly", created_by=self.user)
-        ProjectPart.objects.create(project=assembly, part=self.part)
-        resp = self.client.get(reverse("core:part_delete", kwargs={"pk": self.part.pk}))
-        self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, "TruckAssembly")
-        self.assertContains(resp, "used in")

@@ -149,35 +149,6 @@ class ProjectViewSet(viewsets.ModelViewSet):
         return Response({"queued": count}, status=status.HTTP_202_ACCEPTED)
 
     @extend_schema(
-        summary="Clone this project as a new top-level variant",
-        description=(
-            "Creates a new project sharing the same building blocks (child projects, "
-            'parts, hardware). Pass `{"name": "<new name>"}` in the request body. '
-            "Write action — requires the `can_manage_projects` permission."
-        ),
-        request=inline_serializer(
-            "DuplicateRequest",
-            fields={"name": serializers.CharField()},
-        ),
-        responses={201: ProjectSerializer},
-    )
-    @action(detail=True, methods=["post"])
-    def duplicate(self, request: Request, pk: str | None = None) -> Response:
-        """Clone this assembly into a new top-level variant (shares its building blocks).
-
-        Reuses :meth:`Project.duplicate_as_variant`, stamping the requesting user as
-        creator. This is a write, so ``ReadOrProjectManage`` requires the
-        ``core.can_manage_projects`` permission.
-        """
-        source = self.get_object()
-        name = (request.data.get("name") or "").strip()
-        if not name:
-            return Response({"name": ["This field is required."]}, status=status.HTTP_400_BAD_REQUEST)
-        variant = source.duplicate_as_variant(name, created_by=request.user)
-        serializer = self.get_serializer(variant)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-    @extend_schema(
         summary="Nested assembly tree for this project",
         description="Returns the full child-module / part / hardware hierarchy for orientation.",
         responses={200: ProjectTreeSerializer},

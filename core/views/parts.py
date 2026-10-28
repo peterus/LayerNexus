@@ -111,7 +111,6 @@ class PartDetailView(LoginRequiredMixin, DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         part = self.object
-        context["used_in"] = part.containing_projects()
 
         context["print_presets"] = OrcaPrintPreset.objects.filter(
             state=OrcaPrintPreset.STATE_RESOLVED,
@@ -166,26 +165,7 @@ class PartDetailView(LoginRequiredMixin, DetailView):
         # Candidate assemblies for per-variant print attribution: the top-level
         # assemblies (projects with no parent edges) that transitively contain this
         # part. Blank selection = unattributed.
-        candidate_assemblies = self._candidate_assemblies(part)
-        context["candidate_assemblies"] = candidate_assemblies
-
-        # Per-assembly "Used in" breakdown (Phase 6a): this part's needed/printed/remaining
-        # within each top-level assembly that transitively contains it, replacing the global
-        # quantity/remaining/is_complete display.
-        usage: list[dict] = []
-        for assembly in candidate_assemblies:
-            for row in assembly.variant_progress()["parts"]:
-                if row["part"].pk == part.pk:
-                    usage.append(
-                        {
-                            "assembly": assembly,
-                            "needed": row["needed"],
-                            "printed": row["printed"],
-                            "remaining": row["remaining"],
-                        }
-                    )
-                    break
-        context["part_usage"] = usage
+        context["candidate_assemblies"] = self._candidate_assemblies(part)
 
         auto_preset, preset_choices = part.resolve_job_preset_candidates()
         context["job_preset_auto"] = auto_preset
@@ -266,7 +246,6 @@ class PartCreateView(_SpoolmanFilamentMixin, ProjectManageMixin, CreateView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context["project"] = self.project
-        context["used_in"] = self.project.parent_assemblies()
         context["spoolman_configured"] = self._spoolman_configured
         context["spoolman_colors"] = self._spoolman_colors
         context["spoolman_colors_json"] = json.dumps(self._spoolman_colors)
@@ -324,7 +303,6 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        context["used_in"] = self.object.containing_projects()
         context["spoolman_configured"] = self._spoolman_configured
         context["spoolman_colors"] = self._spoolman_colors
         context["spoolman_colors_json"] = json.dumps(self._spoolman_colors)
@@ -336,17 +314,6 @@ class PartDeleteView(ProjectManageMixin, DeleteView):
 
     model = Part
     template_name = "core/part_confirm_delete.html"
-
-    def get_context_data(self, **kwargs):
-        """Add the assemblies that reference this part (its "used in") to context.
-
-        Reads the part's own composition edges (``containing_projects``) so the
-        confirm page can warn that deleting the node removes it from every
-        assembly that references it — not just its legacy owning project.
-        """
-        context = super().get_context_data(**kwargs)
-        context["used_in"] = self.object.containing_projects()
-        return context
 
     def get_success_url(self):
         return reverse_lazy("core:project_list")

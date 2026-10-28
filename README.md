@@ -259,7 +259,6 @@ Send it as a header on every request: `Authorization: Token <key>`.
 | `GET` | `/api/v1/projects/{id}/requirements/` | Aggregate BOM: `total_parts_count`, `total_filament_grams/meters`, `filament_requirements`, `hardware_requirements`, `total_hardware_cost`, `variant_progress` |
 | `GET` | `/api/v1/projects/{id}/validate/` | Completeness check → `{ok, issues[]}` (parts missing STL / filament id / estimation error / empty project) |
 | `GET` | `/api/v1/projects/?search=` `/api/v1/parts/?search=` | Full-text search (projects: name/description; parts: name/material) — reuse existing blocks |
-| `POST` | `/api/v1/projects/{id}/duplicate/` | Clone into a new variant `{name}` sharing the same building blocks (write → `can_manage_projects`) |
 | `POST` | `/api/v1/projects/{id}/re-estimate/` | Re-queue estimation for every eligible part in the project tree → returns 202 + `{"queued": <count>}` (write → `can_manage_projects`) |
 
 Composition edges use `get_or_create`, so retrying a step returns the existing edge
@@ -269,8 +268,7 @@ structured `400`.
 The **lookup** reads let a client pick valid FK values (a filament id, a print preset)
 before creating parts; **`requirements`/`validate`** let it reason about what the whole
 assembly needs and what is still missing; **`search`** finds existing projects/parts to
-reuse; **`duplicate`** spins off a variant that shares the source's building blocks (the
-referenced child projects, parts and hardware are shared, not deep-copied).
+reuse.
 
 ### Example: build a project iteratively
 
@@ -299,9 +297,8 @@ curl -s -H "$H" $API/projects/$ASM/tree/
 curl -s -H "$H" $API/projects/$ASM/requirements/
 curl -s -H "$H" $API/projects/$ASM/validate/     # {"ok": false, "issues": [...]} until every part is complete
 
-# 6. Reuse: search existing parts, then spin off a variant of the assembly
+# 6. Search existing parts
 curl -s -H "$H" "$API/parts/?search=axle"
-curl -s -H "$H" -d 'name=Truck (long-bed)' $API/projects/$ASM/duplicate/
 ```
 
 ## User Roles & Permissions
