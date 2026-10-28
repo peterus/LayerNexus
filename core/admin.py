@@ -43,20 +43,15 @@ class PrintJobPlateInline(admin.TabularInline):
 
 @admin.register(Project)
 class ProjectAdmin(admin.ModelAdmin):
-    list_display = ("name", "created_by", "created_at", "updated_at")
-    list_filter = ("created_by", "created_at")
+    list_display = ("name", "parent", "quantity", "created_by", "created_at", "updated_at")
+    list_filter = ("parent", "created_by", "created_at")
     search_fields = ("name", "description")
     inlines = [ProjectHardwareInline]
-    # Composition is edited through the ProjectComponent edge models; the legacy
-    # parent/quantity FK fields are a dead, non-authoritative write path (the
-    # save() mirror only seeds an edge on insert), so keep them out of the admin
-    # change form to avoid diverging the legacy row from the composition graph.
-    exclude = ("parent", "quantity")
 
 
 @admin.register(Part)
 class PartAdmin(admin.ModelAdmin):
-    list_display = ("name", "color", "material", "created_at")
+    list_display = ("name", "project", "quantity", "color", "material", "created_at")
     list_filter = ("color", "material")
     search_fields = ("name",)
 

@@ -7,7 +7,7 @@ from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
-from core.models import HardwarePart, HardwareShoppingItem, Project, ProjectComponent, ProjectHardware
+from core.models import HardwarePart, HardwareShoppingItem, Project, ProjectHardware
 from core.tests.mixins import _RBACTestBase
 
 

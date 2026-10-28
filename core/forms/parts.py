@@ -3,12 +3,10 @@
 from django import forms
 from django.core.files.uploadedfile import UploadedFile
 
-from core.models import Part, Project, ProjectPart
+from core.models import Part
 
 __all__ = [
     "PartForm",
-    "AddPartToProjectForm",
-    "ProjectPartQuantityForm",
 ]
 
 
@@ -19,6 +17,7 @@ class PartForm(forms.ModelForm):
         model = Part
         fields = [
             "name",
+            "quantity",
             "stl_file",
             "spoolman_filament_id",
             "color",
@@ -66,47 +65,3 @@ class PartForm(forms.ModelForm):
             else:
                 self.add_error("name", "Name is required when no model file is uploaded.")
         return cleaned_data
-
-
-class AddPartToProjectForm(forms.ModelForm):
-    """Add an existing reusable part into ``project`` (composition edge).
-
-    The ``part`` choices exclude parts already linked to this project so the same
-    building block is not added twice; the model's unique ``(project, part)``
-    constraint is the backstop.
-    """
-
-    class Meta:
-        model = ProjectPart
-        fields = ["part", "quantity"]
-        widgets = {
-            "part": forms.Select(attrs={"class": "form-select"}),
-            "quantity": forms.NumberInput(attrs={"class": "form-control", "min": 1}),
-        }
-
-    def __init__(self, *args, project: Project, **kwargs) -> None:
-        """Restrict the part queryset to parts not yet linked to ``project``.
-
-        Args:
-            project: The module/assembly the part is being added to.
-        """
-        super().__init__(*args, **kwargs)
-        self.project = project
-        existing = set(project.part_links.values_list("part_id", flat=True))
-        self.fields["part"].queryset = Part.objects.exclude(pk__in=existing).order_by("name")
-
-    def save(self, commit: bool = True) -> ProjectPart:
-        """Attach the edge to ``project`` before saving."""
-        self.instance.project = self.project
-        return super().save(commit=commit)
-
-
-class ProjectPartQuantityForm(forms.ModelForm):
-    """Edit only the ``quantity`` of an existing ``ProjectPart`` edge."""
-
-    class Meta:
-        model = ProjectPart
-        fields = ["quantity"]
-        widgets = {
-            "quantity": forms.NumberInput(attrs={"class": "form-control", "min": 1}),
-        }

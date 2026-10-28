@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Optional
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
-from django.db import models, transaction
+from django.db import models
 from django.db.models import CheckConstraint, Q, QuerySet
 
 from core.models.parts import Part
@@ -41,7 +41,7 @@ class Project(models.Model):
     )
     parent = models.ForeignKey(
         "self",
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
         null=True,
         blank=True,
         related_name="subprojects",
@@ -87,59 +87,18 @@ class Project(models.Model):
         return self.name
 
     def save(self, *args, **kwargs) -> None:
-        """Persist the project, refusing to store a cyclic legacy ``parent``.
+        """Persist the project, refusing to store a cyclic ``parent``.
 
         Django never calls :meth:`clean` implicitly, so the cycle check is run
         here too — a ``project.parent = descendant; project.save()`` from a shell
-        or import raises :class:`ValidationError` instead of persisting a graph
+        or import raises :class:`ValidationError` instead of persisting a cycle
         that would later blow up the recursive aggregate properties.
-
-        Edge reconciliation is **seed-on-create only**: when a project is *inserted*
-        with the legacy ``parent`` FK set, one matching ``ProjectComponent`` edge is
-        created if missing, so a project created via ``Project(parent=…)`` still
-        appears under its assembly. A ``save()`` **never deletes** edges, **never
-        overwrites** an existing edge's ``quantity``, and — crucially — does **not**
-        re-run the mirror on later saves. The composition graph is authoritative once
-        the row exists: detaching/re-parenting through the ``ProjectComponent`` edge UI
-        (which owns edge deletion) is durable and is not undone by a subsequent scalar
-        save or API ``PATCH`` of a project whose stale legacy ``parent_id`` is still set.
-
-        This is the fix for a production data corruptor: the previous shim ran
-        ``ProjectComponent.objects.filter(child_project=self).delete()`` on *every*
-        save whose ``parent`` FK was ``None`` — which is every edge-based project —
-        so a plain GUI edit or API ``PATCH`` silently wiped the assembly's parent
-        edges. The seed-on-create mirror is an interim bridge for the still-present
-        legacy ``parent`` FK and is removed together with that field in the contract
-        phase.
-
-        The row insert and the seeded edge are written inside one
-        :func:`~django.db.transaction.atomic` block, so a failure of the edge create
-        rolls back the insert too — the two dependent writes never commit apart
-        (no parent row left without its seeded edge).
         """
         self._assert_parent_acyclic()
-        creating = self._state.adding
-        with transaction.atomic():
-            super().save(*args, **kwargs)
-            if creating and self.parent_id is not None:
-                from core.models.composition import ProjectComponent
-
-                ProjectComponent.objects.get_or_create(
-                    parent_project_id=self.parent_id,
-                    child_project=self,
-                    defaults={"quantity": self.quantity},
-                )
+        super().save(*args, **kwargs)
 
     def clean(self) -> None:
-        """Validate that the parent assignment does not create a cycle.
-
-        Runs on every ``full_clean()`` path — ``ProjectEditForm``, the admin,
-        etc. The same check is also enforced in :meth:`save` so a bare
-        shell/import ``save()`` cannot persist a cycle either. The visited-set
-        guards on the recursive traversals (:meth:`get_descendant_ids` and the
-        ``_collect_*`` aggregators) remain as a runtime safety net for any cycle
-        that somehow reaches the database (e.g. a raw SQL / bulk ``update``).
-        """
+        """Validate that the parent assignment does not create a cycle."""
         super().clean()
         self._assert_parent_acyclic()
 
@@ -155,12 +114,11 @@ class Project(models.Model):
         concurrency-safe — two simultaneous re-parent transactions (A→B and B→A)
         can each pass the check on stale reads and commit a cycle. Fully
         preventing that would need DB-level enforcement (serializable isolation /
-        row locks / a recursive-CTE constraint). The consequence is bounded, not
-        catastrophic: **every** parent-chain traversal in this model
-        (:meth:`get_descendant_ids`, :meth:`effective_default_print_preset`, the
-        ``_collect_*`` aggregators) carries a visited-set guard, so a raced cycle
-        degrades to a logically odd graph rather than an infinite loop /
-        ``RecursionError`` at render.
+        row locks / a recursive-CTE constraint). The upward walks
+        (:meth:`ancestors`, :meth:`effective_default_print_preset`) and
+        :meth:`get_descendant_ids` carry a visited-set guard; the recursive
+        ``_collect_*`` aggregators do not, so a raced cycle surfaces as a
+        ``RecursionError`` (HTTP 500) rather than a hang.
         """
         if self.parent_id is None:
             return

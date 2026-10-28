@@ -7,7 +7,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from core.models import Part, Project, ProjectPart
+from core.models import Part, Project
 
 
 class ApiRequirementsTests(APITestCase):
@@ -22,7 +22,7 @@ class ApiRequirementsTests(APITestCase):
     def test_requirements_aggregate_keys(self) -> None:
         """GET /projects/{id}/requirements/ returns the JSON-safe aggregate payload."""
         project = Project.objects.create(name="Assembly")
-        gear = Part.objects.create(
+        Part.objects.create(
             project=project,
             quantity=2,
             name="Gear",
@@ -87,7 +87,7 @@ class ApiRequirementsTests(APITestCase):
         """A fully-specified project validates as ``ok`` with no issues."""
         project = Project.objects.create(name="Complete")
         stl = SimpleUploadedFile("g.stl", b"solid g\nendsolid g\n")
-        gear = Part.objects.create(
+        Part.objects.create(
             project=project,
             quantity=1,
             name="Gear",

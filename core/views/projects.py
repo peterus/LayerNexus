@@ -5,22 +5,15 @@ import logging
 from django import forms as django_forms
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
-from django.urls import reverse, reverse_lazy
+from django.urls import reverse
 from django.views import View
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
-from core.forms import (
-    AddComponentForm,
-    AddPartToProjectForm,
-    ProjectComponentQuantityForm,
-    ProjectEditForm,
-    ProjectForm,
-    ProjectPartQuantityForm,
-    SubProjectForm,
-)
+from core.forms import ProjectEditForm, ProjectForm, SubProjectForm
 from core.mixins import ProjectManageMixin
 from core.models import (
     HardwareShoppingItem,
@@ -29,8 +22,6 @@ from core.models import (
     PrintJob,
     PrintJobPart,
     Project,
-    ProjectComponent,
-    ProjectPart,
     SpoolmanFilamentMapping,
 )
 from core.views.helpers import _trigger_part_estimation, _user_projects_qs
@@ -46,12 +37,6 @@ __all__ = [
     "ProjectDeleteView",
     "ProjectCostView",
     "ProjectReEstimateView",
-    "ProjectAddComponentView",
-    "ProjectAddPartView",
-    "ProjectComponentDeleteView",
-    "ProjectPartDeleteView",
-    "ProjectComponentUpdateView",
-    "ProjectPartUpdateView",
 ]
 
 
@@ -63,23 +48,14 @@ class ProjectListView(LoginRequiredMixin, ListView):
     context_object_name = "projects"
 
     def get_queryset(self) -> QuerySet:
-        """Return only top-level assemblies (no incoming composition edge).
+        """Return only top-level projects (``parent`` is NULL).
 
-        A top-level assembly is one with no ``ProjectComponent`` edge pointing at it
-        (``parent_links__isnull=True``), replacing the legacy ``parent__isnull=True``
-        FK filter. ``.distinct()`` guards against duplicate rows once a project can be
-        referenced by several assemblies.
-
-        Prefetches the composition/part/job tree so the per-card status badges
+        Prefetches the sub-project/part/job tree so the per-card status badges
         and progress bars are computed from cache instead of issuing a query
         per project (and per part) — see
         :meth:`Project.aggregate_prefetch_lookups`.
         """
-        return (
-            Project.objects.filter(parent_links__isnull=True)
-            .distinct()
-            .prefetch_related(*Project.aggregate_prefetch_lookups())
-        )
+        return Project.objects.filter(parent__isnull=True).prefetch_related(*Project.aggregate_prefetch_lookups())
 
 
 class ProjectDetailView(LoginRequiredMixin, DetailView):
@@ -95,41 +71,30 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
         return Project.objects.prefetch_related(*Project.aggregate_prefetch_lookups())
 
     def get_context_data(self, **kwargs) -> dict:
-        """Add filament requirements, child modules, and lookups.
-
-        Display/navigation reads the composition edges: ``child_modules``
-        (``(child_project, quantity)`` pairs) and ``direct_parts``
-        (``(part, quantity)`` pairs) replace the legacy ``subprojects``/``parts`` FK
-        relations.
-        """
+        """Add filament requirements, build progress, the ancestor chain and lookups."""
         context = super().get_context_data(**kwargs)
-        context["filament_requirements"] = self.object.filament_requirements()
-        context["child_modules"] = self.object.child_modules()
-        context["direct_parts"] = self.object.direct_parts()
+        project = self.object
+        context["filament_requirements"] = project.filament_requirements()
+        context["ancestors"] = project.ancestors()
+        context["subprojects"] = list(project.subprojects.all())
+        context["parts"] = list(project.parts.all())
 
-        # Per-variant build progress (Phase 4): print quantities attributed to THIS
-        # project as the assembly context. The global aggregate status/progress above
-        # is unaffected.
-        variant_progress = self.object.variant_progress()
-        context["variant_progress"] = variant_progress
-        # Per-part per-assembly rows keyed by part pk, so the direct-parts table can show
-        # this assembly's printed/remaining instead of the global Part counters (Phase 6a).
-        context["variant_rows_by_pk"] = {row["part"].pk: row for row in variant_progress["parts"]}
+        build_progress = project.build_progress()
+        context["build_progress"] = build_progress
+        # Per-part rows keyed by part pk, so the parts table can show printed/remaining.
+        context["build_rows_by_pk"] = {row["part"].pk: row for row in build_progress["parts"]}
 
-        # Expand the build-progress section by default when prints exist or an active job
-        # is attributed to this assembly (draft through printing; excludes terminal statuses).
-        _TERMINAL = [PrintJob.STATUS_COMPLETED, PrintJob.STATUS_FAILED, PrintJob.STATUS_CANCELLED]
+        # Expand the build-progress section by default when prints exist or an unfinished
+        # job contains a part of this subtree.
         has_active_job_parts: bool = (
-            PrintJobPart.objects.filter(
-                target_assembly=self.object,
-            )
-            .exclude(print_job__status__in=_TERMINAL)
+            PrintJobPart.objects.filter(part__project_id__in=project.subtree_ids())
+            .exclude(print_job__status__in=PrintJob.TERMINAL_STATUSES)
             .exists()
         )
-        context["build_progress_expanded"] = variant_progress["printed"] > 0 or has_active_job_parts
+        context["build_progress_expanded"] = build_progress["printed"] > 0 or has_active_job_parts
 
         # Build filament name and color lookups for part display
-        parts = [part for part, _quantity in context["direct_parts"]]
+        parts = context["parts"]
         filament_ids = {p.spoolman_filament_id for p in parts if p.spoolman_filament_id}
         filament_names: dict[int, str] = {}
         filament_colors: dict[int, str] = {}
@@ -145,7 +110,6 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
         context["filament_colors"] = filament_colors
 
         # Effective default print preset (own or inherited from parent)
-        project = self.object
         effective_preset = project.effective_default_print_preset
         context["effective_default_print_preset"] = effective_preset
         context["preset_inherited"] = effective_preset is not None and project.default_print_preset_id is None
@@ -159,17 +123,6 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
         shopping_rows = HardwareShoppingItem.build_list(project)
         context["shopping_counts"] = HardwareShoppingItem.counts(shopping_rows) if shopping_rows else None
         context["total_hardware_cost"] = project.total_hardware_cost
-
-        # Composition edges drive the sub-module and parts tables (all users see them;
-        # only managers get the inline edit controls).
-        context["component_edges"] = self.object.child_links.select_related("child_project").all()
-        context["part_edges"] = self.object.part_links.select_related("part").all()
-
-        # Assembly editor (add/remove existing modules & parts) — only for managers.
-        if self.request.user.has_perm("core.can_manage_projects"):
-            context["add_component_form"] = AddComponentForm(parent_project=self.object)
-            context["add_part_form"] = AddPartToProjectForm(project=self.object)
-            context["can_edit_assembly"] = True
 
         return context
 
@@ -231,16 +184,7 @@ class SubProjectCreateView(ProjectManageMixin, CreateView):
         return form
 
     def form_valid(self, form: SubProjectForm) -> HttpResponse:
-        """Create the sub-project under the parent assembly.
-
-        The legacy ``parent`` FK is set so the child still participates in
-        ``Project.effective_default_print_preset`` inheritance (which walks the
-        ``parent`` chain until that traversal is migrated onto composition edges).
-        :meth:`Project.save` mirrors that FK into the authoritative
-        ``ProjectComponent`` edge on insert — inside its own atomic block — so the
-        node and its assembly edge are created together; the form's ``quantity``
-        becomes the edge quantity.
-        """
+        """Create the sub-project under the parent project (quantity comes from the form)."""
         form.instance.parent = self.get_parent()
         form.instance.created_by = self.request.user
         messages.success(self.request, "Sub-project created successfully.")
@@ -259,11 +203,7 @@ class ProjectUpdateView(ProjectManageMixin, UpdateView):
     template_name = "core/project_form.html"
 
     def get_form(self, form_class=None) -> ProjectEditForm:
-        """Return the edit form with resolved print-preset choices.
-
-        Composition is edited through the ``ProjectComponent`` edge UI, so this
-        form no longer exposes a ``parent`` field to filter.
-        """
+        """Return the edit form with resolved print-preset choices."""
         form = super().get_form(form_class)
         form.fields["default_print_preset"].queryset = OrcaPrintPreset.objects.filter(
             state=OrcaPrintPreset.STATE_RESOLVED,
@@ -282,26 +222,44 @@ class ProjectUpdateView(ProjectManageMixin, UpdateView):
 
 
 class ProjectDeleteView(ProjectManageMixin, DeleteView):
-    """Delete a project."""
+    """Delete a project together with its whole subtree.
+
+    Sub-projects, parts, documents and hardware assignments go with it (CASCADE).
+    The delete is refused while any unfinished print job contains a part of the
+    subtree; the check runs again inside the delete transaction.
+    """
 
     model = Project
     template_name = "core/project_confirm_delete.html"
 
-    def get_success_url(self) -> str:
-        """Redirect to a containing assembly if referenced, otherwise the project list.
-
-        With composition edges a project can be referenced by several assemblies;
-        redirect to the first one if any, else fall back to the top-level list.
-        """
-        parents = self.object.parent_assemblies()
-        if parents:
-            return reverse("core:project_detail", kwargs={"pk": parents[0].pk})
-        return reverse_lazy("core:project_list")
+    def get_context_data(self, **kwargs) -> dict:
+        """Add the deletion counts and the jobs that block the delete."""
+        context = super().get_context_data(**kwargs)
+        context["summary"] = self.object.deletion_summary()
+        context["blocking_jobs"] = list(self.object.blocking_jobs().order_by("-created_at"))
+        return context
 
     def form_valid(self, form: django_forms.Form) -> HttpResponse:
-        """Delete project with success message."""
+        """Delete the subtree unless an unfinished print job still uses it.
+
+        Returns:
+            Redirect to the parent project (or the project list for a root), or
+            back to the confirmation page when the delete is blocked.
+        """
+        with transaction.atomic():
+            if self.object.blocking_jobs().exists():
+                messages.error(
+                    self.request,
+                    "This project cannot be deleted while unfinished print jobs contain its parts. "
+                    "Finish, cancel or remove those jobs first.",
+                )
+                return redirect("core:project_delete", pk=self.object.pk)
+            parent_id = self.object.parent_id
+            self.object.delete()
         messages.success(self.request, "Project deleted.")
-        return super().form_valid(form)
+        if parent_id is not None:
+            return redirect("core:project_detail", pk=parent_id)
+        return redirect("core:project_list")
 
 
 class ProjectCostView(LoginRequiredMixin, DetailView):
@@ -317,11 +275,11 @@ class ProjectCostView(LoginRequiredMixin, DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         project = self.object
-        parts_with_qty = list(project.direct_parts())
         cost_breakdown = []
         total_cost = 0
 
-        for part, qty in parts_with_qty:
+        for part in project.parts.all():
+            qty = part.quantity
             part_costs = {"part": part, "quantity": qty, "cost": None}
             if part.filament_used_grams and part.estimated_print_time:
                 hours = part.estimated_print_time.total_seconds() / 3600
@@ -368,25 +326,10 @@ class ProjectReEstimateView(ProjectManageMixin, View):
             Redirect to the project detail page.
         """
         project = get_object_or_404(Project, pk=pk)
-        # ``_collect_parts_with_multiplier`` yields one tuple per path through the
-        # composition DAG, so a part shared by several modules appears repeatedly.
-        # Deduplicate by primary key so each part is reset and queued exactly once.
-        parts = {p.pk: p for p, _mult in project._collect_parts_with_multiplier()}
-        # Variant B: resolve each part's preset in THIS project's context so a legacy part
-        # with no override but a project default is estimated (not skipped), and pin it so
-        # the background worker uses the project-context preset instead of guessing.
-        preset_map = project.resolve_estimation_preset_map()
-
         count = 0
-        for part in parts.values():
-            preset, ambiguous = preset_map.get(part.pk, (None, False))
-            if not part.stl_file:
+        for part, _needed in project._collect_parts_with_multiplier():
+            if not part.stl_file or part.effective_print_preset_id is None:
                 continue
-            if preset is None and not ambiguous:
-                continue
-
-            # Pin the project-context preset in the transient request channel (not the
-            # provenance field) so the worker estimates with it; clear stale provenance.
             Part.objects.filter(pk=part.pk).update(
                 filament_used_grams=None,
                 filament_used_meters=None,
@@ -394,7 +337,6 @@ class ProjectReEstimateView(ProjectManageMixin, View):
                 estimation_status=Part.ESTIMATION_NONE,
                 estimation_error="",
                 estimated_with_preset=None,
-                estimation_requested_preset=preset,
             )
             _trigger_part_estimation(part)
             count += 1
@@ -404,128 +346,3 @@ class ProjectReEstimateView(ProjectManageMixin, View):
         else:
             messages.warning(request, "No parts eligible for estimation.")
         return redirect("core:project_detail", pk=project.pk)
-
-
-class ProjectAddComponentView(ProjectManageMixin, View):
-    """Add an existing module as a child of this project (composition edge)."""
-
-    http_method_names = ["post"]
-
-    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
-        """Create a ``ProjectComponent`` edge from ``AddComponentForm`` POST data.
-
-        Args:
-            request: The incoming HTTP request.
-            pk: Primary key of the parent project the module is added to.
-
-        Returns:
-            Redirect to the parent project detail page.
-        """
-        parent = get_object_or_404(Project, pk=pk)
-        form = AddComponentForm(parent_project=parent, data=request.POST)
-        if form.is_valid():
-            form.save()
-            messages.success(request, "Module added to assembly.")
-        else:
-            messages.error(request, "; ".join(form.errors.get("__all__", [])) or "Could not add module.")
-        return redirect("core:project_detail", pk=parent.pk)
-
-
-class ProjectAddPartView(ProjectManageMixin, View):
-    """Add an existing part into this project (composition edge)."""
-
-    http_method_names = ["post"]
-
-    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
-        """Create a ``ProjectPart`` edge from ``AddPartToProjectForm`` POST data.
-
-        Args:
-            request: The incoming HTTP request.
-            pk: Primary key of the project the part is added to.
-
-        Returns:
-            Redirect to the project detail page.
-        """
-        project = get_object_or_404(Project, pk=pk)
-        form = AddPartToProjectForm(project=project, data=request.POST)
-        if form.is_valid():
-            form.save()
-            messages.success(request, "Part added to assembly.")
-        else:
-            messages.error(request, "; ".join(form.errors.get("__all__", [])) or "Could not add part.")
-        return redirect("core:project_detail", pk=project.pk)
-
-
-class ProjectComponentDeleteView(ProjectManageMixin, DeleteView):
-    """Remove a child module from an assembly by deleting the ``ProjectComponent`` edge.
-
-    Deleting the edge only detaches the module; the child project node and any other
-    assemblies referencing it survive.
-    """
-
-    model = ProjectComponent
-    http_method_names = ["post"]
-
-    def get_success_url(self) -> str:
-        """Redirect back to the parent assembly detail page.
-
-        The edge deletion, plus the clear of the child's stale legacy ``parent`` FK, is
-        handled by the ``post_delete`` receiver on ``ProjectComponent``
-        (``_clear_legacy_parent_on_component_delete`` in ``core/models/composition.py``),
-        so every delete path — this view, the DRF API, bulk and cascade deletes —
-        detaches durably.
-        """
-        messages.success(self.request, "Module removed from assembly.")
-        return reverse("core:project_detail", kwargs={"pk": self.object.parent_project_id})
-
-
-class ProjectPartDeleteView(ProjectManageMixin, DeleteView):
-    """Remove a part from a project by deleting the ``ProjectPart`` edge.
-
-    Deleting the edge only detaches the part; the part node and any other assemblies
-    referencing it survive.
-    """
-
-    model = ProjectPart
-    http_method_names = ["post"]
-
-    def get_success_url(self) -> str:
-        """Redirect back to the project detail page."""
-        messages.success(self.request, "Part removed from assembly.")
-        return reverse("core:project_detail", kwargs={"pk": self.object.project_id})
-
-
-class ProjectComponentUpdateView(ProjectManageMixin, UpdateView):
-    """Edit the quantity of a child-module composition edge."""
-
-    model = ProjectComponent
-    form_class = ProjectComponentQuantityForm
-    http_method_names = ["post"]
-
-    def get_success_url(self) -> str:
-        """Redirect back to the parent assembly detail page."""
-        messages.success(self.request, "Module quantity updated.")
-        return reverse("core:project_detail", kwargs={"pk": self.object.parent_project_id})
-
-    def form_invalid(self, form: ProjectComponentQuantityForm) -> HttpResponse:
-        """Redirect back with an error instead of rendering a (non-existent) form template."""
-        messages.error(self.request, "Invalid quantity.")
-        return redirect("core:project_detail", pk=self.object.parent_project_id)
-
-
-class ProjectPartUpdateView(ProjectManageMixin, UpdateView):
-    """Edit the quantity of a part composition edge."""
-
-    model = ProjectPart
-    form_class = ProjectPartQuantityForm
-    http_method_names = ["post"]
-
-    def get_success_url(self) -> str:
-        """Redirect back to the project detail page."""
-        messages.success(self.request, "Part quantity updated.")
-        return reverse("core:project_detail", kwargs={"pk": self.object.project_id})
-
-    def form_invalid(self, form: ProjectPartQuantityForm) -> HttpResponse:
-        """Redirect back with an error instead of rendering a (non-existent) form template."""
-        messages.error(self.request, "Invalid quantity.")
-        return redirect("core:project_detail", pk=self.object.project_id)

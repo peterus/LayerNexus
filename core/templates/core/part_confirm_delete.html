@@ -6,6 +6,8 @@
 <nav aria-label="breadcrumb" class="mb-3">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
+    {% for ancestor in part.project.ancestors %}<li class="breadcrumb-item"><a href="{% url 'core:project_detail' ancestor.pk %}">{{ ancestor.name }}</a></li>{% endfor %}
+    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' part.project.pk %}">{{ part.project.name }}</a></li>
     <li class="breadcrumb-item"><a href="{% url 'core:part_detail' part.pk %}">{{ part.name }}</a></li>
     <li class="breadcrumb-item active">Delete</li>
   </ol>

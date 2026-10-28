@@ -622,7 +622,7 @@ class EstimationPresetResolutionTests(TestCase):
         )
 
     def test_single_project_preset_is_unambiguous(self) -> None:
-        from core.models import Part, Project, ProjectPart
+        from core.models import Part, Project
 
         preset = self._preset("Proj")
         project = Project.objects.create(name="Proj", default_print_preset=preset)
@@ -682,7 +682,7 @@ class ReEstimateEligibilityTests(TestCase):
         )
 
     def test_is_estimable_true_for_legacy_part_with_project_default(self) -> None:
-        from core.models import Part, Project, ProjectPart
+        from core.models import Part, Project
 
         project = Project.objects.create(name="Proj", default_print_preset=self._preset("P"))
         part = Part.objects.create(project=project, quantity=1, name="p")  # no override
@@ -715,7 +715,7 @@ class ReEstimateEligibilityTests(TestCase):
         from django.contrib.auth.models import Group, Permission, User
         from django.urls import reverse
 
-        from core.models import Part, Project, ProjectPart
+        from core.models import Part, Project
 
         project = Project.objects.create(name="Proj", default_print_preset=self._preset("P"))
         part = Part.objects.create(project=project, quantity=1, name="p")  # no override, legacy
@@ -748,7 +748,7 @@ class ProjectContextEstimationTests(TestCase):
         )
 
     def test_resolve_estimation_preset_map_single_context(self) -> None:
-        from core.models import Part, Project, ProjectPart
+        from core.models import Part, Project
 
         preset = self._preset("P")
         project = Project.objects.create(name="Proj", default_print_preset=preset)
@@ -756,7 +756,7 @@ class ProjectContextEstimationTests(TestCase):
         self.assertEqual(project.resolve_estimation_preset_map(), {part.pk: (preset, False)})
 
     def test_resolve_estimation_preset_map_ambiguous_within_assembly(self) -> None:
-        from core.models import Part, Project, ProjectComponent, ProjectPart
+        from core.models import Part, Project, ProjectPart
 
         top = Project.objects.create(name="Top", default_print_preset=self._preset("Top"))
         a = Project.objects.create(parent=top, quantity=1, name="A", default_print_preset=self._preset("PA"))
@@ -836,7 +836,7 @@ class ProjectContextEstimationTests(TestCase):
         from django.contrib.auth.models import Group, Permission, User
         from django.urls import reverse
 
-        from core.models import Part, Project, ProjectComponent, ProjectPart
+        from core.models import Part, Project, ProjectPart
 
         # Shared part under one assembly but two modules that AGREE → unambiguous context preset.
         agreed = self._preset("Agreed")

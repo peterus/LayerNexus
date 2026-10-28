@@ -7,8 +7,10 @@
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
     {% if project %}
+    {% for ancestor in project.ancestors %}<li class="breadcrumb-item"><a href="{% url 'core:project_detail' ancestor.pk %}">{{ ancestor.name }}</a></li>{% endfor %}
     <li class="breadcrumb-item"><a href="{% url 'core:project_detail' project.pk %}">{{ project.name }}</a></li>
-    {% elif form.instance.pk %}
+    {% endif %}
+    {% if form.instance.pk %}
     <li class="breadcrumb-item"><a href="{% url 'core:part_detail' form.instance.pk %}">{{ form.instance.name }}</a></li>
     {% endif %}
     <li class="breadcrumb-item active">{% if form.instance.pk %}Edit{% else %}Add Part{% endif %}</li>
@@ -85,10 +87,10 @@
           <div class="d-flex gap-2">
             <button type="submit" class="btn btn-primary"><i class="bi bi-check-lg me-1"></i>{% if form.instance.pk %}Update{% else %}Add Part{% endif %}</button>
             {% if not form.instance.pk %}<button type="submit" name="_save_and_add_another" class="btn btn-outline-primary"><i class="bi bi-plus-circle me-1"></i>Save &amp; Add Another</button>{% endif %}
-            {% if project %}
-            <a href="{% url 'core:project_detail' project.pk %}" class="btn btn-outline-secondary">Cancel</a>
-            {% elif form.instance.pk %}
+            {% if form.instance.pk %}
             <a href="{% url 'core:part_detail' form.instance.pk %}" class="btn btn-outline-secondary">Cancel</a>
+            {% elif project %}
+            <a href="{% url 'core:project_detail' project.pk %}" class="btn btn-outline-secondary">Cancel</a>
             {% endif %}
           </div>
         </form>

@@ -38,8 +38,6 @@ class Part(models.Model):
         "core.Project",
         on_delete=models.CASCADE,
         related_name="parts",
-        null=True,
-        blank=True,
         help_text="The project or sub-project this part belongs to.",
     )
     quantity = models.PositiveIntegerField(
@@ -78,18 +76,6 @@ class Part(models.Model):
         blank=True,
         related_name="estimated_parts",
         help_text="The print preset that produced the currently stored estimate.",
-    )
-    estimation_requested_preset = models.ForeignKey(
-        "OrcaPrintPreset",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="estimation_requests",
-        help_text=(
-            "Transient queue-time channel: a whole-project re-estimate pins the "
-            "project-context preset here so the worker estimates with it. Consumed "
-            "(cleared) by the worker on claim; never used as estimate provenance."
-        ),
     )
     notes = models.TextField(blank=True)
 

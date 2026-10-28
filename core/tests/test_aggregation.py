@@ -212,13 +212,13 @@ class ProjectAggregatedStatusTests(TestDataMixin, TestCase):
     def test_pending_status(self):
         """Parts without filament estimates result in 'pending'."""
         proj = Project.objects.create(name="Pending", created_by=self.user)
-        p = Part.objects.create(project=proj, quantity=1, name="P1", filament_used_grams=None)
+        Part.objects.create(project=proj, quantity=1, name="P1", filament_used_grams=None)
         self.assertEqual(proj.aggregated_status, Project.STATUS_PENDING)
 
     def test_ready_status(self):
         """All parts estimated but none printed → 'ready'."""
         proj = Project.objects.create(name="Ready", created_by=self.user)
-        p = Part.objects.create(
+        Part.objects.create(
             project=proj, quantity=1, name="P1", filament_used_grams=10.0, estimation_status=Part.ESTIMATION_SUCCESS
         )
         self.assertEqual(proj.aggregated_status, Project.STATUS_READY)
@@ -248,7 +248,7 @@ class ProjectAggregatedStatusTests(TestDataMixin, TestCase):
     def test_error_status(self):
         """Any part with estimation error → 'error'."""
         proj = Project.objects.create(name="Error", created_by=self.user)
-        p = Part.objects.create(
+        Part.objects.create(
             project=proj,
             quantity=1,
             name="P1",
@@ -260,29 +260,29 @@ class ProjectAggregatedStatusTests(TestDataMixin, TestCase):
     def test_estimating_status(self):
         """Any part with pending estimation → 'estimating'."""
         proj = Project.objects.create(name="Estimating", created_by=self.user)
-        p = Part.objects.create(project=proj, quantity=1, name="P1", estimation_status=Part.ESTIMATION_PENDING)
+        Part.objects.create(project=proj, quantity=1, name="P1", estimation_status=Part.ESTIMATION_PENDING)
         self.assertEqual(proj.aggregated_status, Project.STATUS_ESTIMATING)
 
     def test_estimating_active_status(self):
         """Any part actively estimating → 'estimating'."""
         proj = Project.objects.create(name="Active", created_by=self.user)
-        p = Part.objects.create(project=proj, quantity=1, name="P1", estimation_status=Part.ESTIMATION_ESTIMATING)
+        Part.objects.create(project=proj, quantity=1, name="P1", estimation_status=Part.ESTIMATION_ESTIMATING)
         self.assertEqual(proj.aggregated_status, Project.STATUS_ESTIMATING)
 
     def test_error_takes_priority_over_estimating(self):
         """Error status wins even if another part is estimating."""
         proj = Project.objects.create(name="Mixed", created_by=self.user)
-        p1 = Part.objects.create(
+        Part.objects.create(
             project=proj, quantity=1, name="P1", estimation_status=Part.ESTIMATION_ERROR, estimation_error="fail"
         )
-        p2 = Part.objects.create(project=proj, quantity=1, name="P2", estimation_status=Part.ESTIMATION_PENDING)
+        Part.objects.create(project=proj, quantity=1, name="P2", estimation_status=Part.ESTIMATION_PENDING)
         self.assertEqual(proj.aggregated_status, Project.STATUS_ERROR)
 
     def test_subproject_parts_included(self):
         """Parts in sub-projects contribute to parent's status."""
         parent = Project.objects.create(name="Parent", created_by=self.user)
         child = Project.objects.create(name="Child", parent=parent, quantity=2, created_by=self.user)
-        p = Part.objects.create(
+        Part.objects.create(
             project=child, quantity=1, name="P1", filament_used_grams=5.0, estimation_status=Part.ESTIMATION_SUCCESS
         )
         self.assertEqual(parent.aggregated_status, Project.STATUS_READY)
@@ -291,7 +291,7 @@ class ProjectAggregatedStatusTests(TestDataMixin, TestCase):
         """Error in a sub-project part propagates to the parent."""
         parent = Project.objects.create(name="Parent", created_by=self.user)
         child = Project.objects.create(name="Child", parent=parent, quantity=1, created_by=self.user)
-        p = Part.objects.create(
+        Part.objects.create(
             project=child, quantity=1, name="P1", estimation_status=Part.ESTIMATION_ERROR, estimation_error="fail"
         )
         self.assertEqual(parent.aggregated_status, Project.STATUS_ERROR)

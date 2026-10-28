@@ -86,7 +86,7 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
 
     def test_creates_single_job_for_compatible_parts(self):
         """All parts with same preset/filament end up in one job."""
-        part_two = Part.objects.create(
+        Part.objects.create(
             project=self.project,
             quantity=2,
             name="Part Two",
@@ -107,7 +107,7 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
         self.part.spoolman_filament_id = 10
         self.part.save()
 
-        part_two = Part.objects.create(
+        Part.objects.create(
             project=self.project,
             quantity=1,
             name="Part Two",
@@ -121,7 +121,7 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
 
     def test_skips_parts_without_stl(self):
         """Parts without an STL file are not added to any job."""
-        no_stl = Part.objects.create(project=self.project, quantity=1, name="No STL Part")
+        Part.objects.create(project=self.project, quantity=1, name="No STL Part")
         resp = self.client.post(self._url())
         self.assertEqual(resp.status_code, 302)
         job = PrintJob.objects.filter(created_by=self.user).first()
@@ -194,7 +194,7 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
         """When multiple jobs are created, redirect to the project."""
         self.part.spoolman_filament_id = 10
         self.part.save()
-        part_two = Part.objects.create(
+        Part.objects.create(
             project=self.project,
             quantity=1,
             name="Part Two",
@@ -246,7 +246,7 @@ class AddPartToJobPresetTests(TestDataMixin, TestCase):
         )
 
     def test_candidates_single_project_auto(self):
-        from core.models import Part, Project, ProjectPart
+        from core.models import Part, Project
 
         preset = self._preset("P")
         project = Project.objects.create(name="Proj", default_print_preset=preset)
@@ -338,7 +338,7 @@ class CreateJobsPerPathPresetTests(TestDataMixin, TestCase):
         )
 
     def test_shared_part_split_into_two_preset_bundles(self):
-        from core.models import Project, ProjectComponent
+        from core.models import Project
 
         cabin_preset = self._preset("CabinPreset")
         frame_preset = self._preset("FramePreset")
@@ -483,7 +483,7 @@ class CreateJobsPrintedByPresetTests(TestDataMixin, TestCase):
         )
 
     def test_completed_prints_deplete_only_their_own_preset_bundle(self):
-        from core.models import Project, ProjectComponent
+        from core.models import Project
 
         cabin_preset = self._preset("CabinPreset")
         frame_preset = self._preset("FramePreset")
@@ -542,9 +542,7 @@ class CreateJobsSkipNoPresetTests(TestDataMixin, TestCase):
 
         # Project with NO default preset (legacy/nullable) and a part with no override.
         project = Project.objects.create(name="Legacy", created_by=self.user)  # default_print_preset NULL
-        part = Part.objects.create(
-            project=project, quantity=1, name="p", stl_file=SimpleUploadedFile("p.stl", b"solid")
-        )
+        Part.objects.create(project=project, quantity=1, name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
 
         before = PrintJob.objects.count()
         resp = self.client.post(reverse("core:project_create_jobs", args=[project.pk]))

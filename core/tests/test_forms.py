@@ -48,56 +48,76 @@ class ProjectFormTests(TestCase):
 
 
 class ProjectEditFormTests(TestCase):
-    """Tests for the ProjectEditForm.
-
-    Composition is edited through the ``ProjectComponent`` edge UI, so the edit
-    form intentionally exposes only the project's own attributes — no legacy
-    ``parent``/``quantity`` re-parent control.
-    """
+    """Tests for the ProjectEditForm (quantity + optional preset on sub-projects only)."""
 
     def test_valid_form(self):
-        """Editing a project's own attributes is valid."""
+        """Editing a top-level project's own attributes is valid."""
         form = ProjectEditForm(
             data={"name": "Top Level", "description": "", "default_print_preset": _default_preset().pk}
         )
         self.assertTrue(form.is_valid())
 
-    def test_form_has_no_parent_or_quantity_fields(self):
-        """The legacy re-parent control is gone (it used to wipe composition edges)."""
-        form = ProjectEditForm()
+    def test_root_form_has_no_parent_or_quantity_fields(self):
+        """Roots expose neither parent nor quantity."""
+        form = ProjectEditForm(instance=Project.objects.create(name="Root"))
         self.assertNotIn("parent", form.fields)
         self.assertNotIn("quantity", form.fields)
+        self.assertTrue(form.fields["default_print_preset"].required)
 
-    def test_extra_parent_quantity_data_is_ignored(self):
-        """Stray parent/quantity POST data does not re-parent or set a quantity."""
+    def test_subproject_form_has_quantity_and_optional_preset(self):
+        """Sub-projects get a quantity field and may inherit the preset."""
+        root = Project.objects.create(name="Root")
+        sub = Project.objects.create(name="Sub", parent=root, quantity=2)
+        form = ProjectEditForm(instance=sub, data={"name": "Sub", "description": "", "quantity": "4"})
+        self.assertNotIn("parent", form.fields)
+        self.assertFalse(form.fields["default_print_preset"].required)
+        self.assertEqual(form.fields["default_print_preset"].help_text, "Inherited from parent if empty.")
+        self.assertTrue(form.is_valid(), form.errors)
+        form.save()
+        sub.refresh_from_db()
+        self.assertEqual(sub.quantity, 4)
+        self.assertEqual(sub.parent_id, root.pk)
+
+    def test_subproject_quantity_min_1(self):
+        root = Project.objects.create(name="Root")
+        sub = Project.objects.create(name="Sub", parent=root)
+        form = ProjectEditForm(instance=sub, data={"name": "Sub", "description": "", "quantity": "0"})
+        self.assertFalse(form.is_valid())
+        self.assertIn("quantity", form.errors)
+
+    def test_extra_parent_data_is_ignored(self):
+        """Stray parent POST data does not re-parent a project."""
         parent = Project.objects.create(name="Parent Project")
+        project = Project.objects.create(name="Child")
         form = ProjectEditForm(
+            instance=project,
             data={
                 "name": "Child",
                 "description": "",
                 "parent": parent.pk,
                 "quantity": "3",
                 "default_print_preset": _default_preset().pk,
-            }
+            },
         )
         self.assertTrue(form.is_valid())
-        self.assertNotIn("parent", form.cleaned_data)
-        self.assertNotIn("quantity", form.cleaned_data)
+        form.save()
+        project.refresh_from_db()
+        self.assertIsNone(project.parent_id)
+        self.assertEqual(project.quantity, 1)
 
 
 class ProjectAdminTests(TestCase):
-    """The Django admin must not expose the legacy parent/quantity write path."""
+    """The Django admin shows the tree fields again."""
 
-    def test_admin_form_excludes_legacy_parent_and_quantity(self):
-        """Composition is edge-authoritative; the admin change form omits the dead FK fields."""
+    def test_admin_form_has_parent_and_quantity(self):
         from django.contrib.admin.sites import AdminSite
 
         from core.admin import ProjectAdmin
 
         admin_instance = ProjectAdmin(Project, AdminSite())
         form_class = admin_instance.get_form(request=None)
-        self.assertNotIn("parent", form_class.base_fields)
-        self.assertNotIn("quantity", form_class.base_fields)
+        self.assertIn("parent", form_class.base_fields)
+        self.assertIn("quantity", form_class.base_fields)
 
 
 class PartFormTests(TestCase):
@@ -135,6 +155,12 @@ class PartFormTests(TestCase):
         )
         self.assertFalse(form.is_valid())
         self.assertIn("stl_file", form.errors)
+
+    def test_quantity_min_1(self):
+        form = PartForm(data={"name": "Part", "quantity": 0, "color": "black", "material": "PLA"})
+        self.assertFalse(form.is_valid())
+        self.assertIn("quantity", form.errors)
+        self.assertEqual(list(PartForm.Meta.fields[:2]), ["name", "quantity"])
 
 
 class UserRegistrationFormTests(TestCase):
@@ -535,80 +561,6 @@ class ProjectHardwareUpdateFormValidationTests(TestCase):
         self.assertIn("__all__", form.errors)
 
 
-class AddComponentFormTests(TestCase):
-    """Tests for the cycle-safe AddComponentForm (Phase 3b)."""
-
-    def test_excludes_self_and_descendants(self):
-        from core.forms import AddComponentForm
-        from core.models import ProjectComponent
-
-        root = Project.objects.create(name="Root")
-        child = Project.objects.create(parent=root, name="Child")
-        grandchild = Project.objects.create(parent=child, name="Grandchild")
-        form = AddComponentForm(parent_project=root)
-        qs = list(form.fields["child_project"].queryset)
-        self.assertNotIn(root, qs)  # not itself
-        self.assertNotIn(child, qs)  # already a child
-        self.assertNotIn(grandchild, qs)  # descendant
-
-    def test_rejects_cycle(self):
-        from core.forms import AddComponentForm
-        from core.models import ProjectComponent
-
-        a = Project.objects.create(name="A")
-        b = Project.objects.create(parent=a, name="B")
-        # adding a under b would cycle; clean must reject even if forced
-        form = AddComponentForm(parent_project=b, data={"child_project": a.pk, "quantity": 1})
-        self.assertFalse(form.is_valid())
-
-    def test_valid_add_creates_edge(self):
-        from core.forms import AddComponentForm
-        from core.models import ProjectComponent
-
-        parent = Project.objects.create(name="Parent")
-        module = Project.objects.create(name="Module")
-        form = AddComponentForm(parent_project=parent, data={"child_project": module.pk, "quantity": 3})
-        self.assertTrue(form.is_valid())
-        edge = form.save()
-        self.assertEqual(edge.parent_project, parent)
-        self.assertEqual(edge.child_project, module)
-        self.assertEqual(edge.quantity, 3)
-        self.assertTrue(ProjectComponent.objects.filter(parent_project=parent, child_project=module).exists())
-
-
-class AddPartToProjectFormTests(TestCase):
-    """Tests for the AddPartToProjectForm (Phase 3b)."""
-
-    def setUp(self):
-        super().setUp()
-        from core.models import Part
-
-        self.project = Project.objects.create(name="Assembly")
-        self.part = Part.objects.create(name="Bolt")
-
-    def test_excludes_already_linked_parts(self):
-        from core.forms import AddPartToProjectForm
-        from core.models import Part, ProjectPart
-
-        already = Part.objects.create(project=self.project, quantity=1, name="Nut")
-        form = AddPartToProjectForm(project=self.project)
-        qs = list(form.fields["part"].queryset)
-        self.assertNotIn(already, qs)  # already linked via edge
-        self.assertIn(self.part, qs)  # library part available
-
-    def test_valid_add_creates_edge(self):
-        from core.forms import AddPartToProjectForm
-        from core.models import ProjectPart
-
-        form = AddPartToProjectForm(project=self.project, data={"part": self.part.pk, "quantity": 4})
-        self.assertTrue(form.is_valid())
-        edge = form.save()
-        self.assertEqual(edge.project, self.project)
-        self.assertEqual(edge.part, self.part)
-        self.assertEqual(edge.quantity, 4)
-        self.assertTrue(ProjectPart.objects.filter(project=self.project, part=self.part).exists())
-
-
 class ProjectFormPresetRequiredTests(TestCase):
     def _valid_preset(self):
         from core.models import OrcaPrintPreset
@@ -624,17 +576,16 @@ class ProjectFormPresetRequiredTests(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("default_print_preset", form.errors)
 
-    def test_subproject_form_requires_preset(self) -> None:
+    def test_subproject_form_preset_optional(self) -> None:
         from core.forms import SubProjectForm
 
         form = SubProjectForm(data={"name": "P", "description": "", "quantity": 1})
-        self.assertFalse(form.is_valid())
-        self.assertIn("default_print_preset", form.errors)
+        self.assertTrue(form.is_valid(), form.errors)
 
-    def test_project_edit_form_requires_preset(self) -> None:
+    def test_project_edit_form_requires_preset_for_root(self) -> None:
         from core.forms import ProjectEditForm
 
-        form = ProjectEditForm(data={"name": "P", "description": "", "quantity": 1})
+        form = ProjectEditForm(data={"name": "P", "description": ""})
         self.assertFalse(form.is_valid())
         self.assertIn("default_print_preset", form.errors)
 

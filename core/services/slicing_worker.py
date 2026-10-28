@@ -304,19 +304,7 @@ def _estimate_part_in_background(part_pk: int) -> None:
     from pathlib import Path as FSPath
 
     try:
-        part = Part.objects.select_related("print_preset", "estimation_requested_preset").get(pk=part_pk)
-
-        # Consume the transient queue-time preset channel on claim: a whole-project
-        # re-estimate pins the project-context preset in ``estimation_requested_preset``.
-        # Clear it *conditionally* on the exact value we read, so a newer re-estimate that
-        # wrote a different preset between the SELECT and here is not lost (its request
-        # survives and is picked up on the next run); it also stops a part edit that clears
-        # estimates from leaving a stale value behind.
-        requested_preset = part.estimation_requested_preset if part.estimation_requested_preset_id else None
-        if requested_preset is not None:
-            Part.objects.filter(pk=part_pk, estimation_requested_preset_id=part.estimation_requested_preset_id).update(
-                estimation_requested_preset=None
-            )
+        part = Part.objects.select_related("print_preset", "project").get(pk=part_pk)
 
         if not part.stl_file:
             logger.debug("estimate_part(%s): no model file, skipping", part_pk)
@@ -326,28 +314,15 @@ def _estimate_part_in_background(part_pk: int) -> None:
             )
             return
 
-        if requested_preset is not None:
-            # Honor the requesting project's context preset instead of resolving.
-            print_preset = requested_preset
-        else:
-            # No build context: resolve against containing projects; refuse to guess when
-            # the containing-project defaults disagree.
-            print_preset, ambiguous = part.resolve_estimation_preset()
-            if ambiguous:
-                logger.info("estimate_part(%s): preset ambiguous across projects", part_pk)
-                Part.objects.filter(pk=part_pk).update(
-                    estimation_status=Part.ESTIMATION_ERROR,
-                    estimation_error="Preset ambiguous across projects — set an override on the part.",
-                    estimated_with_preset=None,
-                )
-                return
-            if not print_preset:
-                logger.debug("estimate_part(%s): no print preset, skipping", part_pk)
-                Part.objects.filter(pk=part_pk).update(
-                    estimation_status=Part.ESTIMATION_NONE,
-                    estimated_with_preset=None,
-                )
-                return
+        # Own preset, else the nearest project default up the tree.
+        print_preset = part.effective_print_preset
+        if not print_preset:
+            logger.debug("estimate_part(%s): no print preset, skipping", part_pk)
+            Part.objects.filter(pk=part_pk).update(
+                estimation_status=Part.ESTIMATION_NONE,
+                estimated_with_preset=None,
+            )
+            return
 
         # Find a compatible machine profile for this preset
         machine_profile = _find_compatible_machine(print_preset)
@@ -477,7 +452,7 @@ def _slice_job_in_background(job_pk: int) -> None:
             if mapping and mapping.orca_filament_profile:
                 filament_profile = mapping.orca_filament_profile
 
-        # The resolved preset is pinned on the job at creation (Variant B); slice with it.
+        # The resolved preset is pinned on the job at creation; slice with it.
         # Legacy jobs created before pinning have a NULL preset — fall back to the first
         # part's own preset so they still slice as before instead of sending None.
         print_preset = job.print_preset or first_part.effective_print_preset

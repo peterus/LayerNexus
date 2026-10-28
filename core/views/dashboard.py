@@ -7,7 +7,7 @@ from typing import Any
 from django.conf import settings
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.models import User
-from django.db.models import Count, F, Sum
+from django.db.models import Count, Sum
 from django.urls import reverse
 from django.utils import timezone
 from django.views.generic import TemplateView
@@ -21,7 +21,6 @@ from core.models import (
     PrintQueue,
     PrintTimeEstimate,
     Project,
-    ProjectPart,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,20 +57,15 @@ class DashboardView(LoginRequiredMixin, TemplateView):
         # Dashboard statistics
         all_jobs = PrintJob.objects.all()
         context["total_projects"] = projects.count()
-        context["total_parts"] = (
-            ProjectPart.objects.filter(project__in=projects).aggregate(total=Sum("quantity"))["total"] or 0
-        )
+        context["total_parts"] = Part.objects.aggregate(total=Sum("quantity"))["total"] or 0
         context["total_jobs"] = all_jobs.count()
         context["completed_jobs"] = all_jobs.filter(status="completed").count()
         context["active_jobs"] = all_jobs.filter(status__in=["slicing", "uploading", "uploaded", "printing"]).count()
         context["failed_jobs"] = all_jobs.filter(status="failed").count()
 
         # Filament statistics
-        linked_part_ids = ProjectPart.objects.filter(project__in=projects).values("part_id")
         context["total_filament_grams"] = (
-            Part.objects.filter(pk__in=linked_part_ids, filament_used_grams__isnull=False).aggregate(
-                total=Sum("filament_used_grams")
-            )["total"]
+            Part.objects.filter(filament_used_grams__isnull=False).aggregate(total=Sum("filament_used_grams"))["total"]
             or 0
         )
 
@@ -219,9 +213,7 @@ class StatisticsView(LoginRequiredMixin, TemplateView):
         # Project stats
         projects = Project.objects.all()
         context["total_projects"] = projects.count()
-        context["total_parts"] = (
-            ProjectPart.objects.filter(project__in=projects).aggregate(total=Sum("quantity"))["total"] or 0
-        )
+        context["total_parts"] = Part.objects.aggregate(total=Sum("quantity"))["total"] or 0
 
         # Job stats
         all_jobs = PrintJob.objects.all()
@@ -246,11 +238,8 @@ class StatisticsView(LoginRequiredMixin, TemplateView):
         )
 
         # Filament stats
-        linked_part_ids_admin = ProjectPart.objects.filter(project__in=projects).values("part_id")
         context["total_filament_grams"] = (
-            Part.objects.filter(pk__in=linked_part_ids_admin, filament_used_grams__isnull=False).aggregate(
-                total=Sum("filament_used_grams")
-            )["total"]
+            Part.objects.filter(filament_used_grams__isnull=False).aggregate(total=Sum("filament_used_grams"))["total"]
             or 0
         )
 
@@ -260,11 +249,10 @@ class StatisticsView(LoginRequiredMixin, TemplateView):
         ).aggregate(total=Sum("print_time_estimate"))["total"]
         context["total_print_time"] = total_seconds
 
-        # Material breakdown via composition edges
+        # Material breakdown over all parts
         context["material_breakdown"] = (
-            ProjectPart.objects.filter(project__in=projects)
-            .values(material=F("part__material"))
-            .annotate(count=Count("part_id", distinct=True), total_qty=Sum("quantity"))
+            Part.objects.values("material")
+            .annotate(count=Count("pk"), total_qty=Sum("quantity"))
             .order_by("-total_qty")
         )
 
@@ -349,16 +337,15 @@ class AdminDashboardView(AdminRequiredMixin, TemplateView):
         # Parts actively estimating
         for part in Part.objects.filter(
             estimation_status=Part.ESTIMATION_ESTIMATING,
-        ).prefetch_related("project_links__project"):
-            first_link = part.project_links.first()
+        ).select_related("project"):
             queue_active.append(
                 {
                     "type": "estimation",
                     "icon": "bi-calculator",
                     "name": part.name,
-                    "detail": first_link.project.name if first_link else "—",
+                    "detail": part.project.name,
                     "url": reverse("core:part_detail", args=[part.pk]),
-                    "detail_url": reverse("core:project_detail", args=[first_link.project.pk]) if first_link else None,
+                    "detail_url": reverse("core:project_detail", args=[part.project_id]),
                 }
             )
 
@@ -400,34 +387,32 @@ class AdminDashboardView(AdminRequiredMixin, TemplateView):
             Part.objects.filter(
                 estimation_status=Part.ESTIMATION_PENDING,
             )
-            .prefetch_related("project_links__project")
+            .select_related("project")
             .order_by("pk")
         ):
-            first_link = part.project_links.first()
             queue_waiting.append(
                 {
                     "type": "estimation",
                     "icon": "bi-calculator",
                     "name": part.name,
-                    "detail": first_link.project.name if first_link else "—",
+                    "detail": part.project.name,
                     "url": reverse("core:part_detail", args=[part.pk]),
-                    "detail_url": reverse("core:project_detail", args=[first_link.project.pk]) if first_link else None,
+                    "detail_url": reverse("core:project_detail", args=[part.project_id]),
                 }
             )
 
         # Estimation errors
         for part in Part.objects.filter(
             estimation_status=Part.ESTIMATION_ERROR,
-        ).prefetch_related("project_links__project"):
-            first_link = part.project_links.first()
+        ).select_related("project"):
             queue_errors.append(
                 {
                     "type": "estimation",
                     "icon": "bi-calculator",
                     "name": part.name,
-                    "detail": first_link.project.name if first_link else "—",
+                    "detail": part.project.name,
                     "url": reverse("core:part_detail", args=[part.pk]),
-                    "detail_url": reverse("core:project_detail", args=[first_link.project.pk]) if first_link else None,
+                    "detail_url": reverse("core:project_detail", args=[part.project_id]),
                     "error": part.estimation_error,
                     "retry_url": reverse("core:part_re_estimate", args=[part.pk]),
                 }
@@ -497,7 +482,7 @@ class AdminDashboardView(AdminRequiredMixin, TemplateView):
 
         # -- Recent activity --------------------------------------------------
         context["recent_projects"] = Project.objects.order_by("-updated_at")[:10]
-        context["recent_parts"] = Part.objects.prefetch_related("project_links__project").order_by("-updated_at")[:10]
+        context["recent_parts"] = Part.objects.select_related("project").order_by("-updated_at")[:10]
         context["recent_jobs"] = PrintJob.objects.select_related("created_by").order_by("-updated_at")[:10]
 
         return context

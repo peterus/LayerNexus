@@ -9,7 +9,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
-from core.models import OrcaPrintPreset, Part, Project, ProjectComponent, ProjectPart
+from core.models import OrcaPrintPreset, Part, Project, ProjectPart
 
 
 def _make_preset() -> OrcaPrintPreset:
@@ -150,7 +150,7 @@ class ProjectReEstimateActionTests(APITestCase):
     def test_reestimate_zero_eligible_returns_queued_zero(self) -> None:
         """A project whose parts all lack STL returns queued=0 (still 202)."""
         project = Project.objects.create(name="Empty")
-        no_stl = Part.objects.create(project=project, quantity=1, name="Bare")
+        Part.objects.create(project=project, quantity=1, name="Bare")
 
         with mock.patch("core.api.views._trigger_part_estimation") as triggered:
             resp = self.client.post(f"/api/v1/projects/{project.pk}/re-estimate/")

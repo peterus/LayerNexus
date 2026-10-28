@@ -1,8 +1,9 @@
 """URL routing for the iterative build API (mounted at ``/api/v1/``).
 
 Top-level resources are registered on a ``DefaultRouter`` (which also provides the
-browsable API root at ``/api/v1/``); composition edges, documents and hardware
-assignments are nested under a project with explicit paths.
+browsable API root at ``/api/v1/``); documents and hardware assignments are nested
+under a project with explicit paths. The tree itself is expressed by ``Project.parent``
+and ``Part.project``.
 """
 
 from __future__ import annotations
@@ -14,14 +15,10 @@ from core.api.views import (
     HardwarePartViewSet,
     OrcaPrintPresetViewSet,
     PartViewSet,
-    ProjectComponentDetail,
-    ProjectComponentListCreate,
     ProjectDocumentDetail,
     ProjectDocumentListCreate,
     ProjectHardwareDetail,
     ProjectHardwareListCreate,
-    ProjectPartDetail,
-    ProjectPartListCreate,
     ProjectViewSet,
     SpoolmanFilamentMappingViewSet,
 )
@@ -37,26 +34,6 @@ router.register("print-presets", OrcaPrintPresetViewSet, basename="print-preset"
 
 urlpatterns = [
     path("", include(router.urls)),
-    path(
-        "projects/<int:project_pk>/components/",
-        ProjectComponentListCreate.as_view(),
-        name="project-components",
-    ),
-    path(
-        "projects/<int:project_pk>/components/<int:pk>/",
-        ProjectComponentDetail.as_view(),
-        name="project-component-detail",
-    ),
-    path(
-        "projects/<int:project_pk>/parts/",
-        ProjectPartListCreate.as_view(),
-        name="project-parts",
-    ),
-    path(
-        "projects/<int:project_pk>/parts/<int:pk>/",
-        ProjectPartDetail.as_view(),
-        name="project-part-detail",
-    ),
     path(
         "projects/<int:project_pk>/documents/",
         ProjectDocumentListCreate.as_view(),

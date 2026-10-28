@@ -6,6 +6,8 @@
 <nav aria-label="breadcrumb" class="mb-3">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="{% url 'core:project_list' %}">Projects</a></li>
+    {% if parent %}{% for ancestor in parent.ancestors %}<li class="breadcrumb-item"><a href="{% url 'core:project_detail' ancestor.pk %}">{{ ancestor.name }}</a></li>{% endfor %}
+    <li class="breadcrumb-item"><a href="{% url 'core:project_detail' parent.pk %}">{{ parent.name }}</a></li>{% endif %}
     <li class="breadcrumb-item active">{% if form.instance.pk %}Edit {{ form.instance.name }}{% else %}New Sub-Project{% endif %}</li>
   </ol>
 </nav>

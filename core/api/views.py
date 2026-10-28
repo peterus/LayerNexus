@@ -1,17 +1,17 @@
 """DRF views for the iterative build API.
 
 Top-level resources (projects, parts, hardware catalogue) are ``ModelViewSet``s exposed
-through a router; composition edges, documents and hardware assignments are nested under
-a project via generic list/create + detail views. Edge creates are idempotent
-(``get_or_create`` against the unique constraints) and the component edge is cycle-guarded
-so a client can retry a build step without producing duplicates or ``500``s.
+through a router; documents and hardware assignments are nested under a project via
+generic list/create + detail views. The project tree is expressed by ``Project.parent``
+and ``Part.project``; deleting a project deletes its subtree and is refused (``409``)
+while unfinished print jobs contain any of its parts.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.db.models.deletion import ProtectedError
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
@@ -26,10 +26,8 @@ from core.api.serializers import (
     HardwarePartSerializer,
     OrcaPrintPresetSerializer,
     PartSerializer,
-    ProjectComponentSerializer,
     ProjectDocumentSerializer,
     ProjectHardwareSerializer,
-    ProjectPartEdgeSerializer,
     ProjectSerializer,
     ProjectTreeSerializer,
     SpoolmanFilamentMappingSerializer,
@@ -39,10 +37,8 @@ from core.models import (
     OrcaPrintPreset,
     Part,
     Project,
-    ProjectComponent,
     ProjectDocument,
     ProjectHardware,
-    ProjectPart,
     SpoolmanFilamentMapping,
 )
 from core.views.helpers import _trigger_part_estimation
@@ -71,14 +67,8 @@ def _jsonify_hardware_requirements(rows: list[dict[str, Any]]) -> list[dict[str,
     return out
 
 
-def _jsonify_variant_progress(progress: dict[str, Any]) -> dict[str, Any]:
-    """Replace the ``part`` model object in each progress row with an id/name ref."""
-    rows = [{**row, "part": _part_ref(row["part"])} for row in progress["parts"]]
-    return {**progress, "parts": rows}
-
-
 class ProjectViewSet(viewsets.ModelViewSet):
-    """CRUD for projects plus a nested read-only assembly ``tree``."""
+    """CRUD for projects plus a nested read-only ``tree``."""
 
     queryset = Project.objects.all()
     serializer_class = ProjectSerializer
@@ -87,9 +77,47 @@ class ProjectViewSet(viewsets.ModelViewSet):
     search_fields = ["name", "description"]
 
     @extend_schema(
+        summary="Delete a project and its whole subtree",
+        description=(
+            "Deletes the project with all sub-projects, parts, documents and hardware "
+            "assignments. Refused with 409 while an unfinished print job (any status "
+            "other than completed, failed or cancelled) contains a part of the subtree."
+        ),
+        responses={
+            204: None,
+            409: inline_serializer(
+                "ProjectDeleteBlocked",
+                fields={
+                    "detail": serializers.CharField(),
+                    "blocking_jobs": serializers.ListField(child=serializers.IntegerField()),
+                },
+            ),
+        },
+    )
+    def destroy(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        """Delete the subtree unless unfinished print jobs still use it.
+
+        Returns:
+            204 on success; 409 with the blocking job ids otherwise.
+        """
+        project = self.get_object()
+        with transaction.atomic():
+            blocking = list(project.blocking_jobs().values_list("pk", flat=True))
+            if blocking:
+                return Response(
+                    {
+                        "detail": "Project cannot be deleted while unfinished print jobs contain its parts.",
+                        "blocking_jobs": blocking,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            project.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @extend_schema(
         summary="Re-queue estimation for all eligible parts in the project tree",
         description=(
-            "Collects every distinct part in the composition DAG, clears its prior "
+            "Collects every part in the project subtree, clears its prior "
             "estimation results and re-queues it for the background worker. Parts "
             "without an STL file, or with no resolvable preset (no override and no "
             "project default), are silently skipped. "
@@ -105,36 +133,22 @@ class ProjectViewSet(viewsets.ModelViewSet):
     )
     @action(detail=True, methods=["post"], url_path="re-estimate")
     def re_estimate(self, request: Request, pk: str | None = None) -> Response:
-        """Queue estimation for every eligible part in the project's composition tree.
+        """Queue estimation for every eligible part in the project's subtree.
 
-        Mirrors :class:`~core.views.projects.ProjectReEstimateView`: collects all
-        distinct parts via the edge-based DAG, clears their existing estimation data,
-        and re-queues them.  Parts without an STL file or with no resolvable preset
-        (no override and no project default) are silently skipped. This is a write
-        action so ``ReadOrProjectManage`` requires the ``core.can_manage_projects``
-        permission.
+        Mirrors :class:`~core.views.projects.ProjectReEstimateView`: clears the existing
+        estimation data of every subtree part and re-queues it. Parts without an STL file
+        or with no resolvable preset (no override and no project default up the tree) are
+        silently skipped. This is a write action so ``ReadOrProjectManage`` requires the
+        ``core.can_manage_projects`` permission.
 
         Returns:
             202 response with ``{"queued": <count>}``.
         """
         project = self.get_object()
-        # ``_collect_parts_with_multiplier`` yields one tuple per path through the
-        # composition DAG, so a part shared by several modules appears repeatedly.
-        # Deduplicate by primary key so each part is reset and queued exactly once.
-        parts = {p.pk: p for p, _mult in project._collect_parts_with_multiplier()}
-        # Variant B: resolve each part's preset in THIS project's context and pin it so the
-        # worker estimates a legacy/shared part with the project-context preset (mirrors
-        # core.views.projects.ProjectReEstimateView).
-        preset_map = project.resolve_estimation_preset_map()
         count = 0
-        for part in parts.values():
-            preset, ambiguous = preset_map.get(part.pk, (None, False))
-            if not part.stl_file:
+        for part, _needed in project._collect_parts_with_multiplier():
+            if not part.stl_file or part.effective_print_preset_id is None:
                 continue
-            if preset is None and not ambiguous:
-                continue
-            # Pin the project-context preset in the transient request channel (not the
-            # provenance field) so the worker estimates with it; clear stale provenance.
             Part.objects.filter(pk=part.pk).update(
                 filament_used_grams=None,
                 filament_used_meters=None,
@@ -142,20 +156,19 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 estimation_status=Part.ESTIMATION_NONE,
                 estimation_error="",
                 estimated_with_preset=None,
-                estimation_requested_preset=preset,
             )
             _trigger_part_estimation(part)
             count += 1
         return Response({"queued": count}, status=status.HTTP_202_ACCEPTED)
 
     @extend_schema(
-        summary="Nested assembly tree for this project",
-        description="Returns the full child-module / part / hardware hierarchy for orientation.",
+        summary="Nested tree for this project",
+        description="Returns the full sub-project / part / hardware hierarchy for orientation.",
         responses={200: ProjectTreeSerializer},
     )
     @action(detail=True, methods=["get"])
     def tree(self, request: Request, pk: str | None = None) -> Response:
-        """Return the nested assembly tree (child modules, parts, hardware) for orientation."""
+        """Return the nested tree (sub-projects, parts, hardware) for orientation."""
         project = self.get_object()
         serializer = ProjectTreeSerializer(project, context=self.get_serializer_context())
         return Response(serializer.data)
@@ -164,9 +177,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
         summary="Aggregate build requirements for this project",
         description=(
             "Returns rolled-up totals and per-filament/hardware breakdowns across the "
-            "full composition DAG: `total_parts_count`, `total_filament_grams/meters`, "
-            "`total_hardware_cost`, `filament_requirements`, `hardware_requirements`, "
-            "`variant_progress`."
+            "project subtree: `total_parts_count`, `total_filament_grams/meters`, "
+            "`total_hardware_cost`, `filament_requirements`, `hardware_requirements`."
         ),
         responses={
             200: inline_serializer(
@@ -178,18 +190,17 @@ class ProjectViewSet(viewsets.ModelViewSet):
                     "total_hardware_cost": serializers.FloatField(allow_null=True),
                     "filament_requirements": serializers.ListField(),
                     "hardware_requirements": serializers.ListField(),
-                    "variant_progress": serializers.DictField(),
                 },
             )
         },
     )
     @action(detail=True, methods=["get"])
     def requirements(self, request: Request, pk: str | None = None) -> Response:
-        """Return the aggregate build requirements (parts, filament, hardware, progress).
+        """Return the aggregate build requirements (parts, filament, hardware).
 
         Reuses the project's existing aggregation methods and sanitises their nested
         model objects into JSON-safe id/name references so an API client can reason
-        about what the whole assembly needs.
+        about what the whole project needs.
         """
         project = self.get_object()
         return Response(
@@ -200,7 +211,6 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 "total_hardware_cost": project.total_hardware_cost,
                 "filament_requirements": _jsonify_filament_requirements(project.filament_requirements()),
                 "hardware_requirements": _jsonify_hardware_requirements(project.hardware_requirements()),
-                "variant_progress": _jsonify_variant_progress(project.variant_progress()),
             }
         )
 
@@ -234,17 +244,17 @@ class ProjectViewSet(viewsets.ModelViewSet):
     def validate(self, request: Request, pk: str | None = None) -> Response:
         """Report completeness issues that would block building the project.
 
-        Flags each distinct part (over the composition DAG) that is missing an STL
+        Flags each part of the project subtree that is missing an STL
         file, missing a ``spoolman_filament_id``, or whose estimation errored, plus the
         project itself when it has no parts at all. ``ok`` is ``True`` only when the
         issue list is empty.
         """
         project = self.get_object()
-        parts = {part.pk: part for part, _mult in project._collect_parts_with_multiplier()}
+        parts = [part for part, _needed in project._collect_parts_with_multiplier()]
         issues: list[dict[str, Any]] = []
         if not parts:
             issues.append({"part_id": None, "part_name": None, "issue": "Project has no parts."})
-        for part in parts.values():
+        for part in parts:
             if not part.stl_file:
                 issues.append({"part_id": part.pk, "part_name": part.name, "issue": "Missing STL file."})
             if part.spoolman_filament_id is None:
@@ -266,7 +276,7 @@ class PartViewSet(viewsets.ModelViewSet):
     @extend_schema(
         summary="Re-queue estimation for this part",
         description=(
-            "Validates prerequisites (STL file present and a resolvable — or ambiguous — "
+            "Validates prerequisites (STL file present and a resolvable "
             "preset), clears any prior estimation results and triggers the background "
             "worker. Returns 400 only if there is no STL file or no resolvable preset "
             "(prior results are preserved). "
@@ -298,14 +308,11 @@ class PartViewSet(viewsets.ModelViewSet):
                 {"detail": "Part has no STL file to estimate."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        preset, ambiguous = part.resolve_estimation_preset()
-        if preset is None and not ambiguous:
+        if part.effective_print_preset_id is None:
             return Response(
                 {"detail": "Part has no resolvable print preset (no override and no project default)."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        # Clear provenance AND any stale request channel: the single-part path carries no
-        # build context, so the worker must resolve the preset itself.
         Part.objects.filter(pk=part.pk).update(
             filament_used_grams=None,
             filament_used_meters=None,
@@ -313,7 +320,6 @@ class PartViewSet(viewsets.ModelViewSet):
             estimation_status=Part.ESTIMATION_NONE,
             estimation_error="",
             estimated_with_preset=None,
-            estimation_requested_preset=None,
         )
         _trigger_part_estimation(part)
         part.refresh_from_db()
@@ -359,9 +365,8 @@ class PartViewSet(viewsets.ModelViewSet):
 
         part.stl_file = uploaded
         part.save()
-        # The model file changed, so any project-context preset queued before this upload is
-        # stale — clear it (and provenance) so the worker resolves fresh for this part.
-        Part.objects.filter(pk=part.pk).update(estimated_with_preset=None, estimation_requested_preset=None)
+        # The model file changed, so the stored estimate's provenance is stale.
+        Part.objects.filter(pk=part.pk).update(estimated_with_preset=None)
         _trigger_part_estimation(part)
         serializer = PartSerializer(part, context=self.get_serializer_context())
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -426,88 +431,6 @@ class _ProjectScopedMixin:
         return get_object_or_404(Project, pk=self.kwargs["project_pk"])
 
 
-class ProjectComponentListCreate(_ProjectScopedMixin, generics.ListCreateAPIView):
-    """List / create sub-project composition edges under a parent project (idempotent)."""
-
-    serializer_class = ProjectComponentSerializer
-
-    def get_queryset(self) -> Any:
-        """Return the edges whose parent is the URL project."""
-        return ProjectComponent.objects.filter(parent_project_id=self.kwargs["project_pk"])
-
-    def get_serializer_context(self) -> dict[str, Any]:
-        """Expose the parent project so the serializer's cycle guard can run."""
-        context = super().get_serializer_context()
-        context["parent_project"] = self.get_project()
-        return context
-
-    def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
-        """Validate (incl. cycle guard) then ``get_or_create`` the edge for idempotency."""
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        parent = self.get_project()
-        child = serializer.validated_data["child_project"]
-        quantity = serializer.validated_data.get("quantity", 1)
-        edge, created = ProjectComponent.objects.get_or_create(
-            parent_project=parent,
-            child_project=child,
-            defaults={"quantity": quantity},
-        )
-        out = self.get_serializer(edge)
-        return Response(out.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
-
-
-class ProjectComponentDetail(_ProjectScopedMixin, generics.RetrieveUpdateDestroyAPIView):
-    """Retrieve / update quantity / delete a single sub-project composition edge."""
-
-    serializer_class = ProjectComponentSerializer
-
-    def get_queryset(self) -> Any:
-        """Scope edges to the URL parent project."""
-        return ProjectComponent.objects.filter(parent_project_id=self.kwargs["project_pk"])
-
-    def get_serializer_context(self) -> dict[str, Any]:
-        """Expose the parent project so the serializer's cycle guard can run."""
-        context = super().get_serializer_context()
-        context["parent_project"] = self.get_project()
-        return context
-
-
-class ProjectPartListCreate(_ProjectScopedMixin, generics.ListCreateAPIView):
-    """List / attach reusable parts to a project via edges (idempotent)."""
-
-    serializer_class = ProjectPartEdgeSerializer
-
-    def get_queryset(self) -> Any:
-        """Return the part edges of the URL project."""
-        return ProjectPart.objects.filter(project_id=self.kwargs["project_pk"])
-
-    def create(self, request: Request, *args: Any, **kwargs: Any) -> Response:
-        """Validate then ``get_or_create`` the project↔part edge for idempotency."""
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        project = self.get_project()
-        part = serializer.validated_data["part"]
-        quantity = serializer.validated_data.get("quantity", 1)
-        edge, created = ProjectPart.objects.get_or_create(
-            project=project,
-            part=part,
-            defaults={"quantity": quantity},
-        )
-        out = self.get_serializer(edge)
-        return Response(out.data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
-
-
-class ProjectPartDetail(_ProjectScopedMixin, generics.RetrieveUpdateDestroyAPIView):
-    """Retrieve / update quantity / delete a single project↔part edge."""
-
-    serializer_class = ProjectPartEdgeSerializer
-
-    def get_queryset(self) -> Any:
-        """Scope edges to the URL project."""
-        return ProjectPart.objects.filter(project_id=self.kwargs["project_pk"])
-
-
 class ProjectDocumentListCreate(_ProjectScopedMixin, generics.ListCreateAPIView):
     """List / upload documents attached to a project (multipart)."""
 
@@ -534,7 +457,7 @@ class ProjectDocumentDetail(_ProjectScopedMixin, generics.RetrieveDestroyAPIView
 
 
 class ProjectHardwareListCreate(_ProjectScopedMixin, generics.ListCreateAPIView):
-    """List / assign hardware parts to a project via edges (idempotent)."""
+    """List / assign hardware parts to a project (idempotent)."""
 
     serializer_class = ProjectHardwareSerializer
 
