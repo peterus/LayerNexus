@@ -551,11 +551,14 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Create one draft job per preset/filament group."""
-        project = get_object_or_404(Project, pk=pk)
+        project = get_object_or_404(Project.objects.prefetch_related(*Project.aggregate_prefetch_lookups()), pk=pk)
 
         groups: dict[tuple[int, int | None], list[tuple[Part, int]]] = defaultdict(list)
         skipped_no_preset = 0
-        for part, needed in project._collect_parts_with_multiplier():
+        # ``build_progress`` scales the need to the whole tree (also when started on a
+        # sub-project), matching the tree-wide ``printed`` count.
+        for row in project.build_progress()["parts"]:
+            part = row["part"]
             if not part.stl_file:
                 continue
             preset_id = part.effective_print_preset_id
@@ -564,7 +567,7 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
                 # create a job that would slice with None.
                 skipped_no_preset += 1
                 continue
-            remaining = max(0, needed - part.printed_quantity)
+            remaining = row["remaining"]
             if remaining > 0:
                 groups[(preset_id, part.spoolman_filament_id)].append((part, remaining))
 

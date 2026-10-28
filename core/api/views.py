@@ -76,6 +76,16 @@ class ProjectViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter]
     search_fields = ["name", "description"]
 
+    #: Actions that walk the whole subtree and therefore get the aggregate prefetch.
+    _TREE_ACTIONS = frozenset({"re_estimate", "requirements", "validate", "tree"})
+
+    def get_queryset(self) -> Any:
+        """Prefetch the subtree for the actions that aggregate over it (no N+1)."""
+        queryset = super().get_queryset()
+        if self.action in self._TREE_ACTIONS:
+            queryset = queryset.prefetch_related(*Project.aggregate_prefetch_lookups())
+        return queryset
+
     @extend_schema(
         summary="Delete a project and its whole subtree",
         description=(

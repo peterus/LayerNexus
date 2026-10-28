@@ -264,20 +264,19 @@ class Project(models.Model):
     def get_descendant_ids(self) -> set[int]:
         """Return the set of PKs of all descendant projects.
 
-        Walks ``subprojects`` iteratively; a visited-set guard makes a corrupt
-        persisted cycle terminate.
+        Walks the tree level by level with one ``values_list`` query per depth
+        (not per node); a visited-set guard makes a corrupt persisted cycle
+        terminate.
 
         Returns:
             Set of project PKs below this project in the tree.
         """
         ids: set[int] = set()
-        stack: list[Project] = [self]
-        while stack:
-            for sub in stack.pop().subprojects.all():
-                if sub.pk in ids or sub.pk == self.pk:
-                    continue
-                ids.add(sub.pk)
-                stack.append(sub)
+        frontier: set[int] = {self.pk}
+        while frontier:
+            children = set(Project.objects.filter(parent_id__in=frontier).values_list("pk", flat=True))
+            frontier = children - ids - {self.pk}
+            ids |= frontier
         return ids
 
     def subtree_ids(self) -> set[int]:
@@ -371,12 +370,28 @@ class Project(models.Model):
         """Total number of individual parts needed, including sub-projects."""
         return sum(needed for _p, needed in self._collect_parts_with_multiplier())
 
+    def chain_multiplier(self) -> int:
+        """Return how many instances of this project the whole tree needs.
+
+        ``1`` for a top-level project; for a sub-project the product of its own
+        ``quantity`` and the quantities of every sub-project above it (the root's
+        quantity is ignored).
+        """
+        if self.parent_id is None:
+            return 1
+        factor = self.quantity
+        for ancestor in self.ancestors()[1:]:
+            factor *= ancestor.quantity
+        return factor
+
     def build_progress(self) -> dict:
         """Per-part print progress of the subtree.
 
-        ``needed`` per part is its tree multiplier count; ``printed`` is
-        :attr:`Part.printed_quantity` (all completed jobs). Each part is capped at
-        its need, so over-printing one part never pushes the project past 100%.
+        ``needed`` per part is its count for the **whole tree** (part quantity ×
+        every sub-project quantity up to the root, see :meth:`chain_multiplier`),
+        because ``printed`` is :attr:`Part.printed_quantity` — all completed jobs of
+        the part, which serve the whole build. Each part is capped at its need, so
+        over-printing one part never pushes the project past 100%.
 
         Returns:
             Dict with keys ``percent`` (int 0–100), ``needed`` (int), ``printed``
@@ -385,7 +400,7 @@ class Project(models.Model):
         rows: list[dict] = []
         total_needed = 0
         total_printed = 0
-        for part, needed in self._collect_parts_with_multiplier():
+        for part, needed in self._collect_parts_with_multiplier(self.chain_multiplier()):
             printed = part.printed_quantity
             total_needed += needed
             total_printed += min(printed, needed)

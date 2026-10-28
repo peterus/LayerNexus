@@ -421,6 +421,18 @@ class ProjectTreeAggregationTests(TestCase):
         self.assertEqual(self.root.progress_percent, 100)
         self.assertEqual(self.root.aggregated_status, Project.STATUS_COMPLETE)
 
+    def test_subproject_progress_scales_need_to_whole_tree(self):
+        """A sub-project's need includes its own and its ancestors' quantities."""
+        self.assertEqual(self.root.chain_multiplier(), 1)
+        self.assertEqual(self.sub.chain_multiplier(), 2)
+        self.assertEqual(self.leaf.chain_multiplier(), 6)
+        self._complete_job(12)
+        self.assertEqual(self.leaf.build_progress()["needed"], 24)
+        self.assertEqual(self.leaf.progress_percent, 50)
+        self.assertEqual(self.sub.progress_percent, 50)
+        self.assertEqual(self.root.progress_percent, 50)
+        self.assertEqual(self.leaf.aggregated_status, Project.STATUS_IN_PROGRESS)
+
     def test_remaining_filament_uses_build_progress(self):
         """Remaining filament = filament per part × parts still to print."""
         self._complete_job(10)

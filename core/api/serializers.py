@@ -33,7 +33,7 @@ class ProjectSerializer(serializers.ModelSerializer):
 
     parent = serializers.PrimaryKeyRelatedField(queryset=Project.objects.all(), allow_null=True, required=False)
     default_print_preset = serializers.PrimaryKeyRelatedField(
-        queryset=OrcaPrintPreset.objects.all(),
+        queryset=OrcaPrintPreset.objects.filter(state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True),
         allow_null=True,
         required=False,
     )
@@ -87,6 +87,12 @@ class PartSerializer(serializers.ModelSerializer):
     read-only here — it is uploaded through the dedicated multipart
     ``POST /parts/{id}/stl/`` endpoint so ordinary create/update stays JSON.
     """
+
+    print_preset = serializers.PrimaryKeyRelatedField(
+        queryset=OrcaPrintPreset.objects.filter(state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True),
+        allow_null=True,
+        required=False,
+    )
 
     class Meta:
         model = Part

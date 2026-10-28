@@ -86,6 +86,18 @@ class ApiTreeContractTests(APITestCase):
         self.sub = Project.objects.create(name="S", parent=self.root, quantity=2)
         self.leaf = Project.objects.create(name="T", parent=self.sub, quantity=3)
 
+    def test_unresolved_preset_rejected(self) -> None:
+        """Only resolved, instantiable presets can be assigned through the API."""
+        raw = OrcaPrintPreset.objects.create(name="Raw", orca_name="Raw", instantiation=False)
+        resp = self.client.patch(f"/api/v1/projects/{self.sub.pk}/", {"default_print_preset": raw.pk}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("default_print_preset", resp.data)
+        resp = self.client.post(
+            "/api/v1/parts/", {"name": "x", "project": self.leaf.pk, "print_preset": raw.pk}, format="json"
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("print_preset", resp.data)
+
     def test_create_part_requires_project(self) -> None:
         resp = self.client.post("/api/v1/parts/", {"name": "Bracket"}, format="json")
         self.assertEqual(resp.status_code, 400)

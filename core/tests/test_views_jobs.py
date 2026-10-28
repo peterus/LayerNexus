@@ -94,6 +94,21 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
     def _url(self):
         return reverse("core:project_create_jobs", args=[self.project.pk])
 
+    def test_create_jobs_on_subproject_uses_tree_wide_need(self):
+        """Started on a sub-project, the need is scaled up to the root (prints are tree-wide)."""
+        sub = Project.objects.create(name="Axle", parent=self.project, quantity=2)
+        part = Part.objects.create(
+            project=sub, quantity=3, name="Hub", stl_file=SimpleUploadedFile("hub.stl", b"solid hub")
+        )
+        done = PrintJob.objects.create(status=PrintJob.STATUS_COMPLETED)
+        PrintJobPart.objects.create(print_job=done, part=part, quantity=3)
+        PrintJobPlate.objects.create(print_job=done, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
+
+        self.client.post(reverse("core:project_create_jobs", args=[sub.pk]))
+
+        entry = PrintJobPart.objects.exclude(print_job=done).get(part=part)
+        self.assertEqual(entry.quantity, 3)  # needs 2 × 3 = 6, 3 already printed
+
     def test_creates_single_job_for_compatible_parts(self):
         """All parts with same preset/filament end up in one job."""
         Part.objects.create(

@@ -76,7 +76,7 @@ class TreeMigrationTests(TransactionTestCase):
     def test_backfill_clean_data(self) -> None:
         """Edges become the tree fields; a stale legacy parent without an edge is cleared."""
         root, unrelated, sub, part = self._clean_tree()
-        stale = self.Project.objects.create(name="Stale", parent=root)
+        stale = self.Project.objects.create(name="Stale", parent=root, quantity=3)
 
         self._migrate()
 
@@ -90,6 +90,7 @@ class TreeMigrationTests(TransactionTestCase):
         self.assertEqual(sub.quantity, 2)
         self.assertIsNone(root.parent_id)
         self.assertIsNone(stale.parent_id)
+        self.assertEqual(stale.quantity, 1)
 
     def test_abort_on_part_in_two_projects(self) -> None:
         """A part linked into two projects aborts the migration with its pk."""
@@ -110,6 +111,19 @@ class TreeMigrationTests(TransactionTestCase):
             self._migrate()
         self.assertIn("Tree migration aborted", str(ctx.exception))
         self.assertIn(f"Project {sub.pk}", str(ctx.exception))
+
+    def test_abort_on_parent_cycle(self) -> None:
+        """Two projects that are each other's single parent abort the migration."""
+        self._clean_tree()
+        a = self.Project.objects.create(name="A")
+        b = self.Project.objects.create(name="B")
+        self.ProjectComponent.objects.create(parent_project=a, child_project=b, quantity=1)
+        self.ProjectComponent.objects.create(parent_project=b, child_project=a, quantity=1)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._migrate()
+        self.assertIn("parent cycle", str(ctx.exception))
+        self.assertIn(str(sorted([a.pk, b.pk])), str(ctx.exception))
 
     def test_abort_on_part_without_edge(self) -> None:
         """A part that belongs to no project aborts the migration with its pk."""

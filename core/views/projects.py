@@ -325,7 +325,7 @@ class ProjectReEstimateView(ProjectManageMixin, View):
         Returns:
             Redirect to the project detail page.
         """
-        project = get_object_or_404(Project, pk=pk)
+        project = get_object_or_404(Project.objects.prefetch_related(*Project.aggregate_prefetch_lookups()), pk=pk)
         count = 0
         for part, _needed in project._collect_parts_with_multiplier():
             if not part.stl_file or part.effective_print_preset_id is None:
