@@ -4,6 +4,7 @@ import logging
 from collections.abc import Iterable
 
 from django.contrib.auth.models import User
+from django.db import transaction
 from django.db.models import QuerySet
 
 from core.models import Part, Project
@@ -52,15 +53,16 @@ def _trigger_part_estimation(part: Part) -> None:
 
 
 def _requeue_stale_estimates(parts: Iterable[Part]) -> int:
-    """Re-queue estimation for copied parts whose effective preset has changed.
+    """Re-queue estimation for copied or moved parts whose effective preset has changed.
 
-    A copied part keeps the estimate of its original. If its effective print preset
-    (resolved bottom-up in the new location) differs from the preset that produced
-    that estimate, the estimate is cleared and the part is queued again. Parts with
-    an unchanged preset keep their copied estimate.
+    A copied or moved part keeps its estimate. If its effective print preset (resolved
+    bottom-up in the new location) differs from the preset that produced that estimate,
+    the estimate is cleared and the part is queued again (or left at ``none`` if no
+    preset resolves any more). Parts with an unchanged preset keep their estimate. All
+    resets run in one transaction and the worker is started once afterwards.
 
     Args:
-        parts: The freshly copied parts.
+        parts: The copied or moved parts.
 
     Returns:
         Number of parts that were queued for estimation.
@@ -69,27 +71,31 @@ def _requeue_stale_estimates(parts: Iterable[Part]) -> int:
     project_presets: dict[int, int | None] = {}
     # One shared instance per project, so each ancestor chain is loaded (and cached) once.
     projects: dict[int, Project] = {}
-    for part in parts:
-        if not part.stl_file:
-            continue
-        part.project = projects.setdefault(part.project_id, part.project)
-        if part.print_preset_id is not None:
-            effective_id = part.print_preset_id
-        else:
-            if part.project_id not in project_presets:
-                project_presets[part.project_id] = part.project.effective_default_print_preset_id
-            effective_id = project_presets[part.project_id]
-        if effective_id == part.estimated_with_preset_id:
-            continue
-        Part.objects.filter(pk=part.pk).update(
-            filament_used_grams=None,
-            filament_used_meters=None,
-            estimated_print_time=None,
-            estimation_status=Part.ESTIMATION_NONE,
-            estimation_error="",
-            estimated_with_preset=None,
-        )
-        if effective_id is not None:
-            _trigger_part_estimation(part)
-            count += 1
+    with transaction.atomic():
+        for part in parts:
+            if not part.stl_file:
+                continue
+            part.project = projects.setdefault(part.project_id, part.project)
+            if part.print_preset_id is not None:
+                effective_id = part.print_preset_id
+            else:
+                if part.project_id not in project_presets:
+                    project_presets[part.project_id] = part.project.effective_default_print_preset_id
+                effective_id = project_presets[part.project_id]
+            if effective_id == part.estimated_with_preset_id:
+                continue
+            Part.objects.filter(pk=part.pk).update(
+                filament_used_grams=None,
+                filament_used_meters=None,
+                estimated_print_time=None,
+                estimation_status=Part.ESTIMATION_NONE if effective_id is None else Part.ESTIMATION_PENDING,
+                estimation_error="",
+                estimated_with_preset=None,
+            )
+            if effective_id is not None:
+                count += 1
+    if count:
+        # Started after the commit so the worker sees the pending parts.
+        _start_orcaslicer_worker()
+        logger.info("Re-queued estimation for %d part(s) with a changed preset", count)
     return count

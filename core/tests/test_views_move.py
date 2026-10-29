@@ -215,10 +215,36 @@ class MoveViewTests(_RBACTestBase):
     def test_part_post_without_project_keeps_project(self, _worker: mock.Mock) -> None:
         data = self._part_data(self.leaf)
         del data["project"]
+        Part.objects.filter(pk=self.part.pk).update(estimated_with_preset=None)  # e.g. estimation failed
         resp = self.client.post(reverse("core:part_update", args=[self.part.pk]), data)
         self.assertEqual(resp.status_code, 302)
         self.part.refresh_from_db()
         self.assertEqual(self.part.project, self.leaf)
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_SUCCESS)  # not counted as a move
+        _worker.assert_not_called()
+
+    def test_subproject_post_without_parent_does_not_requeue(self, worker: mock.Mock) -> None:
+        Part.objects.filter(pk=self.part.pk).update(estimated_with_preset=None)
+        data = self._project_data(self.sub, self.root)
+        del data["parent"]
+        resp = self._edit_project(self.sub, data)
+        self.assertEqual(resp.status_code, 302)
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_SUCCESS)
+        worker.assert_not_called()
+
+    def test_subtree_move_starts_worker_once(self, worker: mock.Mock) -> None:
+        for index in range(3):
+            Part.objects.create(
+                name=f"extra-{index}",
+                project=self.leaf,
+                stl_file=f"stl_files/extra-{index}.stl",
+                estimation_status=Part.ESTIMATION_SUCCESS,
+                estimated_with_preset=self.preset_x,
+            )
+        self._edit_project(self.sub, self._project_data(self.sub, self.other))
+        self.assertEqual(Part.objects.filter(estimation_status=Part.ESTIMATION_PENDING).count(), 4)
+        worker.assert_called_once()
 
     def test_part_post_with_empty_project_is_rejected(self, _worker: mock.Mock) -> None:
         data = {**self._part_data(self.leaf), "project": ""}

@@ -243,7 +243,9 @@ class ProjectUpdateView(ProjectManageMixin, UpdateView):
                 form.add_error("parent", ProjectEditForm.CYCLE_ERROR)
                 return self.form_invalid(form)
             self.object = form.save()
-        if {"parent", "default_print_preset"} & set(form.changed_data):
+        # Compare stored values: changed_data also flags a parent key that was simply omitted.
+        before = (form.initial.get("parent"), form.initial.get("default_print_preset"))
+        if before != (self.object.parent_id, self.object.default_print_preset_id):
             _requeue_stale_estimates(
                 Part.objects.filter(project_id__in=self.object.subtree_ids()).select_related("project")
             )

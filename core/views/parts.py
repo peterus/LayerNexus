@@ -237,7 +237,8 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
         preset_changed = "print_preset" in form.changed_data
         filament_changed = "spoolman_filament_id" in form.changed_data
         needs_re_estimate = stl_changed or preset_changed or filament_changed
-        moved = "project" in form.changed_data
+        # Compare stored values: changed_data also flags a project key that was simply omitted.
+        moved = form.initial.get("project") != self.object.project_id
 
         messages.success(self.request, "Part updated successfully.")
         response = super().form_valid(form)
