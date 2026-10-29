@@ -163,7 +163,7 @@ class Part(models.Model):
         """Copy this part (content, never history) into ``project``.
 
         Copies the scalar fields, the estimate fields and the ``PrintTimeEstimate``
-        rows, and writes the STL/3MF as a new file. Print history (``PrintJobPart``)
+        rows (without the measured ``actual_time``, which is history), and writes the STL/3MF as a new file. Print history (``PrintJobPart``)
         and ``FileVersion`` rows are not copied. An in-flight estimation
         (``pending``/``estimating``) resets the copy's estimation status to ``none``
         so it is never stuck; a model file missing on disk also drops the copied
@@ -226,7 +226,7 @@ class Part(models.Model):
                 part=copy,
                 printer_id=estimate.printer_id,
                 estimated_time=estimate.estimated_time,
-                actual_time=estimate.actual_time,
+                # actual_time is measured print history and is never copied.
             )
             # Oldest first, so the copies keep the newest-first default order.
             for estimate in reversed(self.time_estimates.all())
