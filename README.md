@@ -298,8 +298,8 @@ curl -s -H "$H" $API/projects/$ASM/tree/
 curl -s -H "$H" $API/projects/$ASM/requirements/
 curl -s -H "$H" $API/projects/$ASM/validate/     # {"ok": false, "issues": [...]} until every part is complete
 
-# 5. Reuse: find an existing part and copy it into the module
-SRC=$(curl -s -H "$H" "$API/parts/?search=axle" | jq '.[0].id')
+# 5. Reuse: find an existing part (e.g. from another project) and copy it into the module
+SRC=$(curl -s -H "$H" "$API/parts/?search=wheel" | jq '.[0].id')
 curl -s -H "$H" -d "project=$MOD" $API/parts/$SRC/copy/
 ```
 

@@ -107,7 +107,8 @@ This affects:
   different effective preset, in which case it is re-estimated.
 - **Add existing:** the **Add Existing Part** and **Add Existing Sub-Project** buttons on a
   project page add a **copy** of the chosen part or project. Later changes to the original
-  do not affect the copy, and vice versa. A project cannot be added into its own tree.
+  do not affect the copy, and vice versa. A project cannot be copied into itself or one of
+  its own sub-projects, so the current project and its parent projects are not offered.
 
 ### Moving parts and sub-projects
 
