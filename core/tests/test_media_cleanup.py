@@ -8,13 +8,26 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
+from django.contrib.auth.models import Group, User
 from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.db import transaction
 from django.test import TestCase, override_settings
+from django.urls import reverse
+from rest_framework.authtoken.models import Token
 
-from core.models import FileVersion, Part, PrintJob, PrintJobPart, PrintJobPlate, Project, ProjectDocument
+from core.models import (
+    FileVersion,
+    OrcaPrintPreset,
+    Part,
+    PrintJob,
+    PrintJobPart,
+    PrintJobPlate,
+    Project,
+    ProjectDocument,
+)
 from core.signals import MEDIA_FIELDS, file_is_referenced
 
 #: Smallest valid GIF, so ``ImageField`` accepts it.
@@ -166,6 +179,116 @@ class FileDeleteSignalTests(_MediaTestBase):
         ):
             self.part.delete()
 
+    def test_database_error_after_commit_is_logged_and_other_files_still_go(self) -> None:
+        """A failing callback neither raises (a committed delete must not 500) nor stops the others."""
+        names = [self.part.stl_file.name, self.sub.image.name, self.root.image.name]
+        with (
+            mock.patch(
+                "core.signals.file_is_referenced", side_effect=[RuntimeError("database is locked"), False, False]
+            ),
+            self.assertLogs("core.signals", level="WARNING"),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            self.root.delete()
+        self.assertEqual(sum(self.exists(name) for name in names), 1)
+
+    def test_deleting_plate_row_removes_its_files(self) -> None:
+        """Plate files go only with their own row (e.g. a re-slice), never with a part."""
+        job = PrintJob.objects.create(name="job", status=PrintJob.STATUS_SLICED)
+        plate = PrintJobPlate.objects.create(print_job=job, plate_number=1)
+        plate.gcode_file.save("plate.gcode", ContentFile(b"G28"), save=False)
+        plate.thumbnail.save("thumb.png", ContentFile(b"png"), save=False)
+        plate.save()
+        names = [plate.gcode_file.name, plate.thumbnail.name]
+        with self.captureOnCommitCallbacks(execute=True):
+            job.plates.all().delete()
+        self.assertEqual([name for name in names if self.exists(name)], [])
+
+    def test_replaced_stl_kept_while_part_is_in_unfinished_job(self) -> None:
+        job = PrintJob.objects.create(name="busy", status=PrintJob.STATUS_SLICING)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
+        old = self.part.stl_file.name
+        with self.captureOnCommitCallbacks(execute=True):
+            self.part.stl_file = SimpleUploadedFile("new.stl", b"solid new")
+            self.part.save()
+        self.assertTrue(self.exists(old))
+
+    def test_replaced_stl_kept_while_estimating(self) -> None:
+        Part.objects.filter(pk=self.part.pk).update(estimation_status=Part.ESTIMATION_ESTIMATING)
+        old = self.part.stl_file.name
+        with self.captureOnCommitCallbacks(execute=True):
+            self.part.stl_file = SimpleUploadedFile("new.stl", b"solid new")
+            self.part.save()
+        self.assertTrue(self.exists(old))
+
+
+@mock.patch("core.views.helpers._start_orcaslicer_worker")
+class FileReplaceViewTests(_MediaTestBase):
+    """Replacing a file through the real web/API paths removes the old file after commit."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.user = User.objects.create_user(username="designer", password="pw")
+        self.user.groups.add(Group.objects.get(name="Designer"))
+        self.client.login(username="designer", password="pw")
+        self.token = Token.objects.create(user=self.user)
+        preset = OrcaPrintPreset.objects.create(
+            name="X", orca_name="X", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        self.project = Project.objects.create(
+            name="R", default_print_preset=preset, image=SimpleUploadedFile("cover.gif", GIF)
+        )
+        self.part = self.make_part(self.project)
+
+    def test_part_edit_upload_removes_old_stl(self, _worker: mock.Mock) -> None:
+        old = self.part.stl_file.name
+        with self.captureOnCommitCallbacks(execute=True):
+            resp = self.client.post(
+                reverse("core:part_update", args=[self.part.pk]),
+                {
+                    "name": "p",
+                    "project": self.project.pk,
+                    "quantity": 1,
+                    "color": "",
+                    "material": "",
+                    "stl_file": SimpleUploadedFile("new.stl", b"solid new"),
+                },
+            )
+        self.assertEqual(resp.status_code, 302)
+        self.part.refresh_from_db()
+        self.assertNotEqual(self.part.stl_file.name, old)
+        self.assertFalse(self.exists(old))
+        self.assertTrue(self.exists(self.part.stl_file.name))
+
+    def test_api_stl_upload_removes_old_stl(self, _worker: mock.Mock) -> None:
+        old = self.part.stl_file.name
+        with self.captureOnCommitCallbacks(execute=True):
+            resp = self.client.post(
+                f"/api/v1/parts/{self.part.pk}/stl/",
+                {"stl_file": SimpleUploadedFile("api.stl", b"solid api")},
+                HTTP_AUTHORIZATION=f"Token {self.token.key}",
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(self.exists(old))
+
+    def test_project_edit_new_image_removes_old_image(self, _worker: mock.Mock) -> None:
+        old = self.project.image.name
+        with self.captureOnCommitCallbacks(execute=True):
+            resp = self.client.post(
+                reverse("core:project_update", args=[self.project.pk]),
+                {
+                    "name": "R",
+                    "description": "",
+                    "parent": "",
+                    "default_print_preset": self.project.default_print_preset_id,
+                    "image": SimpleUploadedFile("new.gif", GIF, content_type="image/gif"),
+                },
+            )
+        self.assertEqual(resp.status_code, 302)
+        self.project.refresh_from_db()
+        self.assertNotEqual(self.project.image.name, old)
+        self.assertFalse(self.exists(old))
+
 
 class CleanupOrphanMediaCommandTests(_MediaTestBase):
     """``manage.py cleanup_orphan_media`` lists (dry run) or deletes unreferenced files."""
@@ -245,3 +368,50 @@ class CleanupOrphanMediaCommandTests(_MediaTestBase):
         self._run("--delete")
         output = self._run()
         self.assertIn("0 orphaned files", output)
+
+    def test_symlinks_are_skipped(self) -> None:
+        """Linked files and directories (e.g. an archive outside MEDIA_ROOT) are never listed or deleted."""
+        outside = Path(tempfile.mkdtemp(prefix="layernexus-outside-"))
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        (outside / "keep.stl").write_bytes(b"x")
+        os.symlink(outside, Path(self.media_root) / "stl_files" / "archive")
+        os.symlink(outside / "keep.stl", Path(self.media_root) / "stl_files" / "link.stl")
+        output = self._run("--delete", "--min-age", "0")
+        self.assertNotIn("archive", output)
+        self.assertNotIn("link.stl", output)
+        self.assertTrue((outside / "keep.stl").is_file())
+
+    def test_file_vanishing_during_scan_is_skipped(self) -> None:
+        real = default_storage.get_modified_time
+
+        def flaky(name: str):  # noqa: ANN202
+            if name == "stl_files/orphan.stl":
+                raise FileNotFoundError(name)
+            return real(name)
+
+        with mock.patch.object(default_storage, "get_modified_time", side_effect=flaky):
+            output = self._run()
+        self.assertIn("3 orphaned files", output)
+
+    def test_delete_rechecks_reference_and_reports_errors(self) -> None:
+        real_delete = default_storage.delete
+
+        def failing(name: str) -> None:
+            if name == "project_documents/old.pdf":
+                raise PermissionError("denied")
+            real_delete(name)
+
+        err = StringIO()
+        with (
+            mock.patch(
+                "core.management.commands.cleanup_orphan_media.file_is_referenced",
+                side_effect=lambda name: name == "stl_files/orphan.stl",
+            ),
+            mock.patch.object(default_storage, "delete", side_effect=failing),
+        ):
+            out = StringIO()
+            call_command("cleanup_orphan_media", "--delete", stdout=out, stderr=err)
+        self.assertTrue(self.exists("stl_files/orphan.stl"))  # referenced again since the scan
+        self.assertTrue(self.exists("project_documents/old.pdf"))
+        self.assertIn("Could not delete project_documents/old.pdf", err.getvalue())
+        self.assertIn("Deleted 2", out.getvalue())

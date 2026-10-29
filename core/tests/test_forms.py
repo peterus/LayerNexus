@@ -89,6 +89,24 @@ class ProjectEditFormTests(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("quantity", form.errors)
 
+    def test_missing_parent_key_keeps_current_parent(self):
+        """A POST without the parent field keeps the sub-project where it is (and its quantity)."""
+        root = Project.objects.create(name="Root")
+        sub = Project.objects.create(name="Sub", parent=root, quantity=3, default_print_preset=_default_preset())
+        form = ProjectEditForm(
+            instance=sub,
+            data={
+                "name": "Sub",
+                "description": "",
+                "quantity": "3",
+                "default_print_preset": sub.default_print_preset_id,
+            },
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        form.save()
+        sub.refresh_from_db()
+        self.assertEqual((sub.parent_id, sub.quantity), (root.pk, 3))
+
     def test_parent_moves_root_under_project(self):
         """A root posted with a parent becomes a sub-project; a root's quantity is not editable."""
         parent = Project.objects.create(name="Parent Project")

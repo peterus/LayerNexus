@@ -101,9 +101,12 @@ class ProjectAdmin(_UnfinishedJobDeleteGuardMixin, admin.ModelAdmin):
 
     def _blocking_jobs(self, objs: Iterable[Project]) -> QuerySet[PrintJob]:
         """Unfinished jobs containing a part of any of the projects' subtrees."""
-        ids: set[int] = set()
-        for project in objs:
-            ids |= project.subtree_ids()
+        # One breadth-first walk over all selected roots (one query per tree level).
+        ids: set[int] = {project.pk for project in objs}
+        frontier = set(ids)
+        while frontier:
+            frontier = set(Project.objects.filter(parent_id__in=frontier).values_list("pk", flat=True)) - ids
+            ids |= frontier
         return (
             PrintJob.objects.filter(job_parts__part__project_id__in=ids)
             .exclude(status__in=PrintJob.TERMINAL_STATUSES)
@@ -117,10 +120,15 @@ class PartAdmin(_UnfinishedJobDeleteGuardMixin, admin.ModelAdmin):
     list_filter = ("color", "material")
     search_fields = ("name",)
 
+    @staticmethod
+    def _part_ids(objs: Iterable[Part]) -> QuerySet | list[int]:
+        """Return a subquery for a queryset (bulk action), else the PKs (one bind parameter each)."""
+        return objs.values("pk") if isinstance(objs, QuerySet) else [part.pk for part in objs]
+
     def _blocking_jobs(self, objs: Iterable[Part]) -> QuerySet[PrintJob]:
         """Unfinished jobs containing any of the parts."""
         return (
-            PrintJob.objects.filter(job_parts__part__in=list(objs))
+            PrintJob.objects.filter(job_parts__part__in=self._part_ids(objs))
             .exclude(status__in=PrintJob.TERMINAL_STATUSES)
             .distinct()
         )

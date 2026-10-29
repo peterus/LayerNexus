@@ -7,6 +7,7 @@ and are never scanned. Dry run by default; ``--delete`` removes the orphans.
 
 from __future__ import annotations
 
+import os
 import posixpath
 from collections.abc import Iterator
 from datetime import timedelta
@@ -22,8 +23,19 @@ from core.signals import MEDIA_FIELDS, file_is_referenced, referenced_names
 DEFAULT_MIN_AGE_MINUTES = 60
 
 
+def _is_symlink(storage: Storage, name: str) -> bool:
+    """Return whether ``name`` is a symlink on a local storage (never for remote storages)."""
+    try:
+        return os.path.islink(storage.path(name))
+    except NotImplementedError:
+        return False
+
+
 def _walk(storage: Storage, directory: str) -> Iterator[str]:
     """Yield the storage name of every file below ``directory`` (recursively).
+
+    Symlinks (files and directories) are skipped, so the scan never leaves the
+    upload directories, e.g. into a linked archive outside ``MEDIA_ROOT``.
 
     Args:
         storage: Storage backend to list.
@@ -37,9 +49,13 @@ def _walk(storage: Storage, directory: str) -> Iterator[str]:
     except FileNotFoundError:
         return
     for name in files:
-        yield posixpath.join(directory, name)
+        path = posixpath.join(directory, name)
+        if not _is_symlink(storage, path):
+            yield path
     for subdir in subdirs:
-        yield from _walk(storage, posixpath.join(directory, subdir))
+        path = posixpath.join(directory, subdir)
+        if not _is_symlink(storage, path):
+            yield from _walk(storage, path)
 
 
 class Command(BaseCommand):
@@ -81,10 +97,14 @@ class Command(BaseCommand):
             for name in _walk(storage, directory):
                 if name in referenced:
                     continue
-                if storage.get_modified_time(name) > cutoff:
+                try:
+                    modified, size = storage.get_modified_time(name), storage.size(name)
+                except FileNotFoundError:
+                    continue  # removed while scanning
+                if modified > cutoff:
                     too_new += 1
                     continue
-                orphans.append((storage, name, storage.size(name)))
+                orphans.append((storage, name, size))
 
         for _storage, name, _size in orphans:
             self.stdout.write(name)

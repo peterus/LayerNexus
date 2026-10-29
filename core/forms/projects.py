@@ -98,8 +98,15 @@ class ProjectEditForm(forms.ModelForm):
             del self.fields["quantity"]
 
     def clean(self) -> dict:
-        """Require a preset on a top-level project; a top-level project has quantity 1."""
+        """Require a preset on a top-level project; a top-level project has quantity 1.
+
+        Only an explicitly submitted empty ``parent`` makes a project top-level: a POST
+        without the field (an edit page opened before moving existed, a script) keeps
+        the current parent instead of silently turning a sub-project into a root.
+        """
         cleaned_data = super().clean()
+        if self.is_bound and self.add_prefix("parent") not in self.data and "parent" in cleaned_data:
+            cleaned_data["parent"] = self.instance.parent
         if "parent" in cleaned_data and cleaned_data["parent"] is None:
             if "default_print_preset" in cleaned_data and cleaned_data["default_print_preset"] is None:
                 self.add_error("default_print_preset", "Top-level projects need a default print preset.")
