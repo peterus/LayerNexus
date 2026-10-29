@@ -619,6 +619,22 @@ class StatusWatchdogTests(IsolatedAsyncioTestCase):
         self.assertEqual(_subscribe_count(ws), 1)
         self.assertFalse(ws.closed)
 
+    async def test_watchdog_paused_by_live_webhooks_state(self) -> None:
+        for state in ("shutdown", "error"):
+            with self.subTest(state=state):
+                frames = [
+                    _subscribe_response({"webhooks": {"state": "ready"}}),
+                    _frame("notify_status_update", [{"webhooks": {"state": state}}, 2.0]),
+                ]
+                ws = FakeWebSocket(frames, hang=True)
+
+                with self.assertNoLogs("core.services.moonraker_ws", level="WARNING"):
+                    await self._listen(ws, run_for=0.7)
+
+                self.assertFalse(self.client._klippy_ready)
+                self.assertEqual(_subscribe_count(ws), 1)
+                self.assertFalse(ws.closed)
+
     async def test_watchdog_resumed_by_klippy_ready(self) -> None:
         ws = FakeWebSocket([_frame("notify_klippy_shutdown"), _frame("notify_klippy_ready")], hang=True)
 

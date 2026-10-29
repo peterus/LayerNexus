@@ -69,9 +69,14 @@ entry (retry after cancel, e.g. entry 26 with 17.9 %) starts showing its stale p
      both reset the timer.
    - The client tracks Klippy readiness from notifications: `notify_klippy_shutdown` /
      `notify_klippy_disconnected` → not ready (watchdog paused, no warnings);
-     `notify_klippy_ready` → ready (re-subscribe, timer restarts). Initial state after a
-     (re)connect: ready. So a printer left in shutdown overnight produces no
-     re-subscribe/close loop and no log spam.
+     `notify_klippy_ready` → ready (re-subscribe, timer restarts). It also subscribes
+     `webhooks.state`: the subscribe response (and live status updates carrying it) set
+     ready only for `"ready"`, so a connection made while Klippy is already in
+     startup/shutdown/error starts paused (state predates the connection, so no shutdown
+     notification arrives). Missing `webhooks.state` → ready. A rejected subscribe (Klippy
+     host not connected) → not ready, and the watchdog quietly retries the subscribe once
+     per window without reconnecting. So a printer left in shutdown overnight produces
+     no re-subscribe/close loop and no log spam. *(Refined during review of PR #93.)*
 4. **Reset progress on start.** `mark_queue_entry_started` sets `progress=None` and
    `status_updated_at=None` together with `status=printing`.
 5. **Regression test per start path** (mocked Moonraker, never the real API): every path
