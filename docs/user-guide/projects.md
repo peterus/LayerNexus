@@ -13,30 +13,34 @@ Projects are the core organizational unit in LayerNexus. They group parts, docum
 | **Name** | Project name (required) |
 | **Description** | Optional description or notes |
 | **Cover Image** | Optional cover image displayed in lists and detail views |
-| **Default Print Preset** | **Required.** The OrcaSlicer print preset used for every part in this project that has no preset of its own. |
+| **Default Print Preset** | **Required for top-level projects.** The OrcaSlicer print preset used for every part in this project (and its sub-projects) that has no preset of its own. |
 
 4. Click **Save**.
 
 ### Print Presets
 
-Every project must have a **default print preset**. This preset drives how each part in
-the project is sliced and estimated:
+The print preset of a part is resolved **bottom-up**:
 
 - A part with its **own** print preset override always uses that override.
-- A part **without** an override uses the default preset of the project it is built
-  under — resolved top-down, per build path. A part shared by two modules is therefore
-  sliced with each module's preset on the respective build.
+- Otherwise it uses the default preset of the project it belongs to.
+- If that project has no default preset, the nearest parent project with one is used
+  (shown as *inherited from parent* in the forms).
+
+Only **top-level projects** must have a default print preset — they anchor the
+inheritance, so every part always resolves to exactly one preset. On sub-projects the
+preset is optional; set it only where a module should be sliced differently from its
+parent.
+
 - Creating jobs from a project produces **one draft job per distinct preset + filament**
   combination, and each job records the preset it was created with.
-- Adding a **shared** part (used in projects with different presets) to a job from the
-  part page asks you to **pick the preset** first.
-- Estimating such a shared part with no override reports *"Preset ambiguous — set an
-  override"* instead of guessing; set a part-level override to resolve it.
+- Changing a project's default preset, or moving a part or sub-project to a place with a
+  different effective preset, automatically re-queues the estimates of the affected parts.
 
 The REST API follows the same rules: `POST /projects/{id}/re-estimate/` and
-`POST /parts/{id}/estimate/` resolve the preset the same way, and creating a project via
-the API requires `default_print_preset`. The OpenAPI schema (served by drf-spectacular at
-the schema/Swagger endpoints) is generated automatically from the serializers.
+`POST /parts/{id}/estimate/` resolve the preset the same way, and creating a top-level
+project via the API requires `default_print_preset`. The OpenAPI schema (served by
+drf-spectacular at the schema/Swagger endpoints) is generated automatically from the
+serializers.
 
 ### Cover Images
 
@@ -53,6 +57,9 @@ You can upload an image file or **paste from the clipboard** — the upload form
 ## Sub-Projects
 
 Projects can contain sub-projects, creating a hierarchy with quantity multipliers.
+Projects form a strict tree: every sub-project has exactly one parent, and every part
+belongs to exactly one project. Nothing is shared between projects — reusing something
+always means copying it (see below).
 
 ### Example
 
@@ -87,6 +94,43 @@ This affects:
 2. Click **Add Sub-Project**.
 3. Set the name, quantity, and other details.
 4. The sub-project appears in the parent's detail view.
+
+### Copying projects and parts
+
+- **Copy a project:** open it and click **Copy**. Choose a new name and either *As new
+  top-level project* or a project to copy into. The whole subtree is copied: sub-projects,
+  parts, documents, hardware assignments and cover images. All files are duplicated, so
+  the copy is fully independent. Print history and shopping-list status are not copied.
+  A copy made as a new top-level project receives the original's effective preset.
+- **Copy a part:** open it and click **Copy**, then pick the target project. The model file
+  is duplicated; the existing filament/time estimate is kept unless the copy ends up with a
+  different effective preset, in which case it is re-estimated.
+- **Add existing:** the **Add Existing Part** and **Add Existing Sub-Project** buttons on a
+  project page add a **copy** of the chosen part or project. Later changes to the original
+  do not affect the copy, and vice versa. A project cannot be copied into itself or one of
+  its own sub-projects, so the current project and its parent projects are not offered.
+
+### Moving parts and sub-projects
+
+- **Move a sub-project:** edit it and change **Parent project** (leave it empty to make
+  it a top-level project, which then needs a default preset). A project cannot be moved
+  into itself or one of its own sub-projects.
+- **Move a part:** edit it and change **Project**. Its model file and print history move
+  with it.
+
+In both cases the estimates of parts whose effective preset changed are re-queued.
+
+### Deleting a project
+
+Deleting a project deletes its **whole subtree**: all sub-projects, parts, documents and
+hardware assignments. The confirmation page shows how many of each will be removed.
+
+- Deletion is **blocked** while an unfinished print job (anything not completed, failed
+  or cancelled) contains a part of the subtree. The page lists those jobs — finish,
+  cancel or remove them first. The same rule applies when deleting a single part.
+- **Finished print jobs are kept**; only their entries for the deleted parts are removed.
+- The files of everything deleted (model files, documents, images) are removed from
+  storage.
 
 ---
 

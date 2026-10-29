@@ -1,9 +1,11 @@
 # Project Preset Resolution — Design of Record
 
+> **Superseded by** `2026-10-28-tree-rollback-design.md`.
+
 > Status: implemented (brainstormed with the user 2026-09-21/22, shipped 2026-09-22). This
 > document is the single design-of-record for the "mandatory project preset + top-down
 > per-build-path resolution" feature. The implementation plan is
-> `docs/superpowers/plans/2026-09-22-project-preset-resolution.md`.
+> `docs/superpowers/plans/2026-09-22-project-preset-resolution.md` (removed with the tree rollback).
 
 ## Problem
 

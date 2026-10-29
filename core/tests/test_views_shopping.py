@@ -54,7 +54,7 @@ class ShoppingListViewTests(ShoppingViewTestBase):
         add_child("Child 2")
         add_child("Child 3")
         # Only the per-node hardware_assignments lookup remains (one query per sub-project);
-        # edge/child traversal comes from the prefetch cache.
+        # child traversal comes from the prefetch cache.
         self.assertLessEqual(self._list_query_count(), one_child + 2)
 
     def test_list_renders_for_operator_without_controls(self) -> None:

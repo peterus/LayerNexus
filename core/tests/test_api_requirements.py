@@ -47,7 +47,7 @@ class ApiRequirementsTests(APITestCase):
         self.assertIn("hardware_requirements", data)
 
     def test_requirements_has_no_variant_progress(self) -> None:
-        """The DAG-era per-variant progress is gone from the payload."""
+        """The old per-variant progress is gone from the payload."""
         project = Project.objects.create(name="Assembly")
         resp = self.client.get(f"/api/v1/projects/{project.pk}/requirements/")
         self.assertEqual(resp.status_code, 200)
