@@ -15,7 +15,9 @@ LayerNexus is a Django web application for managing large-scale 3D printing proj
 
 ### Project Management
 
-- 📋 **Projects & Sub-Projects** — Hierarchical project organization with recursive sub-project support and quantity multipliers
+- 📋 **Projects & Sub-Projects** — Strict project tree (every sub-project has one parent, every part one project) with quantity multipliers and bottom-up print-preset inheritance
+- 📑 **Copy & Move** — Deep-copy projects (whole subtree, files duplicated) and parts; move parts and sub-projects anywhere in the tree
+- 🛡️ **Safe Deletes** — Deleting a project removes its subtree and files, but is blocked while unfinished print jobs still use its parts
 - 🖼️ **Cover Images** — Set cover images for projects, displayed in list and detail views (supports clipboard paste)
 - 📎 **Project Documents** — Attach files to projects (PDF, TXT, Markdown, PNG, JPG, SVG, STEP, DXF — up to 75 MB)
 - 🔧 **Hardware Catalog** — Reusable hardware component catalog (screws, nuts, bolts, motors, electronics, etc.) with per-project assignments and cost tracking
@@ -212,7 +214,7 @@ The schema is generated live from the ViewSets and serializers, so it always ref
 
 A token-authenticated REST API under `/api/v1/` lets a client (typically an AI agent)
 build LayerNexus projects **iteratively** — one small, validated step at a time, reading
-the current state between steps. Scope: **projects, sub-project composition, parts (incl.
+the current state between steps. Scope: **projects and their sub-project tree, parts (incl.
 STL upload), documents and hardware**. Printing (print jobs, queue, printers, Moonraker)
 is intentionally **out of scope**.
 
@@ -237,19 +239,15 @@ Send it as a header on every request: `Authorization: Token <key>`.
 
 | Method(s) | Path | Purpose |
 |---|---|---|
-| `GET` `POST` | `/api/v1/projects/` | List / create projects |
+| `GET` `POST` | `/api/v1/projects/` | List / create projects. `parent` (omit/`null` → top-level) and `quantity` (how many the parent needs; always 1 on top-level projects) place it in the tree; `default_print_preset` is required on top-level projects and inherited bottom-up otherwise |
 | `GET` `PATCH` `DELETE` | `/api/v1/projects/{id}/` | Retrieve / update / delete a project. `PATCH parent` moves it (never into its own subtree) and, like a `default_print_preset` change, re-queues parts whose effective preset changed. `DELETE` removes the subtree; 409 + `blocking_jobs` while unfinished print jobs contain its parts |
 | `GET` | `/api/v1/projects/{id}/tree/` | Nested assembly tree (child modules, parts, hardware) |
 | `POST` | `/api/v1/projects/{id}/copy/` | Deep-copy the project with its subtree `{name?, parent?}` (new files, no print history; `parent` omitted/`null` → new top-level project; a parent inside the copied subtree → 400); returns 201 + project (write → `can_manage_projects`) |
-| `GET` `POST` | `/api/v1/projects/{id}/components/` | List / add a sub-project edge `{child_project, quantity}` (cycle-guarded, idempotent) |
-| `PATCH` `DELETE` | `/api/v1/projects/{id}/components/{edge_id}/` | Update quantity / remove a sub-project edge |
-| `GET` `POST` | `/api/v1/parts/` | List / create parts (all writable fields; `project` names the owning module) |
+| `GET` `POST` | `/api/v1/parts/` | List / create parts (all writable fields; `project` is required and names the owning project, `quantity` is per that project) |
 | `GET` `PATCH` `DELETE` | `/api/v1/parts/{id}/` | Retrieve / update / delete a part. `PATCH project` moves it (print history and file stay) and re-queues it if its effective preset changed. `DELETE` → 409 + `blocking_jobs` while an unfinished print job contains it |
 | `POST` | `/api/v1/parts/{id}/stl/` | Multipart STL upload (`stl_file`) → saves file, triggers estimation |
 | `POST` | `/api/v1/parts/{id}/copy/` | Copy the part into `{project}` (required; new model file, estimates kept unless the effective preset changes); returns 201 + part (write → `can_manage_projects`) |
 | `POST` | `/api/v1/parts/{id}/estimate/` | Re-queue estimation for this part → clears prior results, starts worker; returns 202 + serialized part (write → `can_manage_projects`) |
-| `GET` `POST` | `/api/v1/projects/{id}/parts/` | List / attach an existing part `{part, quantity}` (idempotent edge) |
-| `PATCH` `DELETE` | `/api/v1/projects/{id}/parts/{edge_id}/` | Update quantity / detach a part |
 | `GET` `POST` | `/api/v1/projects/{id}/documents/` | List / upload documents (multipart; same types/size as the UI) |
 | `DELETE` | `/api/v1/projects/{id}/documents/{id}/` | Delete a document |
 | `GET` `POST` | `/api/v1/hardware-parts/` | Hardware catalogue list / create |
@@ -258,19 +256,22 @@ Send it as a header on every request: `Authorization: Token <key>`.
 | `PATCH` `DELETE` | `/api/v1/projects/{id}/hardware/{id}/` | Update quantity / remove an assignment |
 | `GET` | `/api/v1/spoolman-filaments/` | Lookup: Spoolman filament mappings (valid `spoolman_filament_id` values) |
 | `GET` | `/api/v1/print-presets/` | Lookup: instantiable, resolved print presets (valid `print_preset` values) |
-| `GET` | `/api/v1/projects/{id}/requirements/` | Aggregate BOM: `total_parts_count`, `total_filament_grams/meters`, `filament_requirements`, `hardware_requirements`, `total_hardware_cost`, `variant_progress` |
+| `GET` | `/api/v1/projects/{id}/requirements/` | Aggregate BOM: `total_parts_count`, `total_filament_grams/meters`, `filament_requirements`, `hardware_requirements`, `total_hardware_cost` |
 | `GET` | `/api/v1/projects/{id}/validate/` | Completeness check → `{ok, issues[]}` (parts missing STL / filament id / estimation error / empty project) |
-| `GET` | `/api/v1/projects/?search=` `/api/v1/parts/?search=` | Full-text search (projects: name/description; parts: name/material) — reuse existing blocks |
+| `GET` | `/api/v1/projects/?search=` `/api/v1/parts/?search=` | Full-text search (projects: name/description; parts: name/material) — find existing blocks to copy |
 | `POST` | `/api/v1/projects/{id}/re-estimate/` | Re-queue estimation for every eligible part in the project tree → returns 202 + `{"queued": <count>}` (write → `can_manage_projects`) |
 
-Composition edges use `get_or_create`, so retrying a step returns the existing edge
-(`200`) instead of erroring. Attaching a sub-project that would form a cycle returns a
-structured `400`.
+The tree is expressed only by `Project.parent` and `Part.project` — there are no separate
+edge endpoints. Moving is a `PATCH` of that field; re-parenting a project into its own
+subtree returns a structured `400`. Nothing is shared between projects: to reuse a part
+or sub-assembly, `copy` it. Deleting a project or part that an unfinished print job still
+contains returns `409` with the `blocking_jobs` ids. Hardware assignments use
+`get_or_create`, so retrying that step returns the existing assignment (`200`).
 
 The **lookup** reads let a client pick valid FK values (a filament id, a print preset)
 before creating parts; **`requirements`/`validate`** let it reason about what the whole
 assembly needs and what is still missing; **`search`** finds existing projects/parts to
-reuse.
+copy.
 
 ### Example: build a project iteratively
 
@@ -279,28 +280,27 @@ TOKEN=9944b09199...           # from create_api_token
 API=http://localhost:8000/api/v1
 H="Authorization: Token $TOKEN"
 
-# 1. Create the top-level assembly
-ASM=$(curl -s -H "$H" -d 'name=Truck' $API/projects/ | jq .id)
-
-# 2. Create a sub-module and attach it as a component
-MOD=$(curl -s -H "$H" -d 'name=Chassis' $API/projects/ | jq .id)
-curl -s -H "$H" -d "child_project=$MOD&quantity=1" $API/projects/$ASM/components/
-
-# 3. Pick valid FK values before creating a part
+# 1. Pick valid FK values first (a top-level project needs a print preset)
 FIL=$(curl -s -H "$H" $API/spoolman-filaments/ | jq '.[0].spoolman_filament_id')
 PRESET=$(curl -s -H "$H" $API/print-presets/ | jq '.[0].id')
 
-# 4. Create a part with those ids, then upload its STL (triggers estimation)
-PART=$(curl -s -H "$H" -d "project=$MOD&name=Axle&quantity=4&spoolman_filament_id=$FIL&print_preset=$PRESET" $API/parts/ | jq .id)
+# 2. Create the top-level assembly, then a sub-module under it (inherits the preset)
+ASM=$(curl -s -H "$H" -d "name=Truck&default_print_preset=$PRESET" $API/projects/ | jq .id)
+MOD=$(curl -s -H "$H" -d "name=Chassis&parent=$ASM&quantity=1" $API/projects/ | jq .id)
+
+# 3. Create a part in the module (add print_preset=<id> to override the inherited preset),
+#    then upload its STL (triggers estimation)
+PART=$(curl -s -H "$H" -d "project=$MOD&name=Axle&quantity=4&spoolman_filament_id=$FIL" $API/parts/ | jq .id)
 curl -s -H "$H" -F "stl_file=@axle.stl" $API/parts/$PART/stl/
 
-# 5. Inspect the assembled tree, aggregate requirements, and completeness
+# 4. Inspect the assembled tree, aggregate requirements, and completeness
 curl -s -H "$H" $API/projects/$ASM/tree/
 curl -s -H "$H" $API/projects/$ASM/requirements/
 curl -s -H "$H" $API/projects/$ASM/validate/     # {"ok": false, "issues": [...]} until every part is complete
 
-# 6. Search existing parts
-curl -s -H "$H" "$API/parts/?search=axle"
+# 5. Reuse: find an existing part and copy it into the module
+SRC=$(curl -s -H "$H" "$API/parts/?search=axle" | jq '.[0].id')
+curl -s -H "$H" -d "project=$MOD" $API/parts/$SRC/copy/
 ```
 
 ## User Roles & Permissions
@@ -321,8 +321,8 @@ The first user to register is automatically assigned the **Admin** role. Subsequ
 
 | Model | Description |
 |---|---|
-| **Project** | Top-level or sub-project with optional cover image, default slicer profile, and recursive sub-project support |
-| **Part** | A printable part with STL file, filament requirements, and Spoolman filament linking |
+| **Project** | Node of the project tree (`parent` + `quantity`) with optional cover image and default print preset (required on top-level projects) |
+| **Part** | A printable part belonging to exactly one project (`project` + `quantity`), with STL/3MF file, filament requirements, and Spoolman filament linking |
 | **PrintJob** | A print job for a specific part, tracking status from creation through completion |
 | **PrintQueue** | Priority-ordered queue linking print jobs to printers |
 

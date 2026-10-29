@@ -295,7 +295,7 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
 
 
 class CreateJobsResolvedPresetTests(TestDataMixin, TestCase):
-    """The project-path job creation resolves and pins the project preset (Variant B)."""
+    """The project-path job creation resolves and pins the project preset."""
 
     def setUp(self):
         super().setUp()

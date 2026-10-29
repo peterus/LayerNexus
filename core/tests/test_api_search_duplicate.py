@@ -46,7 +46,7 @@ class ApiSearchTests(APITestCase):
 
 
 class ApiDuplicateRemovedTests(APITestCase):
-    """Duplicate-as-variant is gone with the tree rollback (copy replaces it later)."""
+    """Duplicate-as-variant is gone with the tree rollback (replaced by copy)."""
 
     def setUp(self) -> None:
         """Authenticate an Admin — the endpoint must be absent, not merely forbidden."""

@@ -25,6 +25,7 @@ uv run python manage.py test core.tests.test_views_parts       # single module
 uv run python manage.py makemigrations                         # after model changes
 uv run python manage.py makemigrations --check --dry-run       # CI gate: fails on missing migration
 uv run python manage.py check --fail-level WARNING
+uv run python manage.py cleanup_orphan_media [--delete]        # list / remove unreferenced media files
 uv run ruff check . && uv run ruff format --check .            # lint + format (CI gate)
 uv run coverage run manage.py test core && uv run coverage report  # coverage (gate: >=55%)
 uv add <pkg>                      # add a dependency (updates pyproject.toml + uv.lock)
@@ -55,21 +56,24 @@ The app was refactored from single files into **packages** — do not expect a f
 ```
 core/                      # main Django app
 ├── models/                # split by domain, re-exported in __init__.py
-│   ├── projects.py        #   Project (hierarchical, sub-projects, cover image, multipliers)
-│   ├── parts.py           #   Part, PrintTimeEstimate
+│   ├── projects.py        #   Project (strict tree via parent+quantity, cover image, deep_copy)
+│   ├── parts.py           #   Part (project+quantity), PrintTimeEstimate
 │   ├── printers.py        #   PrinterProfile, CostProfile
 │   ├── printing.py        #   PrintJob, PrintJobPart, PrintJobPlate
 │   ├── queue.py           #   PrintQueue
 │   ├── documents.py       #   ProjectDocument, FileVersion (uploads, up to 75 MB)
 │   ├── hardware.py        #   HardwarePart, ProjectHardware
 │   ├── orca_profiles.py   #   OrcaMachine/Filament/PrintPreset profiles
-│   └── spoolman.py        #   SpoolmanFilamentMapping
+│   ├── spoolman.py        #   SpoolmanFilamentMapping
+│   └── file_copy.py       #   duplicate_field_file() + CopiedFiles (deep-copy file helper)
 ├── views/                 # class-based views, one module per domain
 ├── forms/                 # ModelForms, one module per domain
 ├── urls/                  # URL configs, one module per domain (app_name namespaced)
 ├── services/              # external API clients (see below)
 ├── management/commands/
-│   └── moonraker_worker.py  # background worker process (printer polling / status sync)
+│   ├── moonraker_worker.py  # background worker process (printer polling / status sync)
+│   ├── create_api_token.py  # issue a REST API token for a user
+│   └── cleanup_orphan_media.py  # list (dry run) / --delete media files no row references
 ├── mixins.py              # RBAC mixins — MANDATORY on every write/delete view
 ├── templatetags/          # custom template tags
 ├── templates/core/        # Bootstrap 5.3 templates (light/dark)
@@ -134,6 +138,11 @@ raw `request.user.is_staff` check.
 
 ## Key patterns
 
+- **Strict project tree:** every sub-project has one `parent` (+ `quantity`), every part one
+  `project` (+ `quantity`) — nothing is shared; reuse means `deep_copy()`. Tree helpers on
+  `Project`: `ancestors()`, `path_label` / `path_label_map()`, `subtree_ids()`,
+  `chain_multiplier()`, `blocking_jobs()`, `deletion_summary()`. Print presets resolve
+  bottom-up (`Part.effective_print_preset`); only top-level projects require one.
 - **Sub-project aggregation:** recurse with a quantity multiplier — see
   `Project._collect_parts_with_multiplier()` (and `_collect_hardware_with_multiplier`,
   `_collect_documents`) as the reference shape.

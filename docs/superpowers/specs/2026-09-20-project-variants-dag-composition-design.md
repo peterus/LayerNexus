@@ -1,5 +1,7 @@
 # Design: Variant support via DAG composition (reusable parts & modules)
 
+> **Superseded by** `2026-10-28-tree-rollback-design.md`.
+
 **Date:** 2026-09-20
 **Status:** Draft for review
 **Scope:** `core` app data model, aggregation, print/queue attribution, UI flows, migration.

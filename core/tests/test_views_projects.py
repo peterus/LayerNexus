@@ -176,7 +176,7 @@ class ProjectViewTests(TestDataMixin, TestCase):
         self.assertIn("default_print_preset", resp.context["form"].errors)
 
     def test_edge_urls_removed(self):
-        """The composition edge editing URLs no longer exist."""
+        """The former sub-project and part link editing URLs no longer exist."""
         for name in (
             "project_add_component",
             "project_add_part",
