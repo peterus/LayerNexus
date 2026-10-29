@@ -466,7 +466,7 @@ class ResubscribeTests(IsolatedAsyncioTestCase):
         self.assertTrue(self.client._klippy_ready)
 
 
-@patch("core.services.moonraker_ws.STATUS_WATCHDOG_INTERVAL", 0.05)
+@patch("core.services.moonraker_ws.STATUS_WATCHDOG_INTERVAL", 0.2)
 class StatusWatchdogTests(IsolatedAsyncioTestCase):
     """The watchdog re-subscribes, then reconnects, when status updates stop."""
 
@@ -512,21 +512,66 @@ class StatusWatchdogTests(IsolatedAsyncioTestCase):
         ws = FakeWebSocket([_frame("notify_klippy_shutdown")], hang=True)
 
         with self.assertNoLogs("core.services.moonraker_ws", level="WARNING"):
-            await self._listen(ws, run_for=0.3)
+            await self._listen(ws, run_for=0.7)
 
         self.assertEqual(_subscribe_count(ws), 1)
         self.assertFalse(ws.closed)
 
-    async def test_watchdog_paused_after_subscribe_error(self) -> None:
+    async def test_watchdog_retries_rejected_subscribe_without_closing(self) -> None:
         error = json.dumps({"jsonrpc": "2.0", "id": 1, "error": {"code": 503, "message": "Klippy Host not connected"}})
-        ws = FakeWebSocket([error], hang=True)
+
+        class RejectingWebSocket(FakeWebSocket):
+            """Rejects every subscribe, otherwise silent."""
+
+            async def recv(self) -> str:
+                while not self.frames:
+                    await asyncio.sleep(0.005)
+                return self.frames.pop(0)
+
+            async def send(self, message: str) -> None:
+                await super().send(message)
+                self.frames.append(error)
+
+        ws = RejectingWebSocket([])
 
         with self.assertLogs("core.services.moonraker_ws", level="WARNING") as logs:
-            await self._listen(ws, run_for=0.3)
+            await self._listen(ws, run_for=0.7)
 
-        self.assertEqual(_subscribe_count(ws), 1)
+        # Retried once per window, never reconnects, warns only once per streak.
+        self.assertGreater(_subscribe_count(ws), 2)
         self.assertFalse(ws.closed)
         self.assertEqual(len(logs.output), 1)
+        self.assertIn("subscribe failed", logs.output[0])
+
+    async def test_accepted_retry_after_rejected_subscribe_rearms_watchdog(self) -> None:
+        error = json.dumps({"jsonrpc": "2.0", "id": 1, "error": {"code": 503, "message": "Klippy Host not connected"}})
+
+        class RecoveringWebSocket(FakeWebSocket):
+            """Rejects the first subscribe, accepts the second, then stays silent."""
+
+            async def recv(self) -> str:
+                while not self.frames:
+                    await asyncio.sleep(0.005)
+                return self.frames.pop(0)
+
+            async def send(self, message: str) -> None:
+                await super().send(message)
+                if len(self.sent) == 1:
+                    self.frames.append(error)
+                elif len(self.sent) == 2:
+                    self.frames.append(_subscribe_response({"virtual_sdcard": {"progress": 0.3}}))
+
+        ws = RecoveringWebSocket([])
+
+        with self.assertLogs("core.services.moonraker_ws", level="WARNING") as logs:
+            await self._listen(ws)
+
+        # reject -> retry accepted (Klippy ready again) -> silent: re-subscribe, then close.
+        self.assertTrue(self.client._klippy_ready)
+        self.assertEqual(_subscribe_count(ws), 3)
+        self.assertTrue(ws.closed)
+        self.assertEqual([event["method"] for event in self.events], ["notify_status_update"])
+        self.assertTrue(any("reconnecting" in line for line in logs.output))
 
     async def test_watchdog_resumed_by_klippy_ready(self) -> None:
         ws = FakeWebSocket([_frame("notify_klippy_shutdown"), _frame("notify_klippy_ready")], hang=True)
@@ -549,12 +594,12 @@ class StatusWatchdogTests(IsolatedAsyncioTestCase):
 
     async def test_status_update_resets_watchdog(self) -> None:
         class TickingWebSocket(FakeWebSocket):
-            """Delivers a status update every 20 ms for about 0.3 s, then closes cleanly."""
+            """Delivers a status update every 10 ms for about 0.3 s, then closes cleanly."""
 
             async def recv(self) -> str:
-                if len(self.frames) >= 15:
+                if len(self.frames) >= 30:
                     raise ConnectionClosedOK(None, None)
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0.01)
                 self.frames.append("tick")
                 return _frame("notify_status_update", [{"extruder": {"temperature": 210.0}}, 1.0])
 
@@ -565,7 +610,7 @@ class StatusWatchdogTests(IsolatedAsyncioTestCase):
 
         self.assertEqual(_subscribe_count(ws), 1)
         self.assertFalse(ws.closed)
-        self.assertEqual(len(self.events), 15)
+        self.assertEqual(len(self.events), 30)
 
     async def test_subscribe_response_resets_watchdog(self) -> None:
         class AnsweringWebSocket(FakeWebSocket):
@@ -583,7 +628,7 @@ class StatusWatchdogTests(IsolatedAsyncioTestCase):
         ws = AnsweringWebSocket([])
 
         with self.assertLogs("core.services.moonraker_ws", level="WARNING"):
-            await self._listen(ws, run_for=0.3)
+            await self._listen(ws, run_for=0.7)
 
         # Each silent window re-subscribes once; the answer re-arms it, so it never closes.
         self.assertGreater(_subscribe_count(ws), 2)

@@ -164,6 +164,9 @@ class MoonrakerWebSocketClient:
         self._ws_url = build_ws_url(printer.moonraker_url)
         self._reconnect_delay = RECONNECT_INITIAL_DELAY
         self._klippy_ready = True
+        # Set when our last subscribe was rejected; Klippy's real state is
+        # unknown then, so the watchdog keeps probing quietly.
+        self._subscribe_failed = False
 
     async def run(self) -> None:
         """Connect, subscribe, and pump events until cancelled.
@@ -204,6 +207,7 @@ class MoonrakerWebSocketClient:
             # reset the backoff so the next outage starts fresh.
             self._reconnect_delay = RECONNECT_INITIAL_DELAY
             self._klippy_ready = True
+            self._subscribe_failed = False
             await self._listen(ws)
 
     async def _listen(self, ws: Any) -> None:
@@ -226,8 +230,12 @@ class MoonrakerWebSocketClient:
                 return
             except TimeoutError:
                 if not self._klippy_ready:
-                    # Klippy is down: no updates expected, nothing to recover.
-                    pass
+                    # Klippy is down: no updates expected, never reconnect.
+                    # After a rejected subscribe (no klippy_ready may follow
+                    # if Klippy was in fact ready) keep probing once per window.
+                    if self._subscribe_failed:
+                        logger.debug("%s: retrying rejected subscribe", self.printer.name)
+                        await self._subscribe(ws)
                 elif not resubscribed:
                     logger.warning(
                         "%s: no status for %.0fs, re-subscribing", self.printer.name, STATUS_WATCHDOG_INTERVAL
@@ -269,6 +277,8 @@ class MoonrakerWebSocketClient:
         if method is None:
             return await self._handle_response(event)
 
+        if method in KLIPPY_DOWN_METHODS or method == "notify_klippy_ready":
+            self._subscribe_failed = False
         if method == "notify_klippy_ready":
             self._klippy_ready = True
             logger.info("%s: klippy ready, re-subscribing", self.printer.name)
@@ -290,15 +300,21 @@ class MoonrakerWebSocketClient:
         if event.get("id") != SUBSCRIBE_REQUEST_ID:
             return False
         if "error" in event:
-            # Typically "Klippy Host not connected": no updates until
-            # notify_klippy_ready, so pause the watchdog meanwhile.
+            # Typically "Klippy Host not connected": pause the watchdog's
+            # reconnect; it keeps re-trying the subscribe once per window.
+            # Warn once per failure streak, not on every retry.
+            log = logger.debug if self._subscribe_failed else logger.warning
+            log("%s: subscribe failed: %s", self.printer.name, event["error"])
             self._klippy_ready = False
-            logger.warning("%s: subscribe failed: %s", self.printer.name, event["error"])
+            self._subscribe_failed = True
             return False
         result = event.get("result")
         if not isinstance(result, dict):
             logger.warning("%s: malformed subscribe response: %r", self.printer.name, result)
             return False
+        # An accepted subscribe proves Klippy is ready.
+        self._klippy_ready = True
+        self._subscribe_failed = False
         snapshot = snapshot_event(result)
         if snapshot is not None:
             await self._dispatch(snapshot)
