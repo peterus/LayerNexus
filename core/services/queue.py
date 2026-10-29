@@ -495,7 +495,10 @@ def mark_queue_entry_started(entry: PrintQueue, remote_filename: str) -> None:
     entry.status = PrintQueue.STATUS_PRINTING
     entry.started_at = timezone.now()
     entry.start_claimed_at = None
-    entry.save(update_fields=["status", "started_at", "start_claimed_at"])
+    # A re-queued entry must not show the progress of its previous attempt.
+    entry.progress = None
+    entry.status_updated_at = None
+    entry.save(update_fields=["status", "started_at", "start_claimed_at", "progress", "status_updated_at"])
 
     # Update plate status
     plate.status = PrintJobPlate.STATUS_PRINTING

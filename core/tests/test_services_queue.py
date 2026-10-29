@@ -1,14 +1,17 @@
 """Comprehensive tests for the print queue service functions."""
 
+from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from core.models import PrintJob, PrintJobPlate, PrintQueue
 from core.services.moonraker import MoonrakerError
 from core.services.queue import (
     PrintStartError,
     ReviewStateError,
+    mark_queue_entry_started,
     review_queue_entry,
     start_next_for_printer,
     start_print_for_queue_entry,
@@ -401,10 +404,6 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
 
     def test_expired_claim_does_not_block(self, mock_get_backend):
         """A claim left behind by a crashed process expires."""
-        from datetime import timedelta
-
-        from django.utils import timezone
-
         entry = self._entry(
             self.plate1, PrintQueue.STATUS_WAITING, start_claimed_at=timezone.now() - timedelta(minutes=11)
         )
@@ -450,3 +449,18 @@ class IsPrinterBusyClaimTests(_QueueServiceTestBase):
 
         PrintQueue.objects.filter(pk=claimed.pk).update(start_claimed_at=timezone.now() - timedelta(minutes=11))
         self.assertFalse(other.is_printer_busy)
+
+
+class MarkQueueEntryStartedTests(_QueueServiceTestBase):
+    """Tests for mark_queue_entry_started()."""
+
+    def test_mark_started_resets_stale_progress(self):
+        stale = timezone.now() - timedelta(days=1)
+        entry = self._entry(self.plate2, PrintQueue.STATUS_WAITING, progress=0.18, status_updated_at=stale)
+
+        mark_queue_entry_started(entry, "LN_x.gcode")
+
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, PrintQueue.STATUS_PRINTING)
+        self.assertIsNone(entry.progress)
+        self.assertIsNone(entry.status_updated_at)
