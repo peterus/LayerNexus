@@ -228,7 +228,8 @@ class Part(models.Model):
                 estimated_time=estimate.estimated_time,
                 actual_time=estimate.actual_time,
             )
-            for estimate in self.time_estimates.all()
+            # Oldest first, so the copies keep the newest-first default order.
+            for estimate in reversed(self.time_estimates.all())
         ]
         if estimates:
             PrintTimeEstimate.objects.bulk_create(estimates)

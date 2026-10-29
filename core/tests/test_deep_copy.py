@@ -336,6 +336,21 @@ class DeepCopyTests(TestCase):
         reads = [sql for sql in captured["sql"] if sql.lstrip().upper().startswith("SELECT")]
         self.assertEqual(reads, [])
 
+    def test_deep_copy_keeps_document_and_estimate_order(self) -> None:
+        ProjectDocument.objects.create(project=self.sub, name="Second", file=SimpleUploadedFile("b.pdf", b"%PDF2"))
+        printer_a = PrinterProfile.objects.create(name="A")
+        printer_b = PrinterProfile.objects.create(name="B")
+        for printer in (printer_a, printer_b):
+            PrintTimeEstimate.objects.create(part=self.part_r, printer=printer, estimated_time=timedelta(hours=1))
+        copy = self.root.deep_copy(parent=None)
+        new_sub = copy.subprojects.get()
+        self.assertEqual([d.name for d in new_sub.documents.all()], [d.name for d in self.sub.documents.all()])
+        new_part = copy.parts.get()
+        self.assertEqual(
+            [e.printer_id for e in new_part.time_estimates.all()],
+            [e.printer_id for e in self.part_r.time_estimates.all()],
+        )
+
     def test_part_deep_copy_failure_removes_new_file(self) -> None:
         before_files = _media_files()
         count = Part.objects.count()

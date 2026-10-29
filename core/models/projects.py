@@ -503,7 +503,8 @@ class Project(models.Model):
                 created_by=created_by,
             )
             copies[node.pk] = copy
-            for doc in documents:
+            # Oldest first: the copies get fresh created_at stamps and the default order is newest first.
+            for doc in reversed(documents):
                 doc_file = files["document", doc.pk]
                 if doc_file is None:
                     # Nothing to copy: a document row without its file would only 500 on download.
