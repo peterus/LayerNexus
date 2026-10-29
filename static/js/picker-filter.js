@@ -14,6 +14,8 @@ function initPickerFilters() {
       var query = input.value.trim().toLowerCase();
       Array.from(select.options).forEach(function (opt) {
         opt.hidden = query !== '' && opt.textContent.toLowerCase().indexOf(query) === -1;
+        // Never submit an option the user can no longer see.
+        if (opt.hidden && opt.selected) opt.selected = false;
       });
     });
   });

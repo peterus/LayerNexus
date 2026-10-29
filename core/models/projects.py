@@ -496,7 +496,8 @@ class Project(models.Model):
                 description=node.description,
                 image=files["image", node.pk],
                 parent=parent if is_top else copies[node.parent_id],
-                quantity=node.quantity,
+                # A new root has no parent to be needed in: its quantity is reset to 1.
+                quantity=1 if is_top and parent is None else node.quantity,
                 default_print_preset_id=preset_id,
                 created_by=created_by,
             )

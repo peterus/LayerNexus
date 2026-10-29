@@ -97,8 +97,9 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
 
         # Expand the build-progress section by default when prints exist or an unfinished
         # job contains a part of this subtree.
+        subtree_ids = project.subtree_ids()
         has_active_job_parts: bool = (
-            PrintJobPart.objects.filter(part__project_id__in=project.subtree_ids())
+            PrintJobPart.objects.filter(part__project_id__in=subtree_ids)
             .exclude(print_job__status__in=PrintJob.TERMINAL_STATUSES)
             .exists()
         )
@@ -139,7 +140,9 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
         if self.request.user.has_perm("core.can_manage_projects"):
             labels = Project.path_label_map()
             context["add_existing_part_form"] = AddExistingPartForm(labels=labels)
-            context["add_existing_subproject_form"] = AddExistingSubprojectForm(project=project, labels=labels)
+            context["add_existing_subproject_form"] = AddExistingSubprojectForm(
+                project=project, labels=labels, subtree_ids=subtree_ids
+            )
 
         return context
 

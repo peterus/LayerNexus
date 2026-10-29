@@ -136,17 +136,27 @@ class AddExistingSubprojectForm(forms.Form):
 
     source = forms.ModelChoiceField(queryset=Project.objects.none(), label="Project to copy")
 
-    def __init__(self, *args, project: Project, labels: dict[int, str] | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        project: Project,
+        labels: dict[int, str] | None = None,
+        subtree_ids: set[int] | None = None,
+        **kwargs,
+    ) -> None:
         """Offer every project outside ``project``'s own subtree and ancestor chain.
 
         Args:
             project: The project the copy is added to.
             labels: Precomputed :meth:`Project.path_label_map`, to avoid a second scan.
+            subtree_ids: Precomputed :meth:`Project.subtree_ids` of ``project``.
         """
         super().__init__(*args, **kwargs)
         field = self.fields["source"]
+        if subtree_ids is None:
+            subtree_ids = project.subtree_ids()
         # Ancestors are excluded too: copying one into this project would copy it into its own subtree.
-        excluded = project.subtree_ids() | {ancestor.pk for ancestor in project.ancestors()}
+        excluded = subtree_ids | {ancestor.pk for ancestor in project.ancestors()}
         field.queryset = Project.objects.exclude(pk__in=excluded).order_by("name")
         if self.is_bound:
             # Only POSTed to validate one PK, never re-rendered: skip building the picker.

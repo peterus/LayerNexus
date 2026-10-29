@@ -235,6 +235,7 @@ class DeepCopyTests(TestCase):
     def test_subproject_copied_as_root_gets_effective_preset(self) -> None:
         copy = self.sub.deep_copy(parent=None)
         self.assertIsNone(copy.parent)
+        self.assertEqual(copy.quantity, 1)  # S has quantity 2 in R; a root is needed once
         self.assertEqual(copy.default_print_preset, self.preset_a)
         self.assertIsNone(copy.subprojects.get().default_print_preset)
 
