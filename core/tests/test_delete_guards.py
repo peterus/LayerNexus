@@ -229,3 +229,22 @@ class ApiMoveRequeueTests(APITestCase):
         self.part.refresh_from_db()
         self.assertEqual(self.part.estimation_status, Part.ESTIMATION_SUCCESS)
         worker.assert_not_called()
+
+    def test_patch_parent_rechecks_cycle_inside_transaction(self, worker: mock.Mock) -> None:
+        """A cycle that appears after serializer validation is still refused (400, nothing saved)."""
+        from core.api.serializers import ProjectSerializer
+
+        leaf = Project.objects.create(name="L", parent=self.sub)
+        original = ProjectSerializer.validate
+
+        def _race(serializer: ProjectSerializer, attrs: dict) -> dict:
+            attrs = original(serializer, attrs)
+            Project.objects.filter(pk=self.other.pk).update(parent=leaf)  # concurrent move
+            return attrs
+
+        with mock.patch.object(ProjectSerializer, "validate", _race):
+            resp = self.client.patch(f"/api/v1/projects/{self.sub.pk}/", {"parent": self.other.pk}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("parent", resp.data)
+        self.sub.refresh_from_db()
+        self.assertEqual(self.sub.parent, self.root)

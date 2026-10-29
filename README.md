@@ -353,7 +353,7 @@ Files left behind before this existed (or by a crash) can be listed and removed 
 
 ```bash
 python manage.py cleanup_orphan_media            # dry run: list orphans + total size
-python manage.py cleanup_orphan_media --delete   # remove them
+python manage.py cleanup_orphan_media --delete   # remove them (refused if the DB references no file at all; --force)
 ```
 
 Files modified within the last hour are skipped (`--min-age MINUTES`, default 60), so an

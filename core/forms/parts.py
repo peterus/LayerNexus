@@ -49,6 +49,8 @@ class PartForm(forms.ModelForm):
             del self.fields["project"]
             return
         field = self.fields["project"]
+        # Required unless omitted from the POST entirely (see clean_project).
+        field.required = False
         field.label = "Project"
         field.help_text = "Move the part into another project. Its print history and files move with it."
         field.queryset = Project.objects.order_by("name")
@@ -57,6 +59,22 @@ class PartForm(forms.ModelForm):
         field.choices = path_sorted_choices(
             field.queryset.only("pk", "name"), lambda p: labels.get(p.pk, p.name), field.empty_label
         )
+
+    def clean_project(self) -> Project:
+        """Keep the current project when the POST has no ``project`` key; an empty value is an error.
+
+        Returns:
+            The selected project, or the part's current project if the field was not submitted.
+
+        Raises:
+            forms.ValidationError: If ``project`` was submitted empty.
+        """
+        project = self.cleaned_data.get("project")
+        if project is not None:
+            return project
+        if self.add_prefix("project") not in self.data:
+            return self.instance.project
+        raise forms.ValidationError(self.fields["project"].error_messages["required"], code="required")
 
     def clean_stl_file(self) -> UploadedFile | None:
         """Validate uploaded model file (STL or 3MF) for size and extension.

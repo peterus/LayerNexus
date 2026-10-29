@@ -211,3 +211,17 @@ class MoveViewTests(_RBACTestBase):
         self.sub.refresh_from_db()
         self.part.refresh_from_db()
         self.assertEqual((self.sub.parent, self.part.project), (self.root, self.leaf))
+
+    def test_part_post_without_project_keeps_project(self, _worker: mock.Mock) -> None:
+        data = self._part_data(self.leaf)
+        del data["project"]
+        resp = self.client.post(reverse("core:part_update", args=[self.part.pk]), data)
+        self.assertEqual(resp.status_code, 302)
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.project, self.leaf)
+
+    def test_part_post_with_empty_project_is_rejected(self, _worker: mock.Mock) -> None:
+        data = {**self._part_data(self.leaf), "project": ""}
+        resp = self.client.post(reverse("core:part_update", args=[self.part.pk]), data)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("project", resp.context["form"].errors)

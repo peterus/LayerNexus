@@ -14,7 +14,8 @@ from datetime import timedelta
 from typing import Any
 
 from django.core.files.storage import Storage
-from django.core.management.base import BaseCommand, CommandParser
+from django.core.management.base import BaseCommand, CommandError, CommandParser
+from django.db import connection
 from django.utils import timezone
 
 from core.signals import MEDIA_FIELDS, file_is_referenced, referenced_names
@@ -67,8 +68,13 @@ class Command(BaseCommand):
     )
 
     def add_arguments(self, parser: CommandParser) -> None:
-        """Add ``--delete`` and ``--min-age``."""
+        """Add ``--delete``, ``--force`` and ``--min-age``."""
         parser.add_argument("--delete", action="store_true", help="Delete the orphaned files (default: dry run).")
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Delete even when the database references no file at all (normally a wrong or empty database).",
+        )
         parser.add_argument(
             "--min-age",
             type=int,
@@ -117,6 +123,12 @@ class Command(BaseCommand):
             if orphans:
                 self.stdout.write("Dry run — nothing deleted. Re-run with --delete to remove them.")
             return
+        if orphans and not referenced and not options["force"]:
+            # Every upload looks orphaned: almost certainly the wrong (or an empty) database.
+            raise CommandError(
+                f"The database ({connection.settings_dict['NAME']}) references no media file at all; "
+                "refusing to delete every upload. Check DATABASE_PATH, or pass --force."
+            )
 
         deleted = 0
         for storage, name, _size in orphans:

@@ -13,6 +13,7 @@ from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import transaction
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -415,3 +416,12 @@ class CleanupOrphanMediaCommandTests(_MediaTestBase):
         self.assertTrue(self.exists("project_documents/old.pdf"))
         self.assertIn("Could not delete project_documents/old.pdf", err.getvalue())
         self.assertIn("Deleted 2", out.getvalue())
+
+    def test_delete_refused_when_database_references_nothing(self) -> None:
+        """An empty (or wrong) database would make every upload look orphaned."""
+        Project.objects.all().delete()  # removes the referencing rows (files stay: no on_commit in TestCase)
+        with self.assertRaisesMessage(CommandError, "references no media file"):
+            self._run("--delete")
+        self.assertTrue(all(self.exists(name) for name in self.orphans))
+        self._run("--delete", "--force")
+        self.assertFalse(any(self.exists(name) for name in self.orphans))
