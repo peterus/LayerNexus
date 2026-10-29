@@ -191,7 +191,7 @@ class CopyViewTests(_RBACTestBase):
         sources = set(form.fields["source"].queryset)
         self.assertFalse({self.sub, self.leaf} & sources)
         self.assertIn(self.other, sources)
-        self.assertIn(self.root, sources)
+        self.assertNotIn(self.root, sources)  # an ancestor: copying it here always fails
         self.assertIn("add_existing_part_form", resp.context)
 
     def test_add_existing_subproject_forged_ancestor_rejected(self, _worker: mock.Mock) -> None:

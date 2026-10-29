@@ -403,11 +403,17 @@ class Project(models.Model):
         tracker = CopiedFiles()
         try:
             nodes = self._snapshot_subtree()
+            top_preset_id = self.effective_default_print_preset_id if parent is None else self.default_print_preset_id
+            if parent is not None:
+                # Warm the parent chain so the cycle check in save() needs no query under the lock.
+                parent.ancestors()
             files = self._copy_subtree_files(nodes, tracker)
             with transaction.atomic():
                 # Re-check under the write lock: the tree may have changed meanwhile.
                 self._assert_copy_target(parent)
-                return self._create_subtree_copy(nodes, files, parent, name or self.default_copy_name(), created_by)
+                return self._create_subtree_copy(
+                    nodes, files, parent, name or self.default_copy_name(), created_by, top_preset_id
+                )
         except Exception:
             tracker.delete_all()
             raise
@@ -422,7 +428,8 @@ class Project(models.Model):
 
         Walks via the cycle-guarded :meth:`_walk_subtree`, before anything is created.
         Each node's hardware assignments and each part's time estimates are
-        prefetched here too, so the row transaction issues no further reads.
+        prefetched here too, so the row transaction reads no source rows (only the
+        target re-check in :meth:`deep_copy` queries under the lock).
 
         Returns:
             ``(node, documents, parts)`` tuples in depth-first order.
@@ -462,6 +469,7 @@ class Project(models.Model):
         parent: Project | None,
         name: str,
         created_by: User | None,
+        top_preset_id: int | None,
     ) -> Project:
         """Insert the rows of the copied subtree; the caller provides the transaction.
 
@@ -471,6 +479,7 @@ class Project(models.Model):
             parent: Target parent of the top copy, or ``None`` for a new root.
             name: Name of the top copy.
             created_by: User recorded as creator of every copied node.
+            top_preset_id: Preset of the top copy (resolved before the transaction).
 
         Returns:
             The new top :class:`Project`.
@@ -481,10 +490,7 @@ class Project(models.Model):
         copies: dict[int, Project] = {}
         for node, documents, parts in nodes:
             is_top = node.pk == self.pk
-            if is_top:
-                preset_id = self.effective_default_print_preset_id if parent is None else self.default_print_preset_id
-            else:
-                preset_id = node.default_print_preset_id
+            preset_id = top_preset_id if is_top else node.default_print_preset_id
             copy = Project.objects.create(
                 name=name if is_top else node.name,
                 description=node.description,

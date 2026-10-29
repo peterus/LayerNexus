@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Optional
 
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
-from django.db.models import CheckConstraint, Q, QuerySet, Sum
+from django.db.models import CheckConstraint, Q, QuerySet, Sum, prefetch_related_objects
 
 from core.models.file_copy import CopiedFiles, duplicate_field_file
 
@@ -181,6 +181,8 @@ class Part(models.Model):
         tracker = CopiedFiles()
         try:
             stl_name = duplicate_field_file(self.stl_file, tracker)
+            # Read the time estimates before taking the write lock.
+            prefetch_related_objects([self], "time_estimates")
             with transaction.atomic():
                 return self._create_copy(project, stl_name)
         except Exception:

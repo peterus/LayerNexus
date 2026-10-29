@@ -314,6 +314,26 @@ class DeepCopyTests(TestCase):
         self.assertEqual((Project.objects.count(), Part.objects.count(), ProjectDocument.objects.count()), before)
         self.assertEqual(_media_files(), before_files)
 
+    def test_row_transaction_reads_no_source_rows(self) -> None:
+        """Inside the row transaction only the target re-check queries; the rest only writes."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        other = Project.objects.create(name="O", default_print_preset=self.preset_b)
+        real_create = Project._create_subtree_copy
+        captured: dict[str, list[str]] = {}
+
+        def spy(project: Project, *args, **kwargs) -> Project:
+            with CaptureQueriesContext(connection) as ctx:
+                result = real_create(project, *args, **kwargs)
+            captured["sql"] = [q["sql"] for q in ctx.captured_queries]
+            return result
+
+        with mock.patch.object(Project, "_create_subtree_copy", spy):
+            self.sub.deep_copy(parent=other)
+        reads = [sql for sql in captured["sql"] if sql.lstrip().upper().startswith("SELECT")]
+        self.assertEqual(reads, [])
+
     def test_part_deep_copy_failure_removes_new_file(self) -> None:
         before_files = _media_files()
         count = Part.objects.count()
