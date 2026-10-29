@@ -380,7 +380,8 @@ class Project(models.Model):
         document without its file is skipped.
 
         When copied as a new top-level project (``parent=None``), the copy gets this
-        project's *effective* preset, so the "roots must have a preset" rule holds.
+        project's *effective* preset, so the "roots must have a preset" rule holds, and
+        quantity 1 (a root is not needed within a parent).
 
         The files are copied first, *outside* the row transaction, so the SQLite write
         lock is only held for the short row inserts. If anything fails, the files

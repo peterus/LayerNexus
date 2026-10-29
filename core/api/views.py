@@ -189,7 +189,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             "Copies the project with all sub-projects, parts (including new model files and "
             "estimates), documents and hardware assignments; print history is never copied. "
             "`name` defaults to `<name> (copy)`. Omit `parent` or send `null` to create a new "
-            "top-level project (it gets the source's effective preset); otherwise the copy "
+            "top-level project (it gets the source's effective preset and quantity 1); otherwise the copy "
             "becomes a sub-project of `parent`, which must not lie in the copied subtree. "
             "Copied parts whose effective preset changed are re-queued for estimation. "
             "Write action — requires the `can_manage_projects` permission."

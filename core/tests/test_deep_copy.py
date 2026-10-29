@@ -12,7 +12,8 @@ Field audit (``Part._meta.concrete_fields``) and the copy decision per field:
 Field audit (``Project._meta.concrete_fields``):
 
 * copied: ``name`` (top node overridable), ``description``, ``image`` (new file),
-  ``parent`` (set to the target), ``quantity``, ``default_print_preset``,
+  ``parent`` (set to the target), ``quantity`` (1 for a copy made a new root),
+  ``default_print_preset`` (the effective one for a new root),
   ``created_by`` (set to the copying user);
 * not copied: ``id``, ``created_at``, ``updated_at``.
 
