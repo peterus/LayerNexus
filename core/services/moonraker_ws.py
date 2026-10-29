@@ -11,6 +11,12 @@ The client is responsible for:
 * Optionally obtaining a one-shot token when an API key is configured.
 * Reconnecting with exponential backoff on network failures or
   unexpected disconnects.
+* Re-subscribing after Klippy restarts (Moonraker drops object
+  subscriptions while the WebSocket stays open) and, as a safety net,
+  whenever no status message arrived for :data:`STATUS_WATCHDOG_INTERVAL`.
+* Forwarding the subscribe response's status snapshot as a synthetic
+  ``notify_status_update`` without ``print_stats.state`` (see
+  :func:`snapshot_event`).
 
 The client is **not** responsible for interpreting events — that is
 the job of :mod:`core.services.printer_status_sync`.
@@ -27,7 +33,7 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 import websockets
-from websockets.exceptions import ConnectionClosed, WebSocketException
+from websockets.exceptions import ConnectionClosed, ConnectionClosedOK, WebSocketException
 
 from core.models import PrinterProfile
 from core.services.moonraker import DEFAULT_TIMEOUT, MoonrakerError
@@ -43,9 +49,20 @@ SUBSCRIBE_OBJECTS: dict[str, None] = {
     "extruder": None,
 }
 
+#: JSON-RPC request id of our ``printer.objects.subscribe`` call.
+SUBSCRIBE_REQUEST_ID = 1
+
 #: Reconnect backoff bounds in seconds.
 RECONNECT_INITIAL_DELAY = 1.0
 RECONNECT_MAX_DELAY = 30.0
+
+#: Seconds without a status message (while Klippy is ready) before the
+#: client re-subscribes; after a second silent window it reconnects.
+STATUS_WATCHDOG_INTERVAL = 60.0
+
+#: Notifications after which Moonraker has dropped our subscription and
+#: no status updates are expected until ``notify_klippy_ready``.
+KLIPPY_DOWN_METHODS = frozenset({"notify_klippy_shutdown", "notify_klippy_disconnected"})
 
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
@@ -101,6 +118,43 @@ def fetch_oneshot_token(printer: PrinterProfile) -> str | None:
     return token
 
 
+def snapshot_event(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Turn a subscribe response result into a synthetic status update.
+
+    Moonraker answers ``printer.objects.subscribe`` with the current
+    status of all subscribed objects. Forwarding it writes progress
+    right after every (re)subscribe. ``print_stats.state`` is dropped:
+    right after a Klippy restart it reads ``standby``/``error``, which
+    :mod:`core.services.printer_status_sync` treats as terminal — the
+    snapshot must never end a print. Completion keeps coming from live
+    state changes and ``notify_history_changed``.
+
+    Args:
+        result: The ``result`` member of the subscribe response.
+
+    Returns:
+        A ``notify_status_update`` event with params
+        ``[status, eventtime]``, or ``None`` if nothing is left to forward.
+    """
+    status = result.get("status")
+    if not isinstance(status, dict):
+        return None
+    snapshot: dict[str, Any] = {}
+    for name, value in status.items():
+        if name == "print_stats" and isinstance(value, dict):
+            value = {key: item for key, item in value.items() if key != "state"}
+            if not value:
+                continue
+        snapshot[name] = value
+    if not snapshot:
+        return None
+    return {
+        "jsonrpc": "2.0",
+        "method": "notify_status_update",
+        "params": [snapshot, result.get("eventtime")],
+    }
+
+
 class MoonrakerWebSocketClient:
     """One persistent WebSocket connection to a Moonraker instance."""
 
@@ -109,6 +163,7 @@ class MoonrakerWebSocketClient:
         self.on_event = on_event
         self._ws_url = build_ws_url(printer.moonraker_url)
         self._reconnect_delay = RECONNECT_INITIAL_DELAY
+        self._klippy_ready = True
 
     async def run(self) -> None:
         """Connect, subscribe, and pump events until cancelled.
@@ -148,29 +203,132 @@ class MoonrakerWebSocketClient:
             # A successful subscribe means the connection is healthy;
             # reset the backoff so the next outage starts fresh.
             self._reconnect_delay = RECONNECT_INITIAL_DELAY
-            async for raw in ws:
-                try:
-                    event = json.loads(raw)
-                except json.JSONDecodeError:
-                    logger.warning("%s: non-JSON frame received", self.printer.name)
-                    continue
-                if "method" not in event:
-                    # JSON-RPC response to our subscribe call etc. — ignore.
-                    continue
-                try:
-                    await self.on_event(event)
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "%s: event handler failed for %s",
-                        self.printer.name,
-                        event.get("method"),
+            self._klippy_ready = True
+            await self._listen(ws)
+
+    async def _listen(self, ws: Any) -> None:
+        """Pump frames from ``ws`` and run the status watchdog.
+
+        Returns normally on a clean server close or after the watchdog
+        closed a connection that stayed silent despite a re-subscribe,
+        so :meth:`run` reconnects with backoff.
+
+        Args:
+            ws: The open websocket connection.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + STATUS_WATCHDOG_INTERVAL
+        resubscribed = False
+        while True:
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=max(deadline - loop.time(), 0.0))
+            except ConnectionClosedOK:
+                return
+            except TimeoutError:
+                if not self._klippy_ready:
+                    # Klippy is down: no updates expected, nothing to recover.
+                    pass
+                elif not resubscribed:
+                    logger.warning(
+                        "%s: no status for %.0fs, re-subscribing", self.printer.name, STATUS_WATCHDOG_INTERVAL
                     )
+                    await self._subscribe(ws)
+                    resubscribed = True
+                else:
+                    logger.warning("%s: still no status after re-subscribe, reconnecting", self.printer.name)
+                    await ws.close()
+                    return
+                deadline = loop.time() + STATUS_WATCHDOG_INTERVAL
+                continue
+
+            try:
+                event = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning("%s: non-JSON frame received", self.printer.name)
+                continue
+            if not isinstance(event, dict):
+                logger.warning("%s: unexpected JSON frame received", self.printer.name)
+                continue
+            if await self._handle_frame(ws, event):
+                deadline = loop.time() + STATUS_WATCHDOG_INTERVAL
+                resubscribed = False
+
+    async def _handle_frame(self, ws: Any, event: dict[str, Any]) -> bool:
+        """Handle one decoded JSON-RPC frame.
+
+        Args:
+            ws: The open websocket connection (for re-subscribing).
+            event: The decoded frame.
+
+        Returns:
+            ``True`` if the frame resets the status watchdog: a
+            ``notify_status_update``, a successful subscribe response or
+            ``notify_klippy_ready`` (which re-subscribes).
+        """
+        method = event.get("method")
+        if method is None:
+            return await self._handle_response(event)
+
+        if method == "notify_klippy_ready":
+            self._klippy_ready = True
+            logger.info("%s: klippy ready, re-subscribing", self.printer.name)
+            await self._subscribe(ws)
+        elif method in KLIPPY_DOWN_METHODS:
+            self._klippy_ready = False
+        await self._dispatch(event)
+        return method in ("notify_status_update", "notify_klippy_ready")
+
+    async def _handle_response(self, event: dict[str, Any]) -> bool:
+        """Handle a JSON-RPC response; only our subscribe response matters.
+
+        Args:
+            event: The decoded response frame.
+
+        Returns:
+            ``True`` if it was a successful subscribe response.
+        """
+        if event.get("id") != SUBSCRIBE_REQUEST_ID:
+            return False
+        if "error" in event:
+            # Typically "Klippy Host not connected": no updates until
+            # notify_klippy_ready, so pause the watchdog meanwhile.
+            self._klippy_ready = False
+            logger.warning("%s: subscribe failed: %s", self.printer.name, event["error"])
+            return False
+        result = event.get("result")
+        if not isinstance(result, dict):
+            logger.warning("%s: malformed subscribe response: %r", self.printer.name, result)
+            return False
+        snapshot = snapshot_event(result)
+        if snapshot is not None:
+            await self._dispatch(snapshot)
+        return True
+
+    async def _dispatch(self, event: dict[str, Any]) -> None:
+        """Pass ``event`` to the handler; a handler failure never stops the pump.
+
+        Args:
+            event: The (possibly synthetic) notification to forward.
+        """
+        try:
+            await self.on_event(event)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "%s: event handler failed for %s",
+                self.printer.name,
+                event.get("method"),
+            )
 
     async def _subscribe(self, ws: Any) -> None:
+        """Send the ``printer.objects.subscribe`` request on ``ws``.
+
+        Args:
+            ws: The open websocket connection.
+        """
         request = {
             "jsonrpc": "2.0",
             "method": "printer.objects.subscribe",
             "params": {"objects": SUBSCRIBE_OBJECTS},
-            "id": 1,
+            "id": SUBSCRIBE_REQUEST_ID,
         }
         await ws.send(json.dumps(request))
