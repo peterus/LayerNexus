@@ -18,8 +18,8 @@ Field audit (``Project._meta.concrete_fields``):
 * not copied: ``id``, ``created_at``, ``updated_at``.
 
 Reverse relations: ``ProjectDocument`` (new files), ``ProjectHardware`` (same catalog
-entry) and ``PrintTimeEstimate`` are copied; ``PrintJobPart``, ``FileVersion`` and
-``HardwareShoppingItem`` (history) are not.
+entry) and ``PrintTimeEstimate`` (without the measured ``actual_time``) are copied;
+``PrintJobPart``, ``FileVersion`` and ``HardwareShoppingItem`` (history) are not.
 """
 
 import os
@@ -219,11 +219,18 @@ class DeepCopyTests(TestCase):
         self.assertEqual(new_part.estimated_with_preset, self.preset_a)
         self.assertEqual(new_part.estimated_print_time, timedelta(hours=1))
         estimate = new_part.time_estimates.get()
-        self.assertEqual(
-            (estimate.printer, estimate.estimated_time, estimate.actual_time),
-            (printer, timedelta(hours=1), timedelta(minutes=70)),
-        )
+        self.assertEqual((estimate.printer, estimate.estimated_time), (printer, timedelta(hours=1)))
         self.assertEqual(self.part_r.time_estimates.count(), 1)
+
+    def test_deep_copy_does_not_copy_actual_print_time(self) -> None:
+        """``actual_time`` is measured print history, so the copied estimate leaves it empty."""
+        printer = PrinterProfile.objects.create(name="P1")
+        PrintTimeEstimate.objects.create(
+            part=self.part_r, printer=printer, estimated_time=timedelta(hours=1), actual_time=timedelta(minutes=70)
+        )
+        new_part = self.part_r.deep_copy(project=self.sub)
+        self.assertIsNone(new_part.time_estimates.get().actual_time)
+        self.assertEqual(self.part_r.time_estimates.get().actual_time, timedelta(minutes=70))
 
     def test_deep_copy_in_flight_estimation_reset_to_none(self) -> None:
         for status in (Part.ESTIMATION_PENDING, Part.ESTIMATION_ESTIMATING):

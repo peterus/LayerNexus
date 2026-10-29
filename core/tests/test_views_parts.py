@@ -101,6 +101,7 @@ class PartViewTests(TestDataMixin, TestCase):
             reverse("core:part_update", args=[self.part.pk]),
             {
                 "name": "Updated Part",
+                "project": self.project.pk,
                 "quantity": 5,
                 "color": "green",
                 "material": "PLA",
@@ -113,7 +114,7 @@ class PartViewTests(TestDataMixin, TestCase):
     def test_part_update_quantity(self):
         resp = self.client.post(
             reverse("core:part_update", args=[self.part.pk]),
-            {"name": self.part.name, "quantity": 7, "color": "red", "material": "PLA"},
+            {"name": self.part.name, "project": self.project.pk, "quantity": 7, "color": "red", "material": "PLA"},
         )
         self.assertEqual(resp.status_code, 302)
         self.part.refresh_from_db()

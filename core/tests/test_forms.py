@@ -57,19 +57,21 @@ class ProjectEditFormTests(TestCase):
         )
         self.assertTrue(form.is_valid())
 
-    def test_root_form_has_no_parent_or_quantity_fields(self):
-        """Roots expose neither parent nor quantity."""
+    def test_root_form_has_optional_parent_and_no_quantity(self):
+        """Roots get an optional parent (to move them) but no quantity; the preset is checked in clean()."""
         form = ProjectEditForm(instance=Project.objects.create(name="Root"))
-        self.assertNotIn("parent", form.fields)
+        self.assertFalse(form.fields["parent"].required)
         self.assertNotIn("quantity", form.fields)
-        self.assertTrue(form.fields["default_print_preset"].required)
+        self.assertFalse(form.fields["default_print_preset"].required)
 
     def test_subproject_form_has_quantity_and_optional_preset(self):
         """Sub-projects get a quantity field and may inherit the preset."""
         root = Project.objects.create(name="Root")
         sub = Project.objects.create(name="Sub", parent=root, quantity=2)
-        form = ProjectEditForm(instance=sub, data={"name": "Sub", "description": "", "quantity": "4"})
-        self.assertNotIn("parent", form.fields)
+        form = ProjectEditForm(
+            instance=sub, data={"name": "Sub", "description": "", "parent": root.pk, "quantity": "4"}
+        )
+        self.assertIn("parent", form.fields)
         self.assertFalse(form.fields["default_print_preset"].required)
         self.assertEqual(form.fields["default_print_preset"].help_text, "Inherited from parent if empty.")
         self.assertTrue(form.is_valid(), form.errors)
@@ -81,12 +83,32 @@ class ProjectEditFormTests(TestCase):
     def test_subproject_quantity_min_1(self):
         root = Project.objects.create(name="Root")
         sub = Project.objects.create(name="Sub", parent=root)
-        form = ProjectEditForm(instance=sub, data={"name": "Sub", "description": "", "quantity": "0"})
+        form = ProjectEditForm(
+            instance=sub, data={"name": "Sub", "description": "", "parent": root.pk, "quantity": "0"}
+        )
         self.assertFalse(form.is_valid())
         self.assertIn("quantity", form.errors)
 
-    def test_extra_parent_data_is_ignored(self):
-        """Stray parent POST data does not re-parent a project."""
+    def test_missing_parent_key_keeps_current_parent(self):
+        """A POST without the parent field keeps the sub-project where it is (and its quantity)."""
+        root = Project.objects.create(name="Root")
+        sub = Project.objects.create(name="Sub", parent=root, quantity=3, default_print_preset=_default_preset())
+        form = ProjectEditForm(
+            instance=sub,
+            data={
+                "name": "Sub",
+                "description": "",
+                "quantity": "3",
+                "default_print_preset": sub.default_print_preset_id,
+            },
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        form.save()
+        sub.refresh_from_db()
+        self.assertEqual((sub.parent_id, sub.quantity), (root.pk, 3))
+
+    def test_parent_moves_root_under_project(self):
+        """A root posted with a parent becomes a sub-project; a root's quantity is not editable."""
         parent = Project.objects.create(name="Parent Project")
         project = Project.objects.create(name="Child")
         form = ProjectEditForm(
@@ -99,10 +121,10 @@ class ProjectEditFormTests(TestCase):
                 "default_print_preset": _default_preset().pk,
             },
         )
-        self.assertTrue(form.is_valid())
+        self.assertTrue(form.is_valid(), form.errors)
         form.save()
         project.refresh_from_db()
-        self.assertIsNone(project.parent_id)
+        self.assertEqual(project.parent_id, parent.pk)
         self.assertEqual(project.quantity, 1)
 
 
@@ -160,7 +182,7 @@ class PartFormTests(TestCase):
         form = PartForm(data={"name": "Part", "quantity": 0, "color": "black", "material": "PLA"})
         self.assertFalse(form.is_valid())
         self.assertIn("quantity", form.errors)
-        self.assertEqual(list(PartForm.Meta.fields[:2]), ["name", "quantity"])
+        self.assertEqual(list(PartForm.Meta.fields[:3]), ["name", "project", "quantity"])
 
 
 class UserRegistrationFormTests(TestCase):

@@ -14,12 +14,17 @@ __all__ = [
 
 
 class PartForm(forms.ModelForm):
-    """Form for creating and updating parts with STL file upload."""
+    """Form for creating and updating parts with STL file upload.
+
+    On update the form also offers ``project`` to move the part; on create the
+    project comes from the URL.
+    """
 
     class Meta:
         model = Part
         fields = [
             "name",
+            "project",
             "quantity",
             "stl_file",
             "spoolman_filament_id",
@@ -33,6 +38,44 @@ class PartForm(forms.ModelForm):
             "spoolman_filament_id": forms.Select(),
         }
 
+    def __init__(self, *args, labels: dict[int, str] | None = None, **kwargs) -> None:
+        """Offer every project (labelled by tree path) on update; drop the field on create.
+
+        Args:
+            labels: Precomputed :meth:`Project.path_label_map`, to avoid a second scan.
+        """
+        super().__init__(*args, **kwargs)
+        if self.instance.pk is None:
+            del self.fields["project"]
+            return
+        field = self.fields["project"]
+        # Required unless omitted from the POST entirely (see clean_project).
+        field.required = False
+        field.label = "Project"
+        field.help_text = "Move the part into another project. Its print history and files move with it."
+        field.queryset = Project.objects.order_by("name")
+        # Path labels are also needed when an invalid POST re-renders the form.
+        labels = Project.path_label_map() if labels is None else labels
+        field.choices = path_sorted_choices(
+            field.queryset.only("pk", "name"), lambda p: labels.get(p.pk, p.name), field.empty_label
+        )
+
+    def clean_project(self) -> Project:
+        """Keep the current project when the POST has no ``project`` key; an empty value is an error.
+
+        Returns:
+            The selected project, or the part's current project if the field was not submitted.
+
+        Raises:
+            forms.ValidationError: If ``project`` was submitted empty.
+        """
+        project = self.cleaned_data.get("project")
+        if project is not None:
+            return project
+        if self.add_prefix("project") not in self.data:
+            return self.instance.project
+        raise forms.ValidationError(self.fields["project"].error_messages["required"], code="required")
+
     def clean_stl_file(self) -> UploadedFile | None:
         """Validate uploaded model file (STL or 3MF) for size and extension.
 
@@ -43,7 +86,8 @@ class PartForm(forms.ModelForm):
             forms.ValidationError: If file extension is invalid or size exceeds 100 MB.
         """
         stl_file = self.cleaned_data.get("stl_file")
-        if stl_file:
+        # Only a new upload is checked; the already stored file is kept as it is.
+        if isinstance(stl_file, UploadedFile):
             if not stl_file.name.lower().endswith((".stl", ".3mf")):
                 raise forms.ValidationError("Only STL and 3MF files are allowed.")
             if stl_file.size > 100 * 1024 * 1024:  # 100 MB limit

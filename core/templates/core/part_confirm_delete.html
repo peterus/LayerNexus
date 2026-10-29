@@ -12,6 +12,43 @@
     <li class="breadcrumb-item active">Delete</li>
   </ol>
 </nav>
-{% url 'core:part_detail' part.pk as cancel %}
-{% include "core/includes/_confirm_delete.html" with object_name=part.name object_type="Part" cancel_url=cancel warning_message="This will also delete all print jobs associated with this part. This action cannot be undone." delete_label="Delete Part" %}
+<div class="row justify-content-center">
+  <div class="col-lg-6">
+    <div class="card border-danger shadow-sm">
+      <div class="card-header bg-danger text-white">
+        <h4 class="mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Delete Part</h4>
+      </div>
+      <div class="card-body">
+        <p>Are you sure you want to delete <strong>{{ part.name }}</strong>? Its model file is deleted too.</p>
+        {% if print_history %}
+        <div class="alert alert-warning">
+          <i class="bi bi-clock-history me-1"></i>
+          {{ print_history }} print history entr{{ print_history|pluralize:"y,ies" }} of this part will be deleted too.
+          Finished print jobs themselves are kept.
+        </div>
+        {% endif %}
+        {% if blocking_jobs %}
+        <div class="alert alert-danger">
+          <p class="mb-2"><i class="bi bi-slash-circle me-1"></i>This part cannot be deleted while these unfinished print jobs contain it. Finish, cancel or remove them first:</p>
+          <ul class="mb-0">
+            {% for job in blocking_jobs %}
+            <li><a href="{% url 'core:printjob_detail' job.pk %}">{{ job }}</a></li>
+            {% endfor %}
+          </ul>
+        </div>
+        {% endif %}
+        <p class="text-body-secondary">This action cannot be undone.</p>
+        <form method="post">
+          {% csrf_token %}
+          <div class="d-flex gap-2">
+            {% if not blocking_jobs %}
+            <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-1"></i>Delete Part</button>
+            {% endif %}
+            <a href="{% url 'core:part_detail' part.pk %}" class="btn btn-outline-secondary">Cancel</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}

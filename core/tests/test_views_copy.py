@@ -295,7 +295,7 @@ class RequeueStaleEstimatesTests(TestCase):
         leaf = Project.objects.create(name="T", parent=self.sub)
         parts = [self._part(leaf, name=f"p{i}") for i in range(5)]
         fresh = list(Part.objects.filter(pk__in=[p.pk for p in parts]).select_related("project"))
-        with self.assertNumQueries(2 + 2 * 5):
+        with self.assertNumQueries(2 + 5 + 2):
             # The ancestor walk (S and R) runs once, not once per part; each part then
-            # costs one clearing update and one "pending" update.
+            # costs one update (cleared + pending), plus the savepoint of the atomic block.
             self.assertEqual(_requeue_stale_estimates(fresh), 5)

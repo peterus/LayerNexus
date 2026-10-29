@@ -98,11 +98,11 @@ class ProjectViewTests(TestDataMixin, TestCase):
         resp = self.client.post(reverse("core:project_delete", args=[self.other_project.pk]))
         self.assertEqual(resp.status_code, 302)
 
-    def test_project_edit_form_has_no_parent_field(self):
-        """Re-parenting is not part of this PR: the edit form has no parent field."""
+    def test_project_edit_form_has_optional_parent_field(self):
+        """The edit form offers an optional parent so a root can be moved into another project."""
         resp = self.client.get(reverse("core:project_update", args=[self.project.pk]))
         form = resp.context["form"]
-        self.assertNotIn("parent", form.fields)
+        self.assertFalse(form.fields["parent"].required)
         self.assertNotIn("quantity", form.fields)  # roots have no quantity
 
     def test_project_list_shows_only_roots(self):
@@ -159,7 +159,7 @@ class ProjectViewTests(TestDataMixin, TestCase):
         sub = Project.objects.create(name="Sub", parent=self.project, quantity=1, created_by=self.user)
         resp = self.client.post(
             reverse("core:project_update", args=[sub.pk]),
-            {"name": "Sub", "description": "", "quantity": "5", "default_print_preset": ""},
+            {"name": "Sub", "description": "", "parent": self.project.pk, "quantity": "5", "default_print_preset": ""},
         )
         self.assertEqual(resp.status_code, 302)
         sub.refresh_from_db()

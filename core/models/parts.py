@@ -155,6 +155,20 @@ class Part(models.Model):
             return None
         return self.project.effective_default_print_preset_id
 
+    def blocking_jobs(self) -> QuerySet[PrintJob]:
+        """Return unfinished print jobs that contain this part.
+
+        The part cannot be deleted while any of these exist (same rule as
+        :meth:`Project.blocking_jobs`).
+
+        Returns:
+            Distinct queryset of :class:`~core.models.printing.PrintJob` rows whose
+            status is not in :attr:`PrintJob.TERMINAL_STATUSES`.
+        """
+        from core.models.printing import PrintJob
+
+        return PrintJob.objects.filter(job_parts__part=self).exclude(status__in=PrintJob.TERMINAL_STATUSES).distinct()
+
     def is_estimable(self) -> bool:
         """Return whether this part has an STL file and a resolvable print preset."""
         return bool(self.stl_file) and self.effective_print_preset_id is not None
@@ -163,7 +177,8 @@ class Part(models.Model):
         """Copy this part (content, never history) into ``project``.
 
         Copies the scalar fields, the estimate fields and the ``PrintTimeEstimate``
-        rows, and writes the STL/3MF as a new file. Print history (``PrintJobPart``)
+        rows (without the measured ``actual_time``, which is history), and writes
+        the STL/3MF as a new file. Print history (``PrintJobPart``)
         and ``FileVersion`` rows are not copied. An in-flight estimation
         (``pending``/``estimating``) resets the copy's estimation status to ``none``
         so it is never stuck; a model file missing on disk also drops the copied
@@ -226,7 +241,7 @@ class Part(models.Model):
                 part=copy,
                 printer_id=estimate.printer_id,
                 estimated_time=estimate.estimated_time,
-                actual_time=estimate.actual_time,
+                # actual_time is measured print history and is never copied.
             )
             # Oldest first, so the copies keep the newest-first default order.
             for estimate in reversed(self.time_estimates.all())

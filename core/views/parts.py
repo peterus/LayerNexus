@@ -7,6 +7,7 @@ from django import forms as django_forms
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.db import transaction
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
@@ -236,6 +237,8 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
         preset_changed = "print_preset" in form.changed_data
         filament_changed = "spoolman_filament_id" in form.changed_data
         needs_re_estimate = stl_changed or preset_changed or filament_changed
+        # Compare stored values: changed_data also flags a project key that was simply omitted.
+        moved = form.initial.get("project") != self.object.project_id
 
         messages.success(self.request, "Part updated successfully.")
         response = super().form_valid(form)
@@ -251,6 +254,9 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
                 estimated_with_preset=None,
             )
             _trigger_part_estimation(self.object)
+        elif moved:
+            # Moved part: re-estimate only if the inherited preset differs in the new project.
+            _requeue_stale_estimates([self.object])
 
         return response
 
@@ -264,18 +270,42 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
 
 
 class PartDeleteView(ProjectManageMixin, DeleteView):
-    """Delete a part."""
+    """Delete a part.
+
+    Its print history (``PrintJobPart`` rows) goes with it; finished jobs are kept.
+    The delete is refused while an unfinished print job contains the part; the
+    check runs again inside the delete transaction.
+    """
 
     model = Part
     template_name = "core/part_confirm_delete.html"
 
-    def get_success_url(self) -> str:
-        """Redirect to the project the deleted part belonged to."""
-        return reverse("core:project_detail", kwargs={"pk": self.object.project_id})
+    def get_context_data(self, **kwargs) -> dict:
+        """Add the part's print history count and the jobs that block the delete."""
+        context = super().get_context_data(**kwargs)
+        context["print_history"] = self.object.job_entries.count()
+        context["blocking_jobs"] = list(self.object.blocking_jobs().order_by("-created_at"))
+        return context
 
-    def form_valid(self, form):
+    def form_valid(self, form: django_forms.Form) -> HttpResponse:
+        """Delete the part unless an unfinished print job still uses it.
+
+        Returns:
+            Redirect to the part's project, or back to the confirmation page when
+            the delete is blocked.
+        """
+        with transaction.atomic():
+            if self.object.blocking_jobs().exists():
+                messages.error(
+                    self.request,
+                    "This part cannot be deleted while unfinished print jobs contain it. "
+                    "Finish, cancel or remove those jobs first.",
+                )
+                return redirect("core:part_delete", pk=self.object.pk)
+            project_id = self.object.project_id
+            self.object.delete()
         messages.success(self.request, "Part deleted.")
-        return super().form_valid(form)
+        return redirect("core:project_detail", pk=project_id)
 
 
 class PartReEstimateView(ProjectManageMixin, View):

@@ -232,9 +232,25 @@ class ProjectUpdateView(ProjectManageMixin, UpdateView):
         return form
 
     def form_valid(self, form: ProjectEditForm) -> HttpResponse:
-        """Save updated project with success message."""
+        """Save the project (possibly moved) and re-queue estimates whose preset changed.
+
+        The cycle check runs again inside the write transaction against the current
+        tree, so a concurrent move cannot turn this one into a cycle.
+        """
+        parent = form.cleaned_data.get("parent")
+        with transaction.atomic():
+            if parent is not None and parent.pk in self.object.subtree_ids():
+                form.add_error("parent", ProjectEditForm.CYCLE_ERROR)
+                return self.form_invalid(form)
+            self.object = form.save()
+        # Compare stored values: changed_data also flags a parent key that was simply omitted.
+        before = (form.initial.get("parent"), form.initial.get("default_print_preset"))
+        if before != (self.object.parent_id, self.object.default_print_preset_id):
+            _requeue_stale_estimates(
+                Part.objects.filter(project_id__in=self.object.subtree_ids()).select_related("project")
+            )
         messages.success(self.request, "Project updated successfully.")
-        return super().form_valid(form)
+        return redirect(self.get_success_url())
 
     def get_success_url(self) -> str:
         """Redirect to the edited project's detail page."""

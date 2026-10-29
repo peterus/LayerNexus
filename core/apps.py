@@ -14,7 +14,7 @@ class CoreConfig(AppConfig):
     name = "core"
 
     def ready(self) -> None:
-        """Schedule stuck-worker recovery shortly after startup.
+        """Connect the media-file signals and schedule stuck-worker recovery after startup.
 
         When the container restarts, parts stuck at 'estimating' and jobs stuck
         at 'slicing' were being processed by the now-dead worker thread.  They
@@ -31,6 +31,10 @@ class CoreConfig(AppConfig):
         Only the main server process performs recovery — never management
         commands or migrations.
         """
+        from core import signals
+
+        signals.connect()
+
         # Only run in the main server process (Django autoreload main or gunicorn),
         # not in management commands or migrations.
         if os.environ.get("RUN_MAIN") == "true" or os.environ.get("SERVER_SOFTWARE", "").startswith("gunicorn"):

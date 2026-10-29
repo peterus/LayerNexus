@@ -1,4 +1,13 @@
+"""Django admin registrations for the core app."""
+
+from collections.abc import Iterable
+from typing import Any
+
 from django.contrib import admin
+from django.core.exceptions import PermissionDenied
+from django.db import transaction
+from django.db.models import Model, QuerySet
+from django.http import HttpRequest
 
 from .models import (
     CostProfile,
@@ -41,19 +50,88 @@ class PrintJobPlateInline(admin.TabularInline):
     readonly_fields = ("gcode_file", "filament_used_grams", "print_time_estimate")
 
 
+class _UnfinishedJobDeleteGuardMixin:
+    """Refuse admin deletes while unfinished print jobs still contain the affected parts.
+
+    Same rule as the web and API deletes. The blocking jobs are listed as "protected"
+    objects on the confirmation page, which disables the delete there; the check runs
+    again inside the delete transaction.
+    """
+
+    def _blocking_jobs(self, objs: Iterable[Model]) -> QuerySet[PrintJob]:
+        """Return the unfinished jobs that block deleting ``objs``."""
+        raise NotImplementedError
+
+    def _blocking_messages(self, objs: Iterable[Model]) -> list[str]:
+        """Describe each blocking job for the confirmation page."""
+        return [
+            f"{job} — unfinished print job ({job.get_status_display()}); finish, cancel or remove it first"
+            for job in self._blocking_jobs(objs).order_by("-created_at")
+        ]
+
+    def get_deleted_objects(self, objs: Iterable[Model], request: HttpRequest) -> tuple[Any, ...]:
+        """Add the blocking jobs to the protected objects so the admin refuses the delete."""
+        deleted, model_count, perms_needed, protected = super().get_deleted_objects(objs, request)
+        return deleted, model_count, perms_needed, [*protected, *self._blocking_messages(objs)]
+
+    def _refuse_if_blocked(self, objs: Iterable[Model]) -> None:
+        """Raise :class:`PermissionDenied` if an unfinished job appeared since the confirmation."""
+        if self._blocking_jobs(objs).exists():
+            raise PermissionDenied("Unfinished print jobs still contain parts that would be deleted.")
+
+    def delete_model(self, request: HttpRequest, obj: Model) -> None:
+        """Delete one object after re-checking the guard in the same transaction."""
+        with transaction.atomic():
+            self._refuse_if_blocked([obj])
+            super().delete_model(request, obj)
+
+    def delete_queryset(self, request: HttpRequest, queryset: QuerySet) -> None:
+        """Bulk-delete after re-checking the guard in the same transaction."""
+        with transaction.atomic():
+            self._refuse_if_blocked(queryset)
+            super().delete_queryset(request, queryset)
+
+
 @admin.register(Project)
-class ProjectAdmin(admin.ModelAdmin):
+class ProjectAdmin(_UnfinishedJobDeleteGuardMixin, admin.ModelAdmin):
     list_display = ("name", "parent", "quantity", "created_by", "created_at", "updated_at")
     list_filter = ("parent", "created_by", "created_at")
     search_fields = ("name", "description")
     inlines = [ProjectHardwareInline]
 
+    def _blocking_jobs(self, objs: Iterable[Project]) -> QuerySet[PrintJob]:
+        """Unfinished jobs containing a part of any of the projects' subtrees."""
+        # One breadth-first walk over all selected roots (one query per tree level).
+        ids: set[int] = {project.pk for project in objs}
+        frontier = set(ids)
+        while frontier:
+            frontier = set(Project.objects.filter(parent_id__in=frontier).values_list("pk", flat=True)) - ids
+            ids |= frontier
+        return (
+            PrintJob.objects.filter(job_parts__part__project_id__in=ids)
+            .exclude(status__in=PrintJob.TERMINAL_STATUSES)
+            .distinct()
+        )
+
 
 @admin.register(Part)
-class PartAdmin(admin.ModelAdmin):
+class PartAdmin(_UnfinishedJobDeleteGuardMixin, admin.ModelAdmin):
     list_display = ("name", "project", "quantity", "color", "material", "created_at")
     list_filter = ("color", "material")
     search_fields = ("name",)
+
+    @staticmethod
+    def _part_ids(objs: Iterable[Part]) -> QuerySet | list[int]:
+        """Return a subquery for a queryset (bulk action), else the PKs (one bind parameter each)."""
+        return objs.values("pk") if isinstance(objs, QuerySet) else [part.pk for part in objs]
+
+    def _blocking_jobs(self, objs: Iterable[Part]) -> QuerySet[PrintJob]:
+        """Unfinished jobs containing any of the parts."""
+        return (
+            PrintJob.objects.filter(job_parts__part__in=self._part_ids(objs))
+            .exclude(status__in=PrintJob.TERMINAL_STATUSES)
+            .distinct()
+        )
 
 
 @admin.register(PrinterProfile)
