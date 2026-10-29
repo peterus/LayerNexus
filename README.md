@@ -240,11 +240,13 @@ Send it as a header on every request: `Authorization: Token <key>`.
 | `GET` `POST` | `/api/v1/projects/` | List / create projects |
 | `GET` `PATCH` `DELETE` | `/api/v1/projects/{id}/` | Retrieve / update / delete a project |
 | `GET` | `/api/v1/projects/{id}/tree/` | Nested assembly tree (child modules, parts, hardware) |
+| `POST` | `/api/v1/projects/{id}/copy/` | Deep-copy the project with its subtree `{name?, parent?}` (new files, no print history; `parent` omitted/`null` → new top-level project; a parent inside the copied subtree → 400); returns 201 + project (write → `can_manage_projects`) |
 | `GET` `POST` | `/api/v1/projects/{id}/components/` | List / add a sub-project edge `{child_project, quantity}` (cycle-guarded, idempotent) |
 | `PATCH` `DELETE` | `/api/v1/projects/{id}/components/{edge_id}/` | Update quantity / remove a sub-project edge |
 | `GET` `POST` | `/api/v1/parts/` | List / create parts (all writable fields; `project` names the owning module) |
 | `GET` `PATCH` `DELETE` | `/api/v1/parts/{id}/` | Retrieve / update / delete a part |
 | `POST` | `/api/v1/parts/{id}/stl/` | Multipart STL upload (`stl_file`) → saves file, triggers estimation |
+| `POST` | `/api/v1/parts/{id}/copy/` | Copy the part into `{project}` (required; new model file, estimates kept unless the effective preset changes); returns 201 + part (write → `can_manage_projects`) |
 | `POST` | `/api/v1/parts/{id}/estimate/` | Re-queue estimation for this part → clears prior results, starts worker; returns 202 + serialized part (write → `can_manage_projects`) |
 | `GET` `POST` | `/api/v1/projects/{id}/parts/` | List / attach an existing part `{part, quantity}` (idempotent edge) |
 | `PATCH` `DELETE` | `/api/v1/projects/{id}/parts/{edge_id}/` | Update quantity / detach a part |

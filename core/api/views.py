@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.db.models.deletion import ProtectedError
 from django.shortcuts import get_object_or_404
@@ -25,7 +26,9 @@ from core.api.permissions import ReadOrProjectManage
 from core.api.serializers import (
     HardwarePartSerializer,
     OrcaPrintPresetSerializer,
+    PartCopyRequestSerializer,
     PartSerializer,
+    ProjectCopyRequestSerializer,
     ProjectDocumentSerializer,
     ProjectHardwareSerializer,
     ProjectSerializer,
@@ -41,7 +44,7 @@ from core.models import (
     ProjectHardware,
     SpoolmanFilamentMapping,
 )
-from core.views.helpers import _trigger_part_estimation
+from core.views.helpers import _requeue_stale_estimates, _trigger_part_estimation
 
 # Model-file upload limits mirror the UI ``PartForm.clean_stl_file`` rules.
 STL_MAX_SIZE = 100 * 1024 * 1024  # 100 MB
@@ -179,6 +182,45 @@ class ProjectViewSet(viewsets.ModelViewSet):
             _trigger_part_estimation(part)
             count += 1
         return Response({"queued": count}, status=status.HTTP_202_ACCEPTED)
+
+    @extend_schema(
+        summary="Deep-copy this project with its whole subtree",
+        description=(
+            "Copies the project with all sub-projects, parts (including new model files and "
+            "estimates), documents and hardware assignments; print history is never copied. "
+            "`name` defaults to `<name> (copy)`. Omit `parent` or send `null` to create a new "
+            "top-level project (it gets the source's effective preset and quantity 1); otherwise the copy "
+            "becomes a sub-project of `parent`, which must not lie in the copied subtree. "
+            "Copied parts whose effective preset changed are re-queued for estimation. "
+            "Write action — requires the `can_manage_projects` permission."
+        ),
+        request=ProjectCopyRequestSerializer,
+        responses={
+            201: ProjectSerializer,
+            400: OpenApiResponse(description="Unknown parent, or a parent inside the copied subtree."),
+        },
+    )
+    @action(detail=True, methods=["post"])
+    def copy(self, request: Request, pk: str | None = None) -> Response:
+        """Deep-copy the project as a new root or into ``parent``.
+
+        Returns:
+            201 with the serialized copy; 400 for an invalid ``parent``.
+        """
+        source = self.get_object()
+        body = ProjectCopyRequestSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        try:
+            new = source.deep_copy(
+                parent=body.validated_data.get("parent"),
+                name=body.validated_data.get("name"),
+                created_by=request.user,
+            )
+        except ValidationError as exc:
+            return Response({"parent": exc.messages}, status=status.HTTP_400_BAD_REQUEST)
+        _requeue_stale_estimates(Part.objects.filter(project_id__in=new.subtree_ids()).select_related("project"))
+        serializer = ProjectSerializer(new, context=self.get_serializer_context())
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     @extend_schema(
         summary="Nested tree for this project",
@@ -344,6 +386,33 @@ class PartViewSet(viewsets.ModelViewSet):
         part.refresh_from_db()
         serializer = PartSerializer(part, context=self.get_serializer_context())
         return Response(serializer.data, status=status.HTTP_202_ACCEPTED)
+
+    @extend_schema(
+        summary="Copy this part into a project",
+        description=(
+            "Creates an independent copy of the part (new model file, estimates and print-time "
+            "estimates; no print history or file versions) in `project`. The copy is re-queued "
+            "for estimation if its effective preset differs from the one that produced the "
+            "copied estimate. Write action — requires the `can_manage_projects` permission."
+        ),
+        request=PartCopyRequestSerializer,
+        responses={201: PartSerializer, 400: OpenApiResponse(description="Missing or unknown project.")},
+    )
+    @action(detail=True, methods=["post"])
+    def copy(self, request: Request, pk: str | None = None) -> Response:
+        """Deep-copy the part into ``project``.
+
+        Returns:
+            201 with the serialized copy; 400 if ``project`` is missing or unknown.
+        """
+        source = self.get_object()
+        body = PartCopyRequestSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        new = source.deep_copy(project=body.validated_data["project"])
+        _requeue_stale_estimates([new])
+        new.refresh_from_db()
+        serializer = PartSerializer(new, context=self.get_serializer_context())
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     @extend_schema(
         summary="Upload an STL or 3MF model file for this part",

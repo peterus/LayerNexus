@@ -5,15 +5,23 @@ import logging
 from django import forms as django_forms
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
 from django.views import View
-from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
+from django.views.generic import CreateView, DeleteView, DetailView, FormView, ListView, UpdateView
 
-from core.forms import ProjectEditForm, ProjectForm, SubProjectForm
+from core.forms import (
+    AddExistingPartForm,
+    AddExistingSubprojectForm,
+    ProjectCopyForm,
+    ProjectEditForm,
+    ProjectForm,
+    SubProjectForm,
+)
 from core.mixins import ProjectManageMixin
 from core.models import (
     HardwareShoppingItem,
@@ -24,7 +32,7 @@ from core.models import (
     Project,
     SpoolmanFilamentMapping,
 )
-from core.views.helpers import _trigger_part_estimation, _user_projects_qs
+from core.views.helpers import _requeue_stale_estimates, _trigger_part_estimation, _user_projects_qs
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +45,9 @@ __all__ = [
     "ProjectDeleteView",
     "ProjectCostView",
     "ProjectReEstimateView",
+    "ProjectCopyView",
+    "ProjectAddExistingPartView",
+    "ProjectAddExistingSubprojectView",
 ]
 
 
@@ -86,8 +97,9 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
 
         # Expand the build-progress section by default when prints exist or an unfinished
         # job contains a part of this subtree.
+        subtree_ids = project.subtree_ids()
         has_active_job_parts: bool = (
-            PrintJobPart.objects.filter(part__project_id__in=project.subtree_ids())
+            PrintJobPart.objects.filter(part__project_id__in=subtree_ids)
             .exclude(print_job__status__in=PrintJob.TERMINAL_STATUSES)
             .exists()
         )
@@ -123,6 +135,14 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
         shopping_rows = HardwareShoppingItem.build_list(project)
         context["shopping_counts"] = HardwareShoppingItem.counts(shopping_rows) if shopping_rows else None
         context["total_hardware_cost"] = project.total_hardware_cost
+
+        # "Add existing" pickers (deep copy), only for users who may use them.
+        if self.request.user.has_perm("core.can_manage_projects"):
+            labels = Project.path_label_map()
+            context["add_existing_part_form"] = AddExistingPartForm(labels=labels)
+            context["add_existing_subproject_form"] = AddExistingSubprojectForm(
+                project=project, labels=labels, subtree_ids=subtree_ids
+            )
 
         return context
 
@@ -346,4 +366,113 @@ class ProjectReEstimateView(ProjectManageMixin, View):
             messages.info(request, f"Re-estimation started for {count} part(s).")
         else:
             messages.warning(request, "No parts eligible for estimation.")
+        return redirect("core:project_detail", pk=project.pk)
+
+
+def _copy_message(count: int) -> str:
+    """Return the message suffix for parts queued for re-estimation after a copy."""
+    return f" {count} part(s) queued for re-estimation." if count else ""
+
+
+class ProjectCopyView(ProjectManageMixin, FormView):
+    """Deep-copy a project (with its subtree) as a new root or into another project."""
+
+    form_class = ProjectCopyForm
+    template_name = "core/project_copy.html"
+
+    def get_source(self) -> Project:
+        """Return the project being copied (cached per request)."""
+        if not hasattr(self, "_source"):
+            self._source = get_object_or_404(Project, pk=self.kwargs["pk"])
+        return self._source
+
+    def get_form_kwargs(self) -> dict:
+        """Pass the source project to the form."""
+        kwargs = super().get_form_kwargs()
+        kwargs["source"] = self.get_source()
+        return kwargs
+
+    def get_context_data(self, **kwargs) -> dict:
+        """Add the source project and its ancestors for the breadcrumb."""
+        context = super().get_context_data(**kwargs)
+        context["project"] = self.get_source()
+        context["ancestors"] = self.get_source().ancestors()
+        return context
+
+    def form_valid(self, form: ProjectCopyForm) -> HttpResponse:
+        """Copy the project and re-queue estimates whose effective preset changed."""
+        source = self.get_source()
+        try:
+            new = source.deep_copy(
+                parent=form.cleaned_data["target"],
+                name=form.cleaned_data["name"],
+                created_by=self.request.user,
+            )
+        except ValidationError as exc:
+            form.add_error("target", exc.messages)
+            return self.form_invalid(form)
+        count = _requeue_stale_estimates(
+            Part.objects.filter(project_id__in=new.subtree_ids()).select_related("project")
+        )
+        messages.success(self.request, f'Copied "{source.name}" to "{new.name}".{_copy_message(count)}')
+        return redirect("core:project_detail", pk=new.pk)
+
+
+class ProjectAddExistingPartView(ProjectManageMixin, View):
+    """Add an existing part to a project as an independent deep copy."""
+
+    http_method_names = ["post"]
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Copy the chosen part into the project.
+
+        Args:
+            request: The incoming HTTP request.
+            pk: Primary key of the target project.
+
+        Returns:
+            Redirect to the project detail page.
+        """
+        project = get_object_or_404(Project, pk=pk)
+        form = AddExistingPartForm(request.POST)
+        if not form.is_valid():
+            messages.error(request, "Please choose an existing part to copy.")
+            return redirect("core:project_detail", pk=project.pk)
+        source = form.cleaned_data["part"]
+        new = source.deep_copy(project=project)
+        count = _requeue_stale_estimates([new])
+        messages.success(request, f'Added a copy of part "{source.name}".{_copy_message(count)}')
+        return redirect("core:project_detail", pk=project.pk)
+
+
+class ProjectAddExistingSubprojectView(ProjectManageMixin, View):
+    """Add an existing project to a project as an independent deep-copied sub-project."""
+
+    http_method_names = ["post"]
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Copy the chosen project (with its subtree) under the project.
+
+        Args:
+            request: The incoming HTTP request.
+            pk: Primary key of the target (parent) project.
+
+        Returns:
+            Redirect to the project detail page.
+        """
+        project = get_object_or_404(Project, pk=pk)
+        form = AddExistingSubprojectForm(request.POST, project=project)
+        if not form.is_valid():
+            messages.error(request, "Please choose a project outside this project's own tree.")
+            return redirect("core:project_detail", pk=project.pk)
+        source = form.cleaned_data["source"]
+        try:
+            new = source.deep_copy(parent=project, name=source.name, created_by=request.user)
+        except ValidationError as exc:
+            messages.error(request, " ".join(exc.messages))
+            return redirect("core:project_detail", pk=project.pk)
+        count = _requeue_stale_estimates(
+            Part.objects.filter(project_id__in=new.subtree_ids()).select_related("project")
+        )
+        messages.success(request, f'Added a copy of "{source.name}" as a sub-project.{_copy_message(count)}')
         return redirect("core:project_detail", pk=project.pk)

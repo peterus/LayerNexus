@@ -7,13 +7,16 @@ from typing import TYPE_CHECKING, Optional
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
-from django.db import models
-from django.db.models import CheckConstraint, Q, QuerySet
+from django.db import models, transaction
+from django.db.models import CheckConstraint, Q, QuerySet, prefetch_related_objects
 
+from core.models.file_copy import CopiedFiles, duplicate_field_file
 from core.models.parts import Part
 from core.models.spoolman import SpoolmanFilamentMapping
 
 if TYPE_CHECKING:
+    from django.contrib.auth.models import User
+
     from core.models.documents import ProjectDocument
     from core.models.hardware import ProjectHardware
     from core.models.orca_profiles import OrcaPrintPreset
@@ -168,6 +171,31 @@ class Project(models.Model):
     def path_label(self) -> str:
         """Return the project path from the root down to self, joined by ``" › "``."""
         return " › ".join(p.name for p in [*self.ancestors(), self])
+
+    @classmethod
+    def path_label_map(cls) -> dict[int, str]:
+        """Return :attr:`path_label` for every project, computed with a single query.
+
+        Used by pickers that list many projects or parts, where calling
+        :attr:`path_label` per row would walk the parent chain once per row. A
+        visited-set guard makes a corrupt persisted cycle terminate.
+
+        Returns:
+            Mapping of project PK to its ``"Root › … › Name"`` path label.
+        """
+        rows = {pk: (name, parent_id) for pk, name, parent_id in cls.objects.values_list("pk", "name", "parent_id")}
+        labels: dict[int, str] = {}
+        for pk in rows:
+            chain: list[str] = []
+            visited: set[int] = set()
+            current: int | None = pk
+            while current is not None and current in rows and current not in visited:
+                visited.add(current)
+                name, parent_id = rows[current]
+                chain.append(name)
+                current = parent_id
+            labels[pk] = " › ".join(reversed(chain))
+        return labels
 
     def direct_part_count(self) -> int:
         """Return the number of parts directly in this project."""
@@ -326,6 +354,175 @@ class Project(models.Model):
             "hardware": ProjectHardware.objects.filter(project_id__in=ids).count(),
             "print_history": PrintJobPart.objects.filter(part__project_id__in=ids).count(),
         }
+
+    #: Suffix of the default name of a copied project.
+    COPY_SUFFIX = " (copy)"
+
+    def default_copy_name(self) -> str:
+        """Return ``"<name> (copy)"``, shortening the name so it fits ``max_length``."""
+        max_length = self._meta.get_field("name").max_length
+        return f"{self.name[: max_length - len(self.COPY_SUFFIX)]}{self.COPY_SUFFIX}"
+
+    def deep_copy(
+        self,
+        *,
+        parent: Project | None,
+        name: str | None = None,
+        created_by: User | None = None,
+    ) -> Project:
+        """Copy this project and its whole subtree (content, never history).
+
+        Copies every node's description, image (new file), quantity and preset,
+        its documents (new files), its hardware assignments (same catalog
+        entries) and its parts (see :meth:`Part.deep_copy`). Print history,
+        ``FileVersion`` rows and shopping status are not copied. A file missing on
+        disk logs a warning: the image or model file of the copy is left empty, and a
+        document without its file is skipped.
+
+        When copied as a new top-level project (``parent=None``), the copy gets this
+        project's *effective* preset, so the "roots must have a preset" rule holds, and
+        quantity 1 (a root is not needed within a parent).
+
+        The files are copied first, *outside* the row transaction, so the SQLite write
+        lock is only held for the short row inserts. If anything fails, the files
+        written so far are deleted again. (Files are not removed if an *enclosing*
+        transaction of the caller rolls back later, or if the process is killed.)
+
+        Args:
+            parent: Target parent, or ``None`` to create a new top-level project.
+            name: Name of the top copy; defaults to :meth:`default_copy_name`.
+                Descendants keep their names.
+            created_by: User recorded as creator of every copied node.
+
+        Returns:
+            The new top :class:`Project`.
+
+        Raises:
+            ValidationError: If ``parent`` is this project or one of its descendants.
+        """
+        self._assert_copy_target(parent)
+        tracker = CopiedFiles()
+        try:
+            nodes = self._snapshot_subtree()
+            top_preset_id = self.effective_default_print_preset_id if parent is None else self.default_print_preset_id
+            if parent is not None:
+                # Warm the parent chain so the cycle check in save() needs no query under the lock.
+                parent.ancestors()
+            files = self._copy_subtree_files(nodes, tracker)
+            with transaction.atomic():
+                # Re-check under the write lock: the tree may have changed meanwhile.
+                self._assert_copy_target(parent)
+                return self._create_subtree_copy(
+                    nodes, files, parent, name or self.default_copy_name(), created_by, top_preset_id
+                )
+        except Exception:
+            tracker.delete_all()
+            raise
+
+    def _assert_copy_target(self, parent: Project | None) -> None:
+        """Raise :class:`ValidationError` if ``parent`` lies in this project's subtree."""
+        if parent is not None and parent.pk in self.subtree_ids():
+            raise ValidationError({"parent": "A project cannot be copied into itself or one of its sub-projects."})
+
+    def _snapshot_subtree(self) -> list[tuple[Project, list[ProjectDocument], list[Part]]]:
+        """Return every subtree node (parents first) with its documents and parts.
+
+        Walks via the cycle-guarded :meth:`_walk_subtree`, before anything is created.
+        Each node's hardware assignments and each part's time estimates are
+        prefetched here too, so the row transaction reads no source rows (only the
+        target re-check in :meth:`deep_copy` queries under the lock).
+
+        Returns:
+            ``(node, documents, parts)`` tuples in depth-first order.
+        """
+        nodes = [node for node, _factor in self._walk_subtree()]
+        prefetch_related_objects(nodes, "documents", "hardware_assignments", "parts__time_estimates")
+        return [(node, list(node.documents.all()), list(node.parts.all())) for node in nodes]
+
+    @staticmethod
+    def _copy_subtree_files(
+        nodes: list[tuple[Project, list[ProjectDocument], list[Part]]],
+        tracker: CopiedFiles,
+    ) -> dict[tuple[str, int], str | None]:
+        """Copy every image, document and model file of the snapshot.
+
+        Args:
+            nodes: Output of :meth:`_snapshot_subtree`.
+            tracker: Records every new file for cleanup on failure.
+
+        Returns:
+            New storage names keyed by ``("image"|"document"|"part", source pk)``;
+            ``None`` where the source has no file or it is missing on disk.
+        """
+        files: dict[tuple[str, int], str | None] = {}
+        for node, documents, parts in nodes:
+            files["image", node.pk] = duplicate_field_file(node.image, tracker)
+            for doc in documents:
+                files["document", doc.pk] = duplicate_field_file(doc.file, tracker)
+            for part in parts:
+                files["part", part.pk] = duplicate_field_file(part.stl_file, tracker)
+        return files
+
+    def _create_subtree_copy(
+        self,
+        nodes: list[tuple[Project, list[ProjectDocument], list[Part]]],
+        files: dict[tuple[str, int], str | None],
+        parent: Project | None,
+        name: str,
+        created_by: User | None,
+        top_preset_id: int | None,
+    ) -> Project:
+        """Insert the rows of the copied subtree; the caller provides the transaction.
+
+        Args:
+            nodes: Output of :meth:`_snapshot_subtree` (each node after its parent).
+            files: Output of :meth:`_copy_subtree_files`.
+            parent: Target parent of the top copy, or ``None`` for a new root.
+            name: Name of the top copy.
+            created_by: User recorded as creator of every copied node.
+            top_preset_id: Preset of the top copy (resolved before the transaction).
+
+        Returns:
+            The new top :class:`Project`.
+        """
+        from core.models.documents import ProjectDocument
+        from core.models.hardware import ProjectHardware
+
+        copies: dict[int, Project] = {}
+        for node, documents, parts in nodes:
+            is_top = node.pk == self.pk
+            preset_id = top_preset_id if is_top else node.default_print_preset_id
+            copy = Project.objects.create(
+                name=name if is_top else node.name,
+                description=node.description,
+                image=files["image", node.pk],
+                parent=parent if is_top else copies[node.parent_id],
+                # A new root has no parent to be needed in: its quantity is reset to 1.
+                quantity=1 if is_top and parent is None else node.quantity,
+                default_print_preset_id=preset_id,
+                created_by=created_by,
+            )
+            copies[node.pk] = copy
+            # Oldest first: the copies get fresh created_at stamps and the default order is newest first.
+            for doc in reversed(documents):
+                doc_file = files["document", doc.pk]
+                if doc_file is None:
+                    # Nothing to copy: a document row without its file would only 500 on download.
+                    continue
+                ProjectDocument.objects.create(
+                    project=copy, name=doc.name, file=doc_file, uploaded_by_id=doc.uploaded_by_id
+                )
+            hardware = [
+                ProjectHardware(
+                    project=copy, hardware_part_id=hw.hardware_part_id, quantity=hw.quantity, notes=hw.notes
+                )
+                for hw in node.hardware_assignments.all()
+            ]
+            if hardware:
+                ProjectHardware.objects.bulk_create(hardware)
+            for part in parts:
+                part._create_copy(copy, files["part", part.pk])
+        return copies[self.pk]
 
     def _walk_subtree(self, multiplier: int = 1) -> list[tuple[Project, int]]:
         """Return every node of the subtree (self first, depth-first) with its multiplier.

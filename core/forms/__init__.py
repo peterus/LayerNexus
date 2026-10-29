@@ -19,6 +19,8 @@ from .orca_profiles import (
     OrcaPrintPresetImportForm,
 )
 from .parts import (
+    AddExistingPartForm,
+    PartCopyForm,
     PartForm,
 )
 from .print_jobs import (
@@ -30,6 +32,8 @@ from .printers import (
     PrinterProfileForm,
 )
 from .projects import (
+    AddExistingSubprojectForm,
+    ProjectCopyForm,
     ProjectEditForm,
     ProjectForm,
     SubProjectForm,
@@ -40,12 +44,15 @@ from .queue import (
 )
 
 __all__ = [
+    "AddExistingPartForm",
+    "AddExistingSubprojectForm",
     "AddPartToJobForm",
     "CostProfileForm",
     "HardwarePartForm",
     "OrcaFilamentProfileImportForm",
     "OrcaMachineProfileImportForm",
     "OrcaPrintPresetImportForm",
+    "PartCopyForm",
     "PartForm",
     "PrintJobForm",
     "PrintQueueForm",
@@ -53,6 +60,7 @@ __all__ = [
     "PrinterProfileForm",
     "ProfileUpdateForm",
     "ProjectDocumentForm",
+    "ProjectCopyForm",
     "ProjectEditForm",
     "ProjectForm",
     "ProjectHardwareForm",

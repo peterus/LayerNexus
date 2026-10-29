@@ -50,6 +50,7 @@ from .orca_profiles import (
     OrcaPrintPresetListView,
 )
 from .parts import (
+    PartCopyView,
     PartCreateView,
     PartDeleteView,
     PartDetailView,
@@ -78,6 +79,9 @@ from .printers import (
     UploadToPrinterView,
 )
 from .projects import (
+    ProjectAddExistingPartView,
+    ProjectAddExistingSubprojectView,
+    ProjectCopyView,
     ProjectCostView,
     ProjectCreateView,
     ProjectDeleteView,
@@ -156,6 +160,10 @@ __all__ = [
     "PrinterProfileUpdateView",
     "PrinterStatusView",
     "ProfileView",
+    "PartCopyView",
+    "ProjectAddExistingPartView",
+    "ProjectAddExistingSubprojectView",
+    "ProjectCopyView",
     "ProjectCostView",
     "ProjectCreateView",
     "ProjectDeleteView",

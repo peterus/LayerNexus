@@ -11,9 +11,9 @@ from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.views import View
-from django.views.generic import CreateView, DeleteView, DetailView, UpdateView
+from django.views.generic import CreateView, DeleteView, DetailView, FormView, UpdateView
 
-from core.forms import PartForm
+from core.forms import PartCopyForm, PartForm
 from core.mixins import ProjectManageMixin
 from core.models import (
     OrcaPrintPreset,
@@ -23,7 +23,7 @@ from core.models import (
     SpoolmanFilamentMapping,
 )
 from core.services.spoolman import SpoolmanClient, SpoolmanError
-from core.views.helpers import _trigger_part_estimation
+from core.views.helpers import _requeue_stale_estimates, _trigger_part_estimation
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ __all__ = [
     "PartUpdateView",
     "PartDeleteView",
     "PartReEstimateView",
+    "PartCopyView",
 ]
 
 
@@ -318,3 +319,39 @@ class PartReEstimateView(ProjectManageMixin, View):
         _trigger_part_estimation(part)
         messages.info(request, f"Re-estimation started for '{part.name}'.")
         return redirect("core:part_detail", pk=part.pk)
+
+
+class PartCopyView(ProjectManageMixin, FormView):
+    """Deep-copy a part into a project (content, never history)."""
+
+    form_class = PartCopyForm
+    template_name = "core/part_copy.html"
+
+    def get_source(self) -> Part:
+        """Return the part being copied (cached per request)."""
+        if not hasattr(self, "_source"):
+            self._source = get_object_or_404(Part.objects.select_related("project"), pk=self.kwargs["pk"])
+        return self._source
+
+    def get_form_kwargs(self) -> dict:
+        """Pass the source part to the form."""
+        kwargs = super().get_form_kwargs()
+        kwargs["source"] = self.get_source()
+        return kwargs
+
+    def get_context_data(self, **kwargs) -> dict:
+        """Add the source part and its project's ancestors for the breadcrumb."""
+        context = super().get_context_data(**kwargs)
+        part = self.get_source()
+        context["part"] = part
+        context["ancestors"] = part.project.ancestors()
+        return context
+
+    def form_valid(self, form: PartCopyForm) -> HttpResponse:
+        """Copy the part and re-queue its estimate if the effective preset changed."""
+        source = self.get_source()
+        new = source.deep_copy(project=form.cleaned_data["project"])
+        count = _requeue_stale_estimates([new])
+        suffix = " Re-estimation queued." if count else ""
+        messages.success(self.request, f'Copied part "{source.name}" to "{new.project.name}".{suffix}')
+        return redirect("core:part_detail", pk=new.pk)
