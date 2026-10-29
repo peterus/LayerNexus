@@ -18,6 +18,7 @@ from core.services.moonraker_ws import (
     MoonrakerWebSocketClient,
     build_ws_url,
     fetch_oneshot_token,
+    klippy_state,
     snapshot_event,
 )
 from core.tests.mixins import TestDataMixin
@@ -351,6 +352,18 @@ class SnapshotEventTests(TestCase):
         self.assertIsNone(snapshot_event({"status": ["print_stats"]}))
 
 
+class KlippyStateTests(TestCase):
+    """Tests for :func:`klippy_state`."""
+
+    def test_reads_webhooks_state(self) -> None:
+        self.assertEqual(klippy_state({"webhooks": {"state": "shutdown"}}), "shutdown")
+
+    def test_missing_or_malformed_returns_none(self) -> None:
+        for status in (None, [], {}, {"webhooks": None}, {"webhooks": {}}, {"webhooks": {"state": 1}}):
+            with self.subTest(status=status):
+                self.assertIsNone(klippy_state(status))
+
+
 class ResubscribeTests(IsolatedAsyncioTestCase):
     """Re-subscribe after Klippy restarts and forwarding of the subscribe snapshot."""
 
@@ -457,6 +470,30 @@ class ResubscribeTests(IsolatedAsyncioTestCase):
 
                 self.assertFalse(self.client._klippy_ready)
                 self.assertEqual([event["method"] for event in self.events], [method])
+
+    async def test_subscribe_requests_klippy_state(self) -> None:
+        ws = FakeWebSocket([])
+
+        await self._listen(ws)
+
+        self.assertEqual(json.loads(ws.sent[0])["params"]["objects"]["webhooks"], ["state"])
+
+    async def test_subscribe_response_sets_readiness_from_webhooks_state(self) -> None:
+        for state, ready in (("ready", True), ("startup", False), ("shutdown", False), ("error", False)):
+            with self.subTest(state=state):
+                await self._listen(FakeWebSocket([_subscribe_response({"webhooks": {"state": state}})]))
+
+                self.assertIs(self.client._klippy_ready, ready)
+
+    async def test_status_update_webhooks_state_updates_readiness(self) -> None:
+        frames = [
+            _subscribe_response({"webhooks": {"state": "startup"}}),
+            _frame("notify_status_update", [{"webhooks": {"state": "ready"}}, 2.0]),
+        ]
+
+        await self._listen(FakeWebSocket(frames))
+
+        self.assertTrue(self.client._klippy_ready)
 
     async def test_reconnect_assumes_klippy_ready(self) -> None:
         self.client._klippy_ready = False
@@ -572,6 +609,15 @@ class StatusWatchdogTests(IsolatedAsyncioTestCase):
         self.assertTrue(ws.closed)
         self.assertEqual([event["method"] for event in self.events], ["notify_status_update"])
         self.assertTrue(any("reconnecting" in line for line in logs.output))
+
+    async def test_watchdog_paused_when_connecting_to_shutdown_klippy(self) -> None:
+        ws = FakeWebSocket([_subscribe_response({"webhooks": {"state": "shutdown"}})], hang=True)
+
+        with self.assertNoLogs("core.services.moonraker_ws", level="WARNING"):
+            await self._listen(ws, run_for=0.7)
+
+        self.assertEqual(_subscribe_count(ws), 1)
+        self.assertFalse(ws.closed)
 
     async def test_watchdog_resumed_by_klippy_ready(self) -> None:
         ws = FakeWebSocket([_frame("notify_klippy_shutdown"), _frame("notify_klippy_ready")], hang=True)

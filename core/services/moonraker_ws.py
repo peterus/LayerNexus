@@ -41,7 +41,9 @@ from core.services.moonraker import DEFAULT_TIMEOUT, MoonrakerError
 logger = logging.getLogger(__name__)
 
 #: Objects we subscribe to for live status updates.
-SUBSCRIBE_OBJECTS: dict[str, None] = {
+SUBSCRIBE_OBJECTS: dict[str, list[str] | None] = {
+    # Klippy's own state (ready/startup/shutdown/error) drives the watchdog.
+    "webhooks": ["state"],
     "print_stats": None,
     "virtual_sdcard": None,
     "display_status": None,
@@ -153,6 +155,25 @@ def snapshot_event(result: dict[str, Any]) -> dict[str, Any] | None:
         "method": "notify_status_update",
         "params": [snapshot, result.get("eventtime")],
     }
+
+
+def klippy_state(status: Any) -> str | None:
+    """Return ``webhooks.state`` from a status block, if present.
+
+    Args:
+        status: A status block (subscribe result or status update params[0]).
+
+    Returns:
+        Klippy's state (``"ready"``, ``"startup"``, ``"shutdown"``,
+        ``"error"``), or ``None`` if the block does not carry it.
+    """
+    if not isinstance(status, dict):
+        return None
+    webhooks = status.get("webhooks")
+    if not isinstance(webhooks, dict):
+        return None
+    state = webhooks.get("state")
+    return state if isinstance(state, str) else None
 
 
 class MoonrakerWebSocketClient:
@@ -277,6 +298,12 @@ class MoonrakerWebSocketClient:
         if method is None:
             return await self._handle_response(event)
 
+        if method == "notify_status_update":
+            params = event.get("params")
+            state = klippy_state(params[0] if isinstance(params, list) and params else None)
+            if state is not None:
+                self._klippy_ready = state == "ready"
+
         if method in KLIPPY_DOWN_METHODS or method == "notify_klippy_ready":
             self._subscribe_failed = False
         if method == "notify_klippy_ready":
@@ -312,8 +339,12 @@ class MoonrakerWebSocketClient:
         if not isinstance(result, dict):
             logger.warning("%s: malformed subscribe response: %r", self.printer.name, result)
             return False
-        # An accepted subscribe proves Klippy is ready.
-        self._klippy_ready = True
+        # An accepted subscribe proves the Klippy host is connected, but it
+        # may still be in startup/shutdown/error (state predating this
+        # connection, so no notify_klippy_shutdown follows): only "ready"
+        # arms the watchdog; otherwise wait for notify_klippy_ready.
+        state = klippy_state(result.get("status"))
+        self._klippy_ready = state is None or state == "ready"
         self._subscribe_failed = False
         snapshot = snapshot_event(result)
         if snapshot is not None:
