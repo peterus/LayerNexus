@@ -54,29 +54,60 @@ class SubProjectForm(forms.ModelForm):
 
 
 class ProjectEditForm(forms.ModelForm):
-    """Form for editing a project.
+    """Form for editing a project, including moving it within the tree.
 
-    Sub-projects additionally get their ``quantity`` within the parent and an
-    optional preset (inherited from the parent if empty); on top-level projects
-    the quantity is hidden and the preset is required.
+    ``parent`` moves the project: any project outside its own subtree, or empty for
+    a top-level project. Sub-projects additionally get their ``quantity`` within the
+    parent. The preset is optional (inherited from the parent) but required when the
+    project is, or becomes, a top-level project.
     """
+
+    #: Error shown when a project would be moved into its own subtree.
+    CYCLE_ERROR = "A project cannot be a sub-project of itself or one of its descendants."
 
     class Meta:
         model = Project
-        fields = ["name", "description", "image", "quantity", "default_print_preset"]
+        fields = ["name", "description", "image", "parent", "quantity", "default_print_preset"]
         widgets = {
             "description": forms.Textarea(attrs={"rows": 4}),
         }
 
-    def __init__(self, *args, **kwargs) -> None:
-        """Keep ``quantity`` and an optional preset only for sub-projects."""
+    def __init__(self, *args, labels: dict[int, str] | None = None, **kwargs) -> None:
+        """Offer every project outside the own subtree as parent; keep ``quantity`` for sub-projects.
+
+        Args:
+            labels: Precomputed :meth:`Project.path_label_map`, to avoid a second scan.
+        """
         super().__init__(*args, **kwargs)
+        parent = self.fields["parent"]
+        parent.required = False
+        parent.empty_label = "(top-level project)"
+        parent.label = "Parent project"
+        parent.help_text = "Move this project into another project, or leave empty for a top-level project."
+        parent.queryset = Project.objects.exclude(pk__in=self.instance.subtree_ids()).order_by("name")
+        # Path labels are also needed when an invalid POST re-renders the form.
+        labels = Project.path_label_map() if labels is None else labels
+        parent.choices = path_sorted_choices(
+            parent.queryset.only("pk", "name"), lambda p: labels.get(p.pk, p.name), parent.empty_label
+        )
+        # Enforced in clean(): only required when the project ends up top-level.
+        self.fields["default_print_preset"].required = False
         if self.instance.parent_id is not None:
-            self.fields["default_print_preset"].required = False
             self.fields["default_print_preset"].help_text = INHERITED_PRESET_HELP
         else:
             del self.fields["quantity"]
-            self.fields["default_print_preset"].required = True
+
+    def clean(self) -> dict:
+        """Require a preset on a top-level project; a top-level project has quantity 1."""
+        cleaned_data = super().clean()
+        if "parent" in cleaned_data and cleaned_data["parent"] is None:
+            if "default_print_preset" in cleaned_data and cleaned_data["default_print_preset"] is None:
+                self.add_error("default_print_preset", "Top-level projects need a default print preset.")
+            # Quantity only means something below a parent (same rule as the API).
+            self.instance.quantity = 1
+            if "quantity" in self.fields:
+                cleaned_data["quantity"] = 1
+        return cleaned_data
 
 
 def path_sorted_choices(

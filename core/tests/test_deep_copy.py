@@ -18,8 +18,8 @@ Field audit (``Project._meta.concrete_fields``):
 * not copied: ``id``, ``created_at``, ``updated_at``.
 
 Reverse relations: ``ProjectDocument`` (new files), ``ProjectHardware`` (same catalog
-entry) and ``PrintTimeEstimate`` (without the measured ``actual_time``) are copied; ``PrintJobPart``, ``FileVersion`` and
-``HardwareShoppingItem`` (history) are not.
+entry) and ``PrintTimeEstimate`` (without the measured ``actual_time``) are copied;
+``PrintJobPart``, ``FileVersion`` and ``HardwareShoppingItem`` (history) are not.
 """
 
 import os

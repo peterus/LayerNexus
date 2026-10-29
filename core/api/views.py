@@ -4,7 +4,9 @@ Top-level resources (projects, parts, hardware catalogue) are ``ModelViewSet``s 
 through a router; documents and hardware assignments are nested under a project via
 generic list/create + detail views. The project tree is expressed by ``Project.parent``
 and ``Part.project``; deleting a project deletes its subtree and is refused (``409``)
-while unfinished print jobs contain any of its parts.
+while unfinished print jobs contain any of its parts (the same applies to deleting a
+part). Moving a project or part (``PATCH parent`` / ``PATCH project``) re-queues the
+estimates whose effective preset changed.
 """
 
 from __future__ import annotations
@@ -97,6 +99,28 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 prefix += "subprojects__"
             queryset = queryset.prefetch_related(*lookups)
         return queryset
+
+    def perform_update(self, serializer: ProjectSerializer) -> None:
+        """Save the project; on a move or preset change re-queue subtree parts with a changed preset.
+
+        The cycle check runs again inside the write transaction against the current tree,
+        so a concurrent move cannot turn this one into a cycle.
+
+        Raises:
+            serializers.ValidationError: If the new parent is now in the project's subtree.
+        """
+        before = (serializer.instance.parent_id, serializer.instance.default_print_preset_id)
+        parent = serializer.validated_data.get("parent")
+        with transaction.atomic():
+            if parent is not None and parent.pk in serializer.instance.subtree_ids():
+                raise serializers.ValidationError(
+                    {"parent": ["A project cannot be a sub-project of itself or one of its descendants."]}
+                )
+            project = serializer.save()
+        if (project.parent_id, project.default_print_preset_id) != before:
+            _requeue_stale_estimates(
+                Part.objects.filter(project_id__in=project.subtree_ids()).select_related("project")
+            )
 
     @extend_schema(
         summary="Delete a project and its whole subtree",
@@ -333,6 +357,51 @@ class PartViewSet(viewsets.ModelViewSet):
     permission_classes = [ReadOrProjectManage]
     filter_backends = [filters.SearchFilter]
     search_fields = ["name", "material"]
+
+    def perform_update(self, serializer: PartSerializer) -> None:
+        """Save the part; when it moved to another project, re-queue it if its preset changed."""
+        before = serializer.instance.project_id
+        part = serializer.save()
+        if part.project_id != before:
+            _requeue_stale_estimates([part])
+
+    @extend_schema(
+        summary="Delete a part",
+        description=(
+            "Deletes the part with its model file and print history entries (finished jobs "
+            "are kept). Refused with 409 while an unfinished print job (any status other "
+            "than completed, failed or cancelled) contains the part."
+        ),
+        responses={
+            204: None,
+            409: inline_serializer(
+                "PartDeleteBlocked",
+                fields={
+                    "detail": serializers.CharField(),
+                    "blocking_jobs": serializers.ListField(child=serializers.IntegerField()),
+                },
+            ),
+        },
+    )
+    def destroy(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        """Delete the part unless unfinished print jobs still use it.
+
+        Returns:
+            204 on success; 409 with the blocking job ids otherwise.
+        """
+        part = self.get_object()
+        with transaction.atomic():
+            blocking = list(part.blocking_jobs().values_list("pk", flat=True))
+            if blocking:
+                return Response(
+                    {
+                        "detail": "Part cannot be deleted while unfinished print jobs contain it.",
+                        "blocking_jobs": blocking,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            part.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(
         summary="Re-queue estimation for this part",
