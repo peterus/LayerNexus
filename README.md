@@ -238,13 +238,13 @@ Send it as a header on every request: `Authorization: Token <key>`.
 | Method(s) | Path | Purpose |
 |---|---|---|
 | `GET` `POST` | `/api/v1/projects/` | List / create projects |
-| `GET` `PATCH` `DELETE` | `/api/v1/projects/{id}/` | Retrieve / update / delete a project |
+| `GET` `PATCH` `DELETE` | `/api/v1/projects/{id}/` | Retrieve / update / delete a project. `PATCH parent` moves it (never into its own subtree) and, like a `default_print_preset` change, re-queues parts whose effective preset changed. `DELETE` removes the subtree; 409 + `blocking_jobs` while unfinished print jobs contain its parts |
 | `GET` | `/api/v1/projects/{id}/tree/` | Nested assembly tree (child modules, parts, hardware) |
 | `POST` | `/api/v1/projects/{id}/copy/` | Deep-copy the project with its subtree `{name?, parent?}` (new files, no print history; `parent` omitted/`null` → new top-level project; a parent inside the copied subtree → 400); returns 201 + project (write → `can_manage_projects`) |
 | `GET` `POST` | `/api/v1/projects/{id}/components/` | List / add a sub-project edge `{child_project, quantity}` (cycle-guarded, idempotent) |
 | `PATCH` `DELETE` | `/api/v1/projects/{id}/components/{edge_id}/` | Update quantity / remove a sub-project edge |
 | `GET` `POST` | `/api/v1/parts/` | List / create parts (all writable fields; `project` names the owning module) |
-| `GET` `PATCH` `DELETE` | `/api/v1/parts/{id}/` | Retrieve / update / delete a part |
+| `GET` `PATCH` `DELETE` | `/api/v1/parts/{id}/` | Retrieve / update / delete a part. `PATCH project` moves it (print history and file stay) and re-queues it if its effective preset changed. `DELETE` → 409 + `blocking_jobs` while an unfinished print job contains it |
 | `POST` | `/api/v1/parts/{id}/stl/` | Multipart STL upload (`stl_file`) → saves file, triggers estimation |
 | `POST` | `/api/v1/parts/{id}/copy/` | Copy the part into `{project}` (required; new model file, estimates kept unless the effective preset changes); returns 201 + part (write → `can_manage_projects`) |
 | `POST` | `/api/v1/parts/{id}/estimate/` | Re-queue estimation for this part → clears prior results, starts worker; returns 202 + serialized part (write → `can_manage_projects`) |
@@ -342,6 +342,22 @@ The first user to register is automatically assigned the **Admin** role. Subsequ
 | **ProjectDocument** | File attachments (PDF, images, CAD files, etc.) linked to a project |
 | **HardwarePart** | Reusable hardware catalog with 10 categories and optional pricing |
 | **ProjectHardware** | Links hardware parts to projects with quantities and project-specific notes |
+
+## Maintenance: orphaned media files
+
+Deleting a part, document, file version or project (including a whole subtree) removes its
+files from `media/` after the transaction commits, unless another row still references the
+same file; replacing a model file or project image removes the old file the same way.
+Print-job G-code and plate thumbnails are job history and are never touched.
+Files left behind before this existed (or by a crash) can be listed and removed with:
+
+```bash
+python manage.py cleanup_orphan_media            # dry run: list orphans + total size
+python manage.py cleanup_orphan_media --delete   # remove them
+```
+
+Files modified within the last hour are skipped (`--min-age MINUTES`, default 60), so an
+upload or copy in progress is never touched.
 
 ## Running Tests
 
