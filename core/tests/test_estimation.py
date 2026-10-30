@@ -942,3 +942,72 @@ class PartEstimateTransitionTests(TestDataMixin, TestCase):
         self.assertEqual(Part.requeue_stuck_estimates(), 1)
         self.part.refresh_from_db()
         self.assertEqual(self.part.estimation_status, Part.ESTIMATION_PENDING)
+
+
+class WorkerFailurePathTests(TestCase):
+    """_estimate_part_in_background records failures on a claimed (estimating) part."""
+
+    def setUp(self) -> None:
+        from core.models import OrcaMachineProfile, OrcaPrintPreset, Project
+
+        self.preset = OrcaPrintPreset.objects.create(
+            name="P", orca_name="P", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        self.machine = OrcaMachineProfile.objects.create(
+            name="M", orca_name="M", state=OrcaMachineProfile.STATE_RESOLVED, instantiation=True
+        )
+        self.part = Part.objects.create(
+            name="p",
+            project=Project.objects.create(name="Proj"),
+            print_preset=self.preset,
+            estimation_status=Part.ESTIMATION_ESTIMATING,
+        )
+        self.part.stl_file.name = "stl_files/p.stl"
+        self.part.save(update_fields=["stl_file"])
+
+    def _run(self, **slice_kwargs) -> None:
+        from core.services import slicing_worker
+
+        with (
+            patch.object(slicing_worker, "_find_compatible_machine", return_value=self.machine),
+            patch.object(slicing_worker, "_build_slicer_kwargs", return_value={}),
+            patch.object(slicing_worker, "create_3mf_bundle", return_value=b"3mf"),
+            patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls,
+        ):
+            client_cls.return_value.slice_bundle.configure_mock(**slice_kwargs)
+            slicing_worker._estimate_part_in_background(self.part.pk)
+        self.part.refresh_from_db()
+
+    def test_slicer_error_marks_part_error(self) -> None:
+        """An OrcaSlicerError ends in ERROR with the message."""
+        from core.services.orcaslicer import OrcaSlicerError
+
+        self._run(side_effect=OrcaSlicerError("boom"))
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_ERROR)
+        self.assertEqual(self.part.estimation_error, "boom")
+
+    def test_unexpected_error_marks_part_error(self) -> None:
+        """Any other exception ends in ERROR with an 'Unexpected error' prefix."""
+        self._run(side_effect=RuntimeError("kaput"))
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_ERROR)
+        self.assertEqual(self.part.estimation_error, "Unexpected error: kaput")
+
+    def test_no_estimates_marks_part_error(self) -> None:
+        """A slice without filament/time results ends in ERROR."""
+        self._run(
+            return_value=MagicMock(
+                plates=[], total_filament_grams=None, total_filament_mm=None, total_print_time_seconds=None
+            )
+        )
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_ERROR)
+        self.assertEqual(self.part.estimation_error, "Slicing returned no filament or time estimates.")
+
+    def test_load_failure_marks_part_error(self) -> None:
+        """If loading the part itself fails, the stub still records the error."""
+        from core.services import slicing_worker
+
+        with patch.object(Part.objects, "select_related", side_effect=RuntimeError("db gone")):
+            slicing_worker._estimate_part_in_background(self.part.pk)
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_ERROR)
+        self.assertEqual(self.part.estimation_error, "Unexpected error: db gone")
