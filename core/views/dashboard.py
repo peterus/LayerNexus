@@ -83,7 +83,9 @@ class DashboardView(LoginRequiredMixin, TemplateView):
         # Farm overview
         printers = PrinterProfile.objects.active()
         context["total_printers"] = printers.count()
-        active_printer_ids = user_queue.active().values_list("printer_id", flat=True).distinct()
+        active_printer_ids = (
+            user_queue.active().filter(printer__is_active=True).values_list("printer_id", flat=True).distinct()
+        )
         context["busy_printers"] = active_printer_ids.count()
         context["idle_printers"] = (
             printers.exclude(
@@ -251,7 +253,9 @@ class StatisticsView(LoginRequiredMixin, TemplateView):
         # Printer stats
         printers = PrinterProfile.objects.active()
         context["total_printers"] = printers.count()
-        active_printer_ids = user_queue.active().values_list("printer_id", flat=True).distinct()
+        active_printer_ids = (
+            user_queue.active().filter(printer__is_active=True).values_list("printer_id", flat=True).distinct()
+        )
         context["busy_printers"] = active_printer_ids.count()
         context["idle_printers"] = (
             printers.exclude(
@@ -261,8 +265,8 @@ class StatisticsView(LoginRequiredMixin, TemplateView):
             .count()
         )
 
-        # Total retries: attempts the system queued after a failed attempt
-        context["total_retries"] = PrintQueue.objects.filter(is_retry=True).count()
+        # Total retries of the current queue (failed attempts in each open attempt's retry cycle)
+        context["total_retries"] = user_queue.with_retry_count().aggregate(total=Sum("retry_count"))["total"] or 0
 
         return context
 

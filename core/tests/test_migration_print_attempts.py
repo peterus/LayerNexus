@@ -145,7 +145,24 @@ class PrintAttemptBackfillTests(TransactionTestCase):
         from core.models import PrintQueue as CurrentQueue
 
         self.assertEqual(CurrentQueue.objects.get(pk=printing.pk).state, "printing")
-        self.assertEqual(CurrentQueue.objects.get(pk=waiting.pk).state, "cancelled")
+        # Never started: removed like a manual dequeue (deleted), not kept as "cancelled".
+        self.assertFalse(CurrentQueue.objects.filter(pk=waiting.pk).exists())
+
+    def test_backfill_cancels_started_duplicate(self) -> None:
+        plate = self._job(["printing"], printer=self.printer).plates.get()
+        review = self.PrintQueue.objects.create(
+            plate=plate, printer=self.printer, status="awaiting_review", completed_at=self.t0
+        )
+        printing = self.PrintQueue.objects.create(
+            plate=plate, printer=self.printer, status="printing", started_at=self.t0
+        )
+
+        self._migrate(executor_leaf())
+
+        from core.models import PrintQueue as CurrentQueue
+
+        self.assertEqual(CurrentQueue.objects.get(pk=review.pk).state, "awaiting_review")
+        self.assertEqual(CurrentQueue.objects.get(pk=printing.pk).state, "cancelled")
 
     def test_backfill_is_idempotent(self) -> None:
         job = self._job(["completed", "failed", "waiting"], printer=self.printer)
@@ -183,3 +200,28 @@ class PrintAttemptBackfillTests(TransactionTestCase):
 def executor_leaf() -> list[tuple[str, str]]:
     """Return the leaf migration nodes (the current schema)."""
     return MigrationExecutor(connection).loader.graph.leaf_nodes()
+
+
+class PrintAttemptRollbackTests(TransactionTestCase):
+    """Rolling back below the print-attempt migrations is refused while history exists."""
+
+    def tearDown(self) -> None:
+        """Make sure later tests see the current schema."""
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        super().tearDown()
+
+    def test_rollback_with_history_is_refused(self) -> None:
+        from django.db.migrations.exceptions import IrreversibleError
+
+        from core.models import PrinterProfile, PrintJob, PrintJobPlate, PrintQueue
+
+        printer = PrinterProfile.objects.create(name="Rollback Printer")
+        plate = PrintJobPlate.objects.create(print_job=PrintJob.objects.create(name="Rollback"), plate_number=1)
+        PrintQueue.objects.create(plate=plate, printer=printer, result="passed", resolved_at=timezone.now())
+
+        executor = MigrationExecutor(connection)
+        with self.assertRaises(IrreversibleError):
+            executor.migrate(BEFORE)
+        PrintQueue.objects.all().delete()

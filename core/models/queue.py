@@ -280,6 +280,16 @@ class PrintQueue(models.Model):
         return self.state == self.STATE_AWAITING_REVIEW
 
     @classmethod
+    def history_q(cls) -> Q:
+        """Return a filter for attempts that are print history (started or resolved)."""
+        return ~Q(result="") | Q(started_at__isnull=False) | Q(completed_at__isnull=False)
+
+    @property
+    def is_history(self) -> bool:
+        """Return True once the attempt was started or resolved (it must not be deleted)."""
+        return bool(self.result) or self.started_at is not None or self.completed_at is not None
+
+    @classmethod
     def active_start_claim_q(cls) -> Q:
         """Return a filter for waiting entries whose print start is in progress (unexpired claim)."""
         return Q(

@@ -10,7 +10,7 @@ derived from timestamps + ``result``.  This migration:
 2. keeps an open entry's ``retry_count`` as that many ``failed`` attempts
    (so the next failure still discards at the same count);
 3. resolves duplicate open entries of one plate (keeps the most advanced
-   one, the others become ``cancelled``), so the new
+   one; never-started others are deleted, started ones become ``cancelled``), so the new
    "one open attempt per plate" constraint can be added;
 4. creates a ``passed`` attempt for each ``completed`` plate and
    ``max_retries`` ``failed`` attempts for each ``failed`` plate that has
@@ -62,7 +62,11 @@ def backfill_print_attempts(apps, schema_editor) -> None:
             continue
         keep = max(entries, key=lambda e: (_OPEN_RANK.get(e.status, 0), -e.pk))
         for entry in entries:
-            if entry.pk != keep.pk:
+            if entry.pk == keep.pk:
+                continue
+            if entry.started_at is None and entry.completed_at is None:
+                entry.delete()  # never started: removing it is a delete, as in the app
+            else:
                 entry.result = "cancelled"
                 entry.resolved_at = now
                 entry.status = RESOLVED_LEGACY_STATUS

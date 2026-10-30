@@ -6,7 +6,7 @@ from typing import Any
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Case, IntegerField, OuterRef, QuerySet, Subquery, Value, When
 from django.http import (
     Http404,
@@ -228,7 +228,12 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
         plate = form.cleaned_data["plate"]
         priority = form.cleaned_data["priority"]
 
-        PrintQueue.enqueue(plate=plate, printer=printer, priority=priority)
+        try:
+            PrintQueue.enqueue(plate=plate, printer=printer, priority=priority)
+        except IntegrityError:
+            # Queued concurrently since the form was validated (one open attempt per plate).
+            messages.error(self.request, f"Plate {plate.plate_number} of '{plate.print_job}' is already queued.")
+            return redirect(self.success_url)
 
         messages.success(
             self.request,
@@ -288,9 +293,17 @@ class PrintQueueDeleteView(QueueDequeueMixin, DeleteView):
 
         with transaction.atomic():
             # Re-read under lock: the attempt may have been resolved since the page loaded.
-            entry = PrintQueue.objects.open().select_for_update().filter(pk=self.object.pk).first()
+            # A print start in progress (G-code upload) is protected like for Designers:
+            # deleting it would let the print run untracked.
+            entry = (
+                PrintQueue.objects.open()
+                .select_for_update()
+                .filter(pk=self.object.pk)
+                .exclude(PrintQueue.active_start_claim_q())
+                .first()
+            )
             if entry is None:
-                raise Http404("Queue entry is no longer open.")
+                raise Http404("Queue entry is no longer open or its print is being started.")
             entry.remove()
         messages.success(self.request, "Removed from queue.")
         return HttpResponseRedirect(self.get_success_url())

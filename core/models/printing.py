@@ -168,6 +168,16 @@ class PrintJob(models.Model):
         """Number of plates in this job."""
         return self.plates.count()
 
+    def has_print_history(self) -> bool:
+        """Return True if a plate of this job has a started or resolved print attempt.
+
+        Such a job (and its plates) must not be deleted or re-sliced — that
+        would delete the print history.
+        """
+        from core.models.queue import PrintQueue
+
+        return PrintQueue.objects.filter(PrintQueue.history_q(), plate__print_job=self).exists()
+
     def refresh_stored_print_status(self) -> None:
         """Re-derive the stored print status (``printing`` / ``completed``) from the plates.
 
@@ -280,6 +290,12 @@ class PrintJobPlate(models.Model):
 
     def __str__(self) -> str:
         return f"Plate {self.plate_number} of {self.print_job}"
+
+    def has_print_history(self) -> bool:
+        """Return True if the plate has a started or resolved print attempt (not deletable)."""
+        from core.models.queue import PrintQueue
+
+        return self.queue_entries.filter(PrintQueue.history_q()).exists()
 
     def failed_attempts_since_manual_enqueue(self) -> int:
         """Count failed attempts since (and including) the last user-enqueued attempt.

@@ -49,6 +49,42 @@ class PrintJobPlateInline(admin.TabularInline):
     extra = 0
     readonly_fields = ("gcode_file", "filament_used_grams", "print_time_estimate")
 
+    def has_delete_permission(self, request: HttpRequest, obj: PrintJob | None = None) -> bool:
+        """Refuse deleting plates of a job with print history (the cascade would delete it)."""
+        if obj is not None and obj.has_print_history():
+            return False
+        return super().has_delete_permission(request, obj)
+
+
+class _PrintHistoryDeleteGuardMixin:
+    """Refuse admin deletes of objects whose cascade would delete print history.
+
+    Subclasses implement :meth:`_history_attempts` for the objects to delete.
+    """
+
+    def _history_attempts(self, objs: Iterable[Model]) -> QuerySet[PrintQueue]:
+        raise NotImplementedError
+
+    def has_delete_permission(self, request: HttpRequest, obj: Model | None = None) -> bool:
+        """Hide the delete action for an object with print history."""
+        if obj is not None and self._history_attempts([obj]).exists():
+            return False
+        return super().has_delete_permission(request, obj)
+
+    def delete_model(self, request: HttpRequest, obj: Model) -> None:
+        """Delete one object after re-checking the guard in the same transaction."""
+        with transaction.atomic():
+            if self._history_attempts([obj]).exists():
+                raise PermissionDenied("This object has print history and cannot be deleted.")
+            super().delete_model(request, obj)
+
+    def delete_queryset(self, request: HttpRequest, queryset: QuerySet) -> None:
+        """Bulk-delete after re-checking the guard in the same transaction."""
+        with transaction.atomic():
+            if self._history_attempts(queryset).exists():
+                raise PermissionDenied("The selection contains print history and cannot be deleted.")
+            super().delete_queryset(request, queryset)
+
 
 class _UnfinishedJobDeleteGuardMixin:
     """Refuse admin deletes while unfinished print jobs still contain the affected parts.
@@ -142,7 +178,7 @@ class PrinterProfileAdmin(admin.ModelAdmin):
 
 
 @admin.register(PrintJob)
-class PrintJobAdmin(admin.ModelAdmin):
+class PrintJobAdmin(_PrintHistoryDeleteGuardMixin, admin.ModelAdmin):
     list_display = (
         "name",
         "machine_profile",
@@ -156,6 +192,9 @@ class PrintJobAdmin(admin.ModelAdmin):
     search_fields = ("name",)
     inlines = [PrintJobPartInline, PrintJobPlateInline]
 
+    def _history_attempts(self, objs: Iterable[PrintJob]) -> QuerySet[PrintQueue]:
+        return PrintQueue.objects.filter(PrintQueue.history_q(), plate__print_job__in=[o.pk for o in objs])
+
 
 @admin.register(PrintJobPart)
 class PrintJobPartAdmin(admin.ModelAdmin):
@@ -164,7 +203,7 @@ class PrintJobPartAdmin(admin.ModelAdmin):
 
 
 @admin.register(PrintJobPlate)
-class PrintJobPlateAdmin(admin.ModelAdmin):
+class PrintJobPlateAdmin(_PrintHistoryDeleteGuardMixin, admin.ModelAdmin):
     list_display = (
         "print_job",
         "plate_number",
@@ -173,6 +212,9 @@ class PrintJobPlateAdmin(admin.ModelAdmin):
         "print_time_estimate",
     )
     list_filter = ("status", "print_job")
+
+    def _history_attempts(self, objs: Iterable[PrintJobPlate]) -> QuerySet[PrintQueue]:
+        return PrintQueue.objects.filter(PrintQueue.history_q(), plate__in=[o.pk for o in objs])
 
 
 @admin.register(OrcaMachineProfile)
@@ -271,16 +313,36 @@ class PrintQueueAdmin(admin.ModelAdmin):
         """Return the derived attempt state."""
         return obj.get_state_display()
 
+    #: Facts of a started/resolved attempt; editing them would bypass the model
+    #: transitions (and ``PrintJobPlate.refresh_stored_status``).
+    HISTORY_READONLY_FIELDS = (
+        "plate",
+        "printer",
+        "result",
+        "resolved_at",
+        "is_retry",
+        "started_at",
+        "completed_at",
+        "max_retries",
+    )
+
+    def get_readonly_fields(self, request: HttpRequest, obj: PrintQueue | None = None) -> tuple[str, ...]:
+        """Make the facts of started or resolved attempts read-only."""
+        readonly = tuple(super().get_readonly_fields(request, obj))
+        if obj is not None and obj.is_history:
+            return readonly + self.HISTORY_READONLY_FIELDS
+        return readonly
+
     def has_delete_permission(self, request: HttpRequest, obj: PrintQueue | None = None) -> bool:
         """Refuse deleting started or resolved attempts — they are print history."""
-        if obj is not None and (obj.result or obj.started_at is not None or obj.completed_at is not None):
+        if obj is not None and obj.is_history:
             return False
         return super().has_delete_permission(request, obj)
 
     def delete_queryset(self, request: HttpRequest, queryset: QuerySet) -> None:
         """Bulk-delete only never-started attempts; refuse if the selection contains history."""
         with transaction.atomic():
-            if queryset.exclude(result="", started_at__isnull=True, completed_at__isnull=True).exists():
+            if queryset.filter(PrintQueue.history_q()).exists():
                 raise PermissionDenied("Started or resolved print attempts are print history and cannot be deleted.")
             super().delete_queryset(request, queryset)
 

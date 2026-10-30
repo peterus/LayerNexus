@@ -333,3 +333,129 @@ class AttemptReaderTests(_AttemptTestBase):
         self.plate.refresh_from_db()
         self.assertEqual(self.plate.status, PrintJobPlate.STATUS_WAITING)
         self.assertEqual(self.plate.failed_attempts_since_manual_enqueue(), 0)
+
+
+class RetryCountConsistencyTests(_AttemptTestBase):
+    """The SQL retry count equals the Python count across several retry cycles."""
+
+    def test_with_retry_count_matches_python_over_cycles(self):
+        def check() -> None:
+            open_attempt = PrintQueue.objects.open().with_retry_count().get(plate=self.plate)
+            self.assertEqual(open_attempt.retry_count, self.plate.failed_attempts_since_manual_enqueue())
+
+        attempt = self._attempt(state="awaiting_review")
+        for passed in (False, False):
+            attempt.resolve(passed=passed)
+            attempt = PrintQueue.objects.open().get(plate=self.plate)
+            check()
+            PrintQueue.objects.filter(pk=attempt.pk).update(**queue_state_fields("awaiting_review"))
+            attempt.refresh_from_db()
+        # Third failure discards; a manual re-enqueue starts a new cycle at 0.
+        self.assertEqual(attempt.resolve(passed=False), "discarded")
+        PrintQueue.enqueue(plate=self.plate, printer=self.printer)
+        check()
+        self.assertEqual(PrintQueue.objects.open().with_retry_count().get(plate=self.plate).retry_count, 0)
+        attempt = PrintQueue.objects.open().get(plate=self.plate)
+        PrintQueue.objects.filter(pk=attempt.pk).update(**queue_state_fields("awaiting_review"))
+        attempt.refresh_from_db()
+        attempt.resolve(passed=False)
+        check()
+
+
+class PrintHistoryDeleteGuardTests(_AttemptTestBase):
+    """Jobs and plates with print history are not deleted or re-sliced by any path."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+        self.attempt = self._attempt(state="printing")
+
+    def test_job_with_history_not_deletable(self):
+        from django.urls import reverse
+
+        url = reverse("core:printjob_delete", args=[self.job.pk])
+        self.assertContains(self.client.get(url), "Cannot delete this print job")
+        resp = self.client.post(url, follow=True)
+        self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
+        self.assertTrue(PrintQueue.objects.filter(pk=self.attempt.pk).exists())
+        self.assertIn("it has print history", " ".join(str(m) for m in resp.context["messages"]))
+
+    def test_job_with_only_waiting_attempt_is_deletable(self):
+        from django.urls import reverse
+
+        self.attempt.delete()
+        self._attempt()
+        resp = self.client.post(reverse("core:printjob_delete", args=[self.job.pk]))
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(PrintJob.objects.filter(pk=self.job.pk).exists())
+
+    def test_reslice_refused_with_history(self):
+        from django.urls import reverse
+
+        self.client.post(reverse("core:printjob_slice", args=[self.job.pk]))
+        self.assertTrue(PrintJobPlate.objects.filter(pk=self.plate.pk).exists())
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.status, PrintJob.STATUS_SLICED)
+
+    def test_admin_cannot_delete_job_or_plate_with_history(self):
+        from django.contrib.auth.models import User
+        from django.urls import reverse
+
+        User.objects.filter(pk=self.user.pk).update(is_staff=True, is_superuser=True)
+        resp = self.client.post(reverse("admin:core_printjob_delete", args=[self.job.pk]), {"post": "yes"})
+        self.assertEqual(resp.status_code, 403)
+        resp = self.client.post(reverse("admin:core_printjobplate_delete", args=[self.plate.pk]), {"post": "yes"})
+        self.assertEqual(resp.status_code, 403)
+        resp = self.client.post(
+            reverse("admin:core_printjob_changelist"),
+            {"action": "delete_selected", "_selected_action": [self.job.pk], "post": "yes"},
+        )
+        self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
+        self.assertTrue(PrintQueue.objects.filter(pk=self.attempt.pk).exists())
+
+    def test_admin_history_fields_readonly(self):
+        from core.admin import PrintQueueAdmin
+
+        admin_obj = PrintQueueAdmin(PrintQueue, None)
+        self.assertIn("result", admin_obj.get_readonly_fields(None, self.attempt))
+        waiting = self._attempt(self.plate2)
+        self.assertNotIn("result", admin_obj.get_readonly_fields(None, waiting))
+
+
+class QueueViewRaceTests(_AttemptTestBase):
+    """Removing a mid-start attempt and enqueueing concurrently are refused cleanly."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def test_operator_cannot_remove_attempt_being_started(self):
+        from django.urls import reverse
+
+        attempt = self._attempt(start_claimed_at=timezone.now())
+        resp = self.client.post(reverse("core:printqueue_delete", args=[attempt.pk]))
+        self.assertEqual(resp.status_code, 404)
+        self.assertTrue(PrintQueue.objects.filter(pk=attempt.pk).exists())
+
+    def test_concurrent_enqueue_shows_error_instead_of_500(self):
+        from unittest import mock
+
+        from django.urls import reverse
+
+        self.plate.gcode_file = "gcode_jobs/race.gcode"
+        self.plate.save()
+        original = PrintQueue.enqueue
+
+        def racing_enqueue(**kwargs):
+            original(**kwargs)  # the concurrent request wins
+            return original(**kwargs)
+
+        with mock.patch.object(PrintQueue, "enqueue", side_effect=racing_enqueue):
+            resp = self.client.post(
+                reverse("core:printqueue_create"),
+                {"plate": self.plate.pk, "printer": self.printer.pk, "priority": 2},
+                follow=True,
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("already queued", " ".join(str(m) for m in resp.context["messages"]))
+        self.assertEqual(PrintQueue.objects.open().filter(plate=self.plate).count(), 1)
