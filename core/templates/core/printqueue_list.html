@@ -73,7 +73,7 @@
         <thead><tr><th>#</th><th>Job</th><th>Plate</th><th class="text-end">Filament</th><th class="text-end">Print Time</th><th>Priority</th><th>Status</th><th>Added</th><th>Actions</th></tr></thead>
         <tbody>
         {% for entry in group.list %}
-        <tr data-entry-pk="{{ entry.pk }}" data-entry-status="{{ entry.status }}">
+        <tr data-entry-pk="{{ entry.pk }}" data-entry-status="{{ entry.state }}">
           <td>{% if entry.queue_rank %}{{ entry.queue_rank }}{% else %}<i class="bi bi-lock text-body-secondary" title="Active entries cannot be reordered"></i>{% endif %}</td>
           <td><a href="{% url 'core:printjob_detail' entry.print_job.pk %}">{{ entry.print_job }}</a></td>
           <td>Plate {{ entry.plate.plate_number }}</td>
@@ -83,10 +83,12 @@
             {% include "core/includes/_priority_badge.html" with priority=entry.priority display=entry.get_priority_display %}
           </td>
           <td>
-            {% if entry.status == 'printing' %}
+            {% if entry.state == 'printing' %}
               <span class="badge bg-primary"><i class="bi bi-printer me-1"></i>Printing</span>
-            {% elif entry.status == 'awaiting_review' %}
+            {% elif entry.state == 'awaiting_review' %}
               <span class="badge bg-warning text-dark"><i class="bi bi-clipboard-check me-1"></i>Awaiting Review</span>
+            {% elif entry.state == 'starting' %}
+              <span class="badge bg-info text-dark"><i class="bi bi-hourglass-split me-1"></i>Starting</span>
             {% else %}
               <span class="badge bg-secondary">Waiting</span>
             {% endif %}
@@ -96,7 +98,7 @@
           </td>
           <td>{{ entry.added_at|date:"Y-m-d H:i" }}</td>
           <td class="text-nowrap">
-            {% if entry.status == 'waiting' and perms.core.can_manage_print_queue %}
+            {% if entry.is_waiting and perms.core.can_manage_print_queue %}
               <form method="post" action="{% url 'core:printqueue_move' entry.pk %}" class="d-inline">
                 {% csrf_token %}
                 <div class="btn-group btn-group-sm me-1" role="group" aria-label="Reorder">
@@ -105,18 +107,18 @@
                 </div>
               </form>
             {% endif %}
-            {% if entry.status == 'awaiting_review' and perms.core.can_control_printer %}
+            {% if entry.state == 'awaiting_review' and perms.core.can_control_printer %}
               <a href="{% url 'core:printqueue_review' entry.pk %}" class="btn btn-sm btn-warning">
                 <i class="bi bi-clipboard-check me-1"></i>Review
               </a>
-            {% elif entry.status == 'printing' and perms.core.can_control_printer %}
+            {% elif entry.state == 'printing' and perms.core.can_control_printer %}
               <form method="post" action="{% url 'core:printqueue_cancel' entry.pk %}" class="d-inline">
                 {% csrf_token %}
                 <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Cancel this print?')">
                   <i class="bi bi-stop-circle me-1"></i>Cancel
                 </button>
               </form>
-            {% elif entry.status == 'waiting' and perms.core.can_dequeue_job %}
+            {% elif entry.is_waiting and perms.core.can_dequeue_job %}
               <a href="{% url 'core:printqueue_delete' entry.pk %}" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash"></i></a>
             {% endif %}
           </td>

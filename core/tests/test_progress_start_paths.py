@@ -21,6 +21,7 @@ from core.models import PrinterProfile, PrintJob, PrintJobPlate, PrintQueue, Sch
 from core.services.moonraker_ws import snapshot_event
 from core.services.operator_dialog import StartNext, handle_action
 from core.services.scheduled_start import run_due_scheduled_starts
+from core.tests.mixins import queue_state_fields
 
 
 @patch("core.services.queue.get_printer_backend")
@@ -41,7 +42,7 @@ class ProgressStartPathTests(TestCase):
         )
 
     def _entry(self, plate: PrintJobPlate, **kwargs: Any) -> PrintQueue:
-        return PrintQueue.objects.create(plate=plate, printer=self.printer, status=PrintQueue.STATUS_WAITING, **kwargs)
+        return PrintQueue.objects.create(plate=plate, printer=self.printer, **queue_state_fields("waiting"), **kwargs)
 
     def _feed(self, event: dict[str, Any]) -> None:
         async_to_sync(_handle_event_for_printer)(self.printer, event)
@@ -49,7 +50,7 @@ class ProgressStartPathTests(TestCase):
     def _assert_started(self, entry: PrintQueue, backend: MagicMock) -> None:
         backend.return_value.start_print.assert_called_once()
         entry.refresh_from_db()
-        self.assertEqual(entry.status, PrintQueue.STATUS_PRINTING)
+        self.assertEqual(entry.state, PrintQueue.STATE_PRINTING)
 
     def _assert_progress_and_completion(self, entry: PrintQueue) -> None:
         self._feed({"method": "notify_status_update", "params": [{"virtual_sdcard": {"progress": 0.5}}, 1.0]})
@@ -61,7 +62,7 @@ class ProgressStartPathTests(TestCase):
             {"method": "notify_history_changed", "params": [{"action": "finished", "job": {"status": "completed"}}]}
         )
         entry.refresh_from_db()
-        self.assertEqual(entry.status, PrintQueue.STATUS_AWAITING_REVIEW)
+        self.assertEqual(entry.state, PrintQueue.STATE_AWAITING_REVIEW)
 
     def test_web_run_next(self, mock_backend: MagicMock) -> None:
         entry = self._entry(self.plate1)
@@ -135,4 +136,4 @@ class ProgressStartPathTests(TestCase):
 
         entry.refresh_from_db()
         self.assertEqual(entry.progress, 0.7)
-        self.assertEqual(entry.status, PrintQueue.STATUS_PRINTING)
+        self.assertEqual(entry.state, PrintQueue.STATE_PRINTING)

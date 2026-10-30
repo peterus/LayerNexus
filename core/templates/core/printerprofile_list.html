@@ -20,7 +20,9 @@
         <div class="d-flex justify-content-between align-items-start mb-2">
           <h5 class="card-title mb-0">{{ printer.name }}</h5>
           {% with status=printer_statuses|dict_get:printer.pk %}
-          {% if status == 'online' %}
+          {% if status == 'inactive' %}
+          <span class="badge bg-secondary" title="Deactivated: no new prints"><i class="bi bi-pause-circle"></i> Inactive</span>
+          {% elif status == 'online' %}
           <span class="badge bg-success" title="Moonraker reachable"><i class="bi bi-wifi"></i> Online</span>
           {% elif status == 'offline' %}
           <span class="badge bg-danger" title="Moonraker not reachable"><i class="bi bi-wifi-off"></i> Offline</span>

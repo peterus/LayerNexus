@@ -254,16 +254,35 @@ class PrintQueueAdmin(admin.ModelAdmin):
     list_display = (
         "plate",
         "printer",
-        "status",
+        "state_display",
         "priority",
         "position",
-        "retry_count",
+        "is_retry",
         "started_at",
         "completed_at",
+        "resolved_at",
         "added_at",
     )
-    list_filter = ("printer", "priority", "status")
+    list_filter = ("printer", "priority", "result", "is_retry")
     ordering = ["-priority", "position"]
+
+    @admin.display(description="State")
+    def state_display(self, obj: PrintQueue) -> str:
+        """Return the derived attempt state."""
+        return obj.get_state_display()
+
+    def has_delete_permission(self, request: HttpRequest, obj: PrintQueue | None = None) -> bool:
+        """Refuse deleting started or resolved attempts — they are print history."""
+        if obj is not None and (obj.result or obj.started_at is not None or obj.completed_at is not None):
+            return False
+        return super().has_delete_permission(request, obj)
+
+    def delete_queryset(self, request: HttpRequest, queryset: QuerySet) -> None:
+        """Bulk-delete only never-started attempts; refuse if the selection contains history."""
+        with transaction.atomic():
+            if queryset.exclude(result="", started_at__isnull=True, completed_at__isnull=True).exists():
+                raise PermissionDenied("Started or resolved print attempts are print history and cannot be deleted.")
+            super().delete_queryset(request, queryset)
 
 
 @admin.register(ScheduledQueueStart)

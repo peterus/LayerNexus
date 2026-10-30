@@ -16,7 +16,7 @@ from core.services.queue import (
     start_next_for_printer,
     start_print_for_queue_entry,
 )
-from core.tests.mixins import TestDataMixin
+from core.tests.mixins import TestDataMixin, queue_state_fields
 
 
 class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
@@ -42,7 +42,7 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
         self.entry = PrintQueue.objects.create(
             plate=self.plate,
             printer=self.printer,
-            status=PrintQueue.STATUS_WAITING,
+            **queue_state_fields("waiting"),
             priority=2,
         )
 
@@ -122,42 +122,24 @@ class StartPrintForQueueEntryTests(TestDataMixin, TestCase):
     @patch("core.services.queue.get_printer_backend")
     def test_status_updates_on_success(self, mock_get_backend):
         """Verify that queue entry, plate, and job statuses are updated."""
-        mock_gcode = MagicMock()
-        mock_gcode.path = "/test.gcode"
-        mock_gcode.__bool__ = MagicMock(return_value=True)
-        self.plate.gcode_file = mock_gcode
-        self.entry.plate = self.plate
+        self.plate.gcode_file = "gcode_jobs/test.gcode"
+        self.plate.save()
+        mock_get_backend.return_value = MagicMock()
 
-        mock_backend = MagicMock()
-        mock_get_backend.return_value = mock_backend
+        start_print_for_queue_entry(self.entry)
 
-        # Use a mock for save to track calls but also check field assignments
-        entry_save = MagicMock()
-        plate_save = MagicMock()
-        job_save = MagicMock()
-
-        with (
-            patch.object(PrintQueue, "save", entry_save),
-            patch.object(PrintJobPlate, "save", plate_save),
-            patch.object(PrintJob, "save", job_save),
-        ):
-            start_print_for_queue_entry(self.entry)
-
-        # Check status was set to printing
-        self.assertEqual(self.entry.status, PrintQueue.STATUS_PRINTING)
+        self.entry.refresh_from_db()
+        self.assertEqual(self.entry.state, PrintQueue.STATE_PRINTING)
         self.assertIsNotNone(self.entry.started_at)
 
+        self.plate.refresh_from_db()
         self.assertEqual(self.plate.status, PrintJobPlate.STATUS_PRINTING)
         self.assertIsNotNone(self.plate.started_at)
         self.assertTrue(self.plate.remote_job_id.startswith("LN_"))
 
+        self.job.refresh_from_db()
         self.assertEqual(self.job.status, PrintJob.STATUS_PRINTING)
         self.assertIsNotNone(self.job.started_at)
-
-        # Verify save was called on each
-        entry_save.assert_called_once()
-        plate_save.assert_called_once()
-        job_save.assert_called_once()
 
 
 class _QueueServiceTestBase(TestDataMixin, TestCase):
@@ -182,14 +164,14 @@ class _QueueServiceTestBase(TestDataMixin, TestCase):
         )
 
     def _entry(self, plate: PrintJobPlate, status: str, **kwargs) -> PrintQueue:
-        return PrintQueue.objects.create(plate=plate, printer=self.printer, status=status, **kwargs)
+        return PrintQueue.objects.create(plate=plate, printer=self.printer, **queue_state_fields(status), **kwargs)
 
 
 class ReviewQueueEntryTests(_QueueServiceTestBase):
     """Tests for review_queue_entry()."""
 
-    def test_pass_completes_plate_and_deletes_entry(self):
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
+    def test_pass_completes_plate_and_keeps_attempt(self):
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW)
         result = review_queue_entry(entry.pk, True)
         self.assertEqual(result.outcome, "passed")
         self.assertEqual(result.plates_completed, 1)
@@ -198,14 +180,16 @@ class ReviewQueueEntryTests(_QueueServiceTestBase):
         self.plate1.refresh_from_db()
         self.assertEqual(self.plate1.status, PrintJobPlate.STATUS_COMPLETED)
         self.assertIsNotNone(self.plate1.completed_at)
-        self.assertFalse(PrintQueue.objects.filter(pk=entry.pk).exists())
+        entry.refresh_from_db()
+        self.assertEqual(entry.result, PrintQueue.RESULT_PASSED)
+        self.assertFalse(PrintQueue.objects.open().exists())
         self.job.refresh_from_db()
         self.assertEqual(self.job.status, PrintJob.STATUS_PRINTING)
 
     def test_pass_last_plate_completes_job(self):
         self.plate2.status = PrintJobPlate.STATUS_COMPLETED
         self.plate2.save()
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW)
         result = review_queue_entry(entry.pk, True)
         self.assertEqual(result.plates_completed, 2)
         self.job.refresh_from_db()
@@ -213,47 +197,55 @@ class ReviewQueueEntryTests(_QueueServiceTestBase):
         self.assertIsNotNone(self.job.completed_at)
 
     def test_fail_requeues_with_position_zero(self):
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW, position=5)
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW, position=5)
         result = review_queue_entry(entry.pk, False)
         self.assertEqual(result.outcome, "requeued")
         self.assertEqual((result.retry_count, result.max_retries), (1, 3))
         entry.refresh_from_db()
-        self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
-        self.assertEqual(entry.retry_count, 1)
-        self.assertEqual(entry.position, 0)
-        self.assertIsNone(entry.started_at)
+        self.assertEqual(entry.result, PrintQueue.RESULT_FAILED)
+        retry = PrintQueue.objects.open().get(plate=self.plate1)
+        self.assertEqual(retry.state, PrintQueue.STATE_WAITING)
+        self.assertTrue(retry.is_retry)
+        self.assertEqual(retry.position, 0)
+        self.assertIsNone(retry.started_at)
+        self.assertEqual(PrintQueue.objects.with_retry_count().get(pk=retry.pk).retry_count, 1)
         self.plate1.refresh_from_db()
         self.assertEqual(self.plate1.status, PrintJobPlate.STATUS_WAITING)
 
     def test_fail_at_max_retries_discards(self):
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW, retry_count=2, max_retries=3)
+        now = timezone.now()
+        self._entry(self.plate1, "awaiting_review", result=PrintQueue.RESULT_FAILED, resolved_at=now)
+        self._entry(self.plate1, "awaiting_review", result=PrintQueue.RESULT_FAILED, resolved_at=now, is_retry=True)
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW, is_retry=True, max_retries=3)
         result = review_queue_entry(entry.pk, False)
         self.assertEqual(result.outcome, "discarded")
         self.assertEqual(result.max_retries, 3)
         self.plate1.refresh_from_db()
         self.assertEqual(self.plate1.status, PrintJobPlate.STATUS_FAILED)
-        self.assertFalse(PrintQueue.objects.filter(pk=entry.pk).exists())
+        self.assertEqual(result.retry_count, 3)
+        self.assertFalse(PrintQueue.objects.open().filter(plate=self.plate1).exists())
+        self.assertEqual(self.plate1.queue_entries.count(), 3)
 
     def test_not_awaiting_review_raises(self):
-        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        entry = self._entry(self.plate1, PrintQueue.STATE_WAITING)
         with self.assertRaises(ReviewStateError):
             review_queue_entry(entry.pk, True)
         entry.refresh_from_db()
-        self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
+        self.assertEqual(entry.state, PrintQueue.STATE_WAITING)
 
     def test_missing_entry_raises(self):
         with self.assertRaises(ReviewStateError):
             review_queue_entry(999999, True)
 
     def test_other_printer_raises(self):
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW)
         with self.assertRaises(ReviewStateError):
             review_queue_entry(entry.pk, True, printer_pk=self.other_printer.pk)
         entry.refresh_from_db()
-        self.assertEqual(entry.status, PrintQueue.STATUS_AWAITING_REVIEW)
+        self.assertEqual(entry.state, PrintQueue.STATE_AWAITING_REVIEW)
 
     def test_matching_printer_is_accepted(self):
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW)
         result = review_queue_entry(entry.pk, True, printer_pk=self.printer.pk)
         self.assertEqual(result.outcome, "passed")
 
@@ -268,26 +260,26 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
         self.plate1.save()
 
     def test_start_next_starts_first_waiting(self, mock_get_backend):
-        first = self._entry(self.plate1, PrintQueue.STATUS_WAITING, position=1)
-        self._entry(self.plate2, PrintQueue.STATUS_WAITING, position=2)
+        first = self._entry(self.plate1, PrintQueue.STATE_WAITING, position=1)
+        self._entry(self.plate2, PrintQueue.STATE_WAITING, position=2)
         result = start_next_for_printer(self.printer)
         self.assertEqual(result.outcome, "started")
         self.assertEqual(result.entry.pk, first.pk)
         mock_get_backend.return_value.start_print.assert_called_once()
         first.refresh_from_db()
-        self.assertEqual(first.status, PrintQueue.STATUS_PRINTING)
+        self.assertEqual(first.state, PrintQueue.STATE_PRINTING)
 
     def test_start_next_with_matching_expected_entry(self, mock_get_backend):
-        first = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        first = self._entry(self.plate1, PrintQueue.STATE_WAITING)
         result = start_next_for_printer(self.printer, expected_entry_pk=first.pk)
         self.assertEqual(result.outcome, "started")
 
     def test_start_next_busy(self, mock_get_backend):
-        for busy_status in (PrintQueue.STATUS_PRINTING, PrintQueue.STATUS_AWAITING_REVIEW):
+        for busy_status in (PrintQueue.STATE_PRINTING, PrintQueue.STATE_AWAITING_REVIEW):
             with self.subTest(busy_status=busy_status):
                 PrintQueue.objects.all().delete()
                 busy = self._entry(self.plate1, busy_status)
-                self._entry(self.plate2, PrintQueue.STATUS_WAITING)
+                self._entry(self.plate2, PrintQueue.STATE_WAITING)
                 result = start_next_for_printer(self.printer)
                 self.assertEqual(result.outcome, "busy")
                 self.assertEqual(result.busy_entry.pk, busy.pk)
@@ -300,36 +292,36 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
         mock_get_backend.assert_not_called()
 
     def test_start_next_not_next(self, mock_get_backend):
-        self._entry(self.plate1, PrintQueue.STATUS_WAITING, position=1)
-        second = self._entry(self.plate2, PrintQueue.STATUS_WAITING, position=2)
+        self._entry(self.plate1, PrintQueue.STATE_WAITING, position=1)
+        second = self._entry(self.plate2, PrintQueue.STATE_WAITING, position=2)
         result = start_next_for_printer(self.printer, expected_entry_pk=second.pk)
         self.assertEqual(result.outcome, "not_next")
         mock_get_backend.return_value.start_print.assert_not_called()
         second.refresh_from_db()
-        self.assertEqual(second.status, PrintQueue.STATUS_WAITING)
+        self.assertEqual(second.state, PrintQueue.STATE_WAITING)
 
     def test_start_next_not_configured(self, mock_get_backend):
         self.printer.moonraker_url = ""
         self.printer.save()
-        self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        self._entry(self.plate1, PrintQueue.STATE_WAITING)
         result = start_next_for_printer(self.printer)
         self.assertEqual(result.outcome, "not_configured")
         mock_get_backend.assert_not_called()
 
     def test_start_next_printer_error(self, mock_get_backend):
         mock_get_backend.return_value.upload_gcode.side_effect = MoonrakerError("Connection refused")
-        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        entry = self._entry(self.plate1, PrintQueue.STATE_WAITING)
         with self.assertLogs("core.services.queue", level="ERROR"):
             result = start_next_for_printer(self.printer)
         self.assertEqual(result.outcome, "error")
         self.assertEqual(result.error, "Failed to start print. Please check the printer connection and try again.")
         entry.refresh_from_db()
-        self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
+        self.assertEqual(entry.state, PrintQueue.STATE_WAITING)
 
     def test_start_next_print_start_error(self, mock_get_backend):
         self.plate1.gcode_file = ""
         self.plate1.save()
-        self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        self._entry(self.plate1, PrintQueue.STATE_WAITING)
         result = start_next_for_printer(self.printer)
         self.assertEqual(result.outcome, "no_gcode")
         self.assertEqual(result.error, "No G-code file for plate 1. Slice the job first.")
@@ -337,7 +329,7 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
 
     def test_start_next_db_error_after_start_keeps_claim(self, mock_get_backend):
         """If the printer already accepted the start, a later DB error must not re-open the entry."""
-        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        entry = self._entry(self.plate1, PrintQueue.STATE_WAITING)
         with (
             patch.object(PrintJobPlate, "save", side_effect=RuntimeError("database is locked")),
             self.assertRaises(RuntimeError),
@@ -345,14 +337,14 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
             start_next_for_printer(self.printer)
         mock_get_backend.return_value.start_print.assert_called_once()
         entry.refresh_from_db()
-        self.assertEqual(entry.status, PrintQueue.STATUS_PRINTING)
+        self.assertEqual(entry.state, PrintQueue.STATE_PRINTING)
 
     def test_run_all_claims_entry_during_upload(self, mock_get_backend):
         """Run All uses the same claim: a printer Start during its upload sees the printer busy."""
         from django.contrib.auth.models import Group
         from django.urls import reverse
 
-        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        entry = self._entry(self.plate1, PrintQueue.STATE_WAITING)
         concurrent: list = []
 
         def upload(*args, **kwargs):
@@ -369,7 +361,7 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
 
     def test_start_next_claims_entry_during_upload(self, mock_get_backend):
         """A concurrent start while the G-code uploads sees the printer busy (no double start)."""
-        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        entry = self._entry(self.plate1, PrintQueue.STATE_WAITING)
         concurrent: list = []
 
         def upload(*args, **kwargs):
@@ -383,14 +375,14 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
         self.assertEqual(concurrent[0].busy_entry.pk, entry.pk)
         mock_get_backend.return_value.start_print.assert_called_once()
         entry.refresh_from_db()
-        self.assertEqual(entry.status, PrintQueue.STATUS_PRINTING)
+        self.assertEqual(entry.state, PrintQueue.STATE_PRINTING)
         self.assertIsNone(entry.start_claimed_at)
 
     def test_claimed_entry_stays_waiting_during_upload(self, mock_get_backend):
         """During the upload the entry is still waiting (no early Cancel / status sync), only claimed."""
         from core.services.queue import queue_entry_status_label
 
-        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        entry = self._entry(self.plate1, PrintQueue.STATE_WAITING)
         seen: list = []
 
         def upload(*args, **kwargs):
@@ -398,14 +390,14 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
 
         mock_get_backend.return_value.upload_gcode.side_effect = upload
         start_next_for_printer(self.printer)
-        self.assertEqual(seen[0].status, PrintQueue.STATUS_WAITING)
+        self.assertTrue(seen[0].is_waiting)
         self.assertIsNotNone(seen[0].start_claimed_at)
         self.assertEqual(queue_entry_status_label(seen[0]), "Starting")
 
     def test_expired_claim_does_not_block(self, mock_get_backend):
         """A claim left behind by a crashed process expires."""
         entry = self._entry(
-            self.plate1, PrintQueue.STATUS_WAITING, start_claimed_at=timezone.now() - timedelta(minutes=11)
+            self.plate1, PrintQueue.STATE_WAITING, start_claimed_at=timezone.now() - timedelta(minutes=11)
         )
         result = start_next_for_printer(self.printer)
         self.assertEqual(result.outcome, "started")
@@ -413,23 +405,23 @@ class StartNextForPrinterTests(_QueueServiceTestBase):
 
     def test_start_next_failure_releases_claim(self, mock_get_backend):
         mock_get_backend.return_value.start_print.side_effect = MoonrakerError("busy")
-        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        entry = self._entry(self.plate1, PrintQueue.STATE_WAITING)
         with self.assertLogs("core.services.queue", level="ERROR"):
             start_next_for_printer(self.printer)
         entry.refresh_from_db()
-        self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
+        self.assertEqual(entry.state, PrintQueue.STATE_WAITING)
         self.assertIsNone(entry.started_at)
         self.assertIsNone(entry.start_claimed_at)
 
     def test_start_next_unexpected_error_before_start_releases_claim(self, mock_get_backend):
         """A non-printer error before the printer accepted the start hands the entry back."""
         mock_get_backend.return_value.upload_gcode.side_effect = FileNotFoundError("gcode gone")
-        entry = self._entry(self.plate1, PrintQueue.STATUS_WAITING)
+        entry = self._entry(self.plate1, PrintQueue.STATE_WAITING)
         with self.assertRaises(FileNotFoundError):
             start_next_for_printer(self.printer)
         mock_get_backend.return_value.start_print.assert_not_called()
         entry.refresh_from_db()
-        self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
+        self.assertEqual(entry.state, PrintQueue.STATE_WAITING)
         self.assertIsNone(entry.started_at)
         self.assertIsNone(entry.start_claimed_at)
 
@@ -442,8 +434,8 @@ class IsPrinterBusyClaimTests(_QueueServiceTestBase):
 
         from django.utils import timezone
 
-        claimed = self._entry(self.plate1, PrintQueue.STATUS_WAITING, start_claimed_at=timezone.now())
-        other = self._entry(self.plate2, PrintQueue.STATUS_WAITING)
+        claimed = self._entry(self.plate1, PrintQueue.STATE_WAITING, start_claimed_at=timezone.now())
+        other = self._entry(self.plate2, PrintQueue.STATE_WAITING)
         self.assertTrue(claimed.is_printer_busy)
         self.assertTrue(other.is_printer_busy)
 
@@ -456,11 +448,11 @@ class MarkQueueEntryStartedTests(_QueueServiceTestBase):
 
     def test_mark_started_resets_stale_progress(self):
         stale = timezone.now() - timedelta(days=1)
-        entry = self._entry(self.plate2, PrintQueue.STATUS_WAITING, progress=0.18, status_updated_at=stale)
+        entry = self._entry(self.plate2, PrintQueue.STATE_WAITING, progress=0.18, status_updated_at=stale)
 
         mark_queue_entry_started(entry, "LN_x.gcode")
 
         entry.refresh_from_db()
-        self.assertEqual(entry.status, PrintQueue.STATUS_PRINTING)
+        self.assertEqual(entry.state, PrintQueue.STATE_PRINTING)
         self.assertIsNone(entry.progress)
         self.assertIsNone(entry.status_updated_at)

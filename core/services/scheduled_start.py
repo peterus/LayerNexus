@@ -29,7 +29,7 @@ __all__ = [
 #: How far in the future a start may be scheduled.
 MAX_SCHEDULE_AHEAD = timedelta(days=7)
 
-_SKIP_OUTCOMES = {"busy", "empty", "not_next", "no_gcode"}
+_SKIP_OUTCOMES = {"busy", "empty", "not_next", "no_gcode", "inactive"}
 
 
 def schedule_start(printer: PrinterProfile, start_at: datetime, user: User | None) -> ScheduledQueueStart:

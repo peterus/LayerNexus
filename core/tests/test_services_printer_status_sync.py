@@ -10,7 +10,7 @@ from core.services.printer_status_sync import (
     PROGRESS_WRITE_INTERVAL,
     apply_status_event,
 )
-from core.tests.mixins import TestDataMixin
+from core.tests.mixins import TestDataMixin, queue_state_fields
 
 
 class ApplyStatusEventTests(TestDataMixin, TestCase):
@@ -34,11 +34,26 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         self.entry = PrintQueue.objects.create(
             plate=self.plate,
             printer=self.printer,
-            status=PrintQueue.STATUS_PRINTING,
-            started_at=timezone.now(),
+            **queue_state_fields("printing"),
         )
 
     # ----- notify_history_changed ------------------------------------------
+
+    def test_finish_event_for_cancelled_attempt_is_ignored(self):
+        """A finish event for an attempt removed (cancelled) meanwhile must not re-open it."""
+        stale = PrintQueue.objects.get(pk=self.entry.pk)  # the worker's copy, still "printing"
+        self.entry.remove()
+        for event in (
+            {"method": "notify_history_changed", "params": [{"action": "finished", "job": {"status": "completed"}}]},
+            {"method": "notify_status_update", "params": [{"print_stats": {"state": "complete"}}]},
+            {"method": "notify_status_update", "params": [{"virtual_sdcard": {"progress": 0.5}}]},
+        ):
+            with self.subTest(method=event["method"]):
+                self.assertFalse(apply_status_event(stale, event))
+        self.entry.refresh_from_db()
+        self.assertEqual(self.entry.state, PrintQueue.RESULT_CANCELLED)
+        self.assertIsNone(self.entry.completed_at)
+        self.assertIsNone(self.entry.progress)
 
     def test_history_finished_completed_transitions_to_review(self):
         event = {
@@ -48,7 +63,7 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         changed = apply_status_event(self.entry, event)
         self.entry.refresh_from_db()
         self.assertTrue(changed)
-        self.assertEqual(self.entry.status, PrintQueue.STATUS_AWAITING_REVIEW)
+        self.assertEqual(self.entry.state, PrintQueue.STATE_AWAITING_REVIEW)
         self.assertIsNotNone(self.entry.completed_at)
         self.assertEqual(self.entry.last_error, "")
 
@@ -59,7 +74,7 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         }
         apply_status_event(self.entry, event)
         self.entry.refresh_from_db()
-        self.assertEqual(self.entry.status, PrintQueue.STATUS_AWAITING_REVIEW)
+        self.assertEqual(self.entry.state, PrintQueue.STATE_AWAITING_REVIEW)
         self.assertIn("cancelled", self.entry.last_error)
 
     def test_history_finished_completed_clears_previous_last_error(self):
@@ -71,7 +86,7 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         }
         apply_status_event(self.entry, event)
         self.entry.refresh_from_db()
-        self.assertEqual(self.entry.status, PrintQueue.STATUS_AWAITING_REVIEW)
+        self.assertEqual(self.entry.state, PrintQueue.STATE_AWAITING_REVIEW)
         self.assertEqual(self.entry.last_error, "")
 
     def test_history_finished_error_sets_last_error(self):
@@ -81,7 +96,7 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         }
         apply_status_event(self.entry, event)
         self.entry.refresh_from_db()
-        self.assertEqual(self.entry.status, PrintQueue.STATUS_AWAITING_REVIEW)
+        self.assertEqual(self.entry.state, PrintQueue.STATE_AWAITING_REVIEW)
         self.assertIn("error", self.entry.last_error)
 
     def test_history_action_added_is_ignored(self):
@@ -92,11 +107,11 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         changed = apply_status_event(self.entry, event)
         self.entry.refresh_from_db()
         self.assertFalse(changed)
-        self.assertEqual(self.entry.status, PrintQueue.STATUS_PRINTING)
+        self.assertEqual(self.entry.state, PrintQueue.STATE_PRINTING)
 
     def test_history_on_non_printing_entry_is_ignored(self):
-        self.entry.status = PrintQueue.STATUS_WAITING
-        self.entry.save(update_fields=["status"])
+        self.entry.started_at = None
+        self.entry.save(update_fields=["started_at"])
         event = {
             "method": "notify_history_changed",
             "params": [{"action": "finished", "job": {"status": "completed"}}],
@@ -114,7 +129,7 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         changed = apply_status_event(self.entry, event)
         self.entry.refresh_from_db()
         self.assertTrue(changed)
-        self.assertEqual(self.entry.status, PrintQueue.STATUS_AWAITING_REVIEW)
+        self.assertEqual(self.entry.state, PrintQueue.STATE_AWAITING_REVIEW)
 
     def test_status_update_error_state_sets_last_error(self):
         event = {
@@ -123,7 +138,7 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         }
         apply_status_event(self.entry, event)
         self.entry.refresh_from_db()
-        self.assertEqual(self.entry.status, PrintQueue.STATUS_AWAITING_REVIEW)
+        self.assertEqual(self.entry.state, PrintQueue.STATE_AWAITING_REVIEW)
         self.assertIn("error", self.entry.last_error)
 
     # ----- notify_status_update: progress throttling -----------------------

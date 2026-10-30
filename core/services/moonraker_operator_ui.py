@@ -198,7 +198,8 @@ def _handle_action_in_thread(printer: PrinterProfile, action: OperatorAction) ->
 @sync_to_async
 def _load_review_dialog(entry_pk: int, printer_pk: int) -> OperatorDialog | None:
     entry = (
-        PrintQueue.objects.filter(pk=entry_pk, printer_id=printer_pk, status=PrintQueue.STATUS_AWAITING_REVIEW)
+        PrintQueue.objects.awaiting_review()
+        .filter(pk=entry_pk, printer_id=printer_pk)
         .select_related("plate__print_job")
         .first()
     )
@@ -209,7 +210,7 @@ def _load_review_dialog(entry_pk: int, printer_pk: int) -> OperatorDialog | None
 
 @sync_to_async
 def _is_awaiting_review(entry_pk: int) -> bool:
-    return PrintQueue.objects.filter(pk=entry_pk, status=PrintQueue.STATUS_AWAITING_REVIEW).exists()
+    return PrintQueue.objects.awaiting_review().filter(pk=entry_pk).exists()
 
 
 class MoonrakerOperatorUI:

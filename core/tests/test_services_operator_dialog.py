@@ -5,6 +5,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate, PrintQueue
 from core.services import operator_dialog
@@ -22,7 +23,7 @@ from core.services.operator_dialog import (
     next_job_dialog,
     review_dialog,
 )
-from core.tests.mixins import TestDataMixin
+from core.tests.mixins import TestDataMixin, queue_state_fields
 
 
 def _actions(dialog: OperatorDialog) -> list:
@@ -54,7 +55,7 @@ class _DialogTestBase(TestDataMixin, TestCase):
         )
 
     def _entry(self, plate: PrintJobPlate, status: str, **kwargs) -> PrintQueue:
-        return PrintQueue.objects.create(plate=plate, printer=self.printer, status=status, **kwargs)
+        return PrintQueue.objects.create(plate=plate, printer=self.printer, **queue_state_fields(status), **kwargs)
 
 
 class FilamentSummaryTests(_DialogTestBase):
@@ -77,7 +78,7 @@ class FilamentSummaryTests(_DialogTestBase):
 
 class DialogBuilderTests(_DialogTestBase):
     def test_review_dialog_buttons(self):
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW)
         dialog = review_dialog(entry)
         self.assertEqual(dialog.title, DIALOG_TITLE)
         self.assertEqual(dialog.lines, ("Bracket", "Plate 1 of 2"))
@@ -86,12 +87,12 @@ class DialogBuilderTests(_DialogTestBase):
         self.assertEqual(dialog.buttons[1].style, "error")
 
     def test_review_dialog_shows_error_state(self):
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW, last_error="Printer reported: cancelled")
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW, last_error="Printer reported: cancelled")
         dialog = review_dialog(entry)
         self.assertIn("Ended: Printer reported: cancelled", dialog.lines)
 
     def test_next_job_dialog_shows_filament_and_start(self):
-        entry = self._entry(self.plate2, PrintQueue.STATUS_WAITING)
+        entry = self._entry(self.plate2, PrintQueue.STATE_WAITING)
         dialog = next_job_dialog(self.printer, ("Header",))
         self.assertEqual(
             dialog.lines,
@@ -106,20 +107,20 @@ class DialogBuilderTests(_DialogTestBase):
         self.assertEqual(_actions(dialog), [Dismiss()])
 
     def test_next_job_dialog_busy(self):
-        self._entry(self.plate1, PrintQueue.STATUS_PRINTING)
-        self._entry(self.plate2, PrintQueue.STATUS_WAITING)
+        self._entry(self.plate1, PrintQueue.STATE_PRINTING)
+        self._entry(self.plate2, PrintQueue.STATE_WAITING)
         dialog = next_job_dialog(self.printer)
         self.assertEqual(dialog.lines[0], "Printer busy")
         self.assertEqual(_actions(dialog), [Dismiss()])
 
     def test_menu_dialog_prefers_pending_review(self):
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
-        self._entry(self.plate2, PrintQueue.STATUS_WAITING)
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW)
+        self._entry(self.plate2, PrintQueue.STATE_WAITING)
         dialog = menu_dialog(self.printer)
         self.assertEqual(_actions(dialog), [Review(entry.pk, True), Review(entry.pk, False)])
 
     def test_menu_dialog_without_review_shows_next_job(self):
-        entry = self._entry(self.plate2, PrintQueue.STATUS_WAITING)
+        entry = self._entry(self.plate2, PrintQueue.STATE_WAITING)
         self.assertIn(StartNext(entry.pk), _actions(menu_dialog(self.printer)))
 
     def test_module_has_no_moonraker_imports(self):
@@ -139,8 +140,8 @@ class HandleActionTests(_DialogTestBase):
             plate_number=1,
             gcode_file="gcode_jobs/c1.gcode",
         )
-        nxt = self._entry(other_plate, PrintQueue.STATUS_WAITING)
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
+        nxt = self._entry(other_plate, PrintQueue.STATE_WAITING)
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW)
 
         dialog = handle_action(self.printer, Review(entry.pk, True))
 
@@ -148,24 +149,28 @@ class HandleActionTests(_DialogTestBase):
         self.assertIn(StartNext(nxt.pk), _actions(dialog))
         mock_get_backend.assert_not_called()
         nxt.refresh_from_db()
-        self.assertEqual(nxt.status, PrintQueue.STATUS_WAITING)
+        self.assertEqual(nxt.state, PrintQueue.STATE_WAITING)
         self.plate1.refresh_from_db()
         self.assertEqual(self.plate1.status, PrintJobPlate.STATUS_COMPLETED)
 
     def test_handle_review_fail_requeues(self, mock_get_backend):
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW)
         dialog = handle_action(self.printer, Review(entry.pk, False))
         self.assertEqual(dialog.lines[0], "Failed - requeued (retry 1/3)")
-        self.assertIn(StartNext(entry.pk), _actions(dialog))
+        retry = PrintQueue.objects.open().get(plate=self.plate1)
+        self.assertIn(StartNext(retry.pk), _actions(dialog))
         mock_get_backend.assert_not_called()
 
     def test_handle_review_fail_discards(self, mock_get_backend):
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW, retry_count=2)
+        failed = {"result": PrintQueue.RESULT_FAILED, "resolved_at": timezone.now()}
+        self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW, **failed)
+        self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW, is_retry=True, **failed)
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW, is_retry=True)
         dialog = handle_action(self.printer, Review(entry.pk, False))
-        self.assertEqual(dialog.lines[0], "Failed - max retries reached, removed from queue")
+        self.assertEqual(dialog.lines[0], "Failed - max retries reached, plate failed")
 
     def test_handle_review_twice_already_handled(self, mock_get_backend):
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW)
         handle_action(self.printer, Review(entry.pk, True))
         self.plate1.refresh_from_db()
         completed_at = self.plate1.completed_at
@@ -179,42 +184,42 @@ class HandleActionTests(_DialogTestBase):
         self.assertEqual(self.plate1.completed_at, completed_at)
 
     def test_handle_review_other_printer(self, mock_get_backend):
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW)
         dialog = handle_action(self.other_printer, Review(entry.pk, True))
         self.assertEqual(dialog.lines[0], "Already handled")
         entry.refresh_from_db()
-        self.assertEqual(entry.status, PrintQueue.STATUS_AWAITING_REVIEW)
+        self.assertEqual(entry.state, PrintQueue.STATE_AWAITING_REVIEW)
 
     def test_handle_start_next_started(self, mock_get_backend):
-        entry = self._entry(self.plate2, PrintQueue.STATUS_WAITING)
+        entry = self._entry(self.plate2, PrintQueue.STATE_WAITING)
         dialog = handle_action(self.printer, StartNext(entry.pk))
         self.assertEqual(dialog.lines, ("Started: Bracket, plate 2",))
         self.assertEqual(_actions(dialog), [Dismiss()])
         mock_get_backend.return_value.start_print.assert_called_once()
         entry.refresh_from_db()
-        self.assertEqual(entry.status, PrintQueue.STATUS_PRINTING)
+        self.assertEqual(entry.state, PrintQueue.STATE_PRINTING)
 
     def test_handle_start_next_error_shows_message(self, mock_get_backend):
         mock_get_backend.return_value.upload_gcode.side_effect = MoonrakerError("boom")
-        entry = self._entry(self.plate2, PrintQueue.STATUS_WAITING)
+        entry = self._entry(self.plate2, PrintQueue.STATE_WAITING)
         with self.assertLogs("core.services.queue", level="ERROR"):
             dialog = handle_action(self.printer, StartNext(entry.pk))
         self.assertEqual(dialog.lines[0], "Start failed")
         self.assertIn("Failed to start print. Please check the printer connection and try again.", dialog.lines)
         entry.refresh_from_db()
-        self.assertEqual(entry.status, PrintQueue.STATUS_WAITING)
+        self.assertEqual(entry.state, PrintQueue.STATE_WAITING)
 
     def test_handle_start_next_not_next(self, mock_get_backend):
-        self._entry(self.plate1, PrintQueue.STATUS_WAITING, priority=4)
-        stale = self._entry(self.plate2, PrintQueue.STATUS_WAITING)
+        self._entry(self.plate1, PrintQueue.STATE_WAITING, priority=4)
+        stale = self._entry(self.plate2, PrintQueue.STATE_WAITING)
         dialog = handle_action(self.printer, StartNext(stale.pk))
         self.assertEqual(dialog.lines[0], "Already handled")
         self.assertIn(ShowMenu(), _actions(dialog))
         mock_get_backend.assert_not_called()
 
     def test_handle_start_next_busy(self, mock_get_backend):
-        self._entry(self.plate1, PrintQueue.STATUS_PRINTING)
-        entry = self._entry(self.plate2, PrintQueue.STATUS_WAITING)
+        self._entry(self.plate1, PrintQueue.STATE_PRINTING)
+        entry = self._entry(self.plate2, PrintQueue.STATE_WAITING)
         dialog = handle_action(self.printer, StartNext(entry.pk))
         self.assertEqual(dialog.lines[:2], ("Already handled", "Printer busy"))
         self.assertIn(ShowMenu(), _actions(dialog))
@@ -228,7 +233,7 @@ class HandleActionTests(_DialogTestBase):
         self.assertIsNone(handle_action(self.printer, Dismiss()))
 
     def test_handle_show_menu(self, mock_get_backend):
-        entry = self._entry(self.plate1, PrintQueue.STATUS_AWAITING_REVIEW)
+        entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW)
         dialog = handle_action(self.printer, ShowMenu())
         self.assertIn(Review(entry.pk, True), _actions(dialog))
 

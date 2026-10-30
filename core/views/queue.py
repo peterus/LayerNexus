@@ -6,7 +6,8 @@ from typing import Any
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db.models import Case, IntegerField, Max, OuterRef, QuerySet, Subquery, Value, When
+from django.db import transaction
+from django.db.models import Case, IntegerField, OuterRef, QuerySet, Subquery, Value, When
 from django.http import (
     Http404,
     HttpRequest,
@@ -74,7 +75,8 @@ def _queueable_plates() -> QuerySet[PrintJobPlate]:
     """Return plates that can be added to the print queue.
 
     A plate is queueable while it is still waiting to be printed (or failed and
-    should be retried), has G-code, and is not already in the queue. The job may be ``sliced`` or already
+    should be retried), has G-code, and has no open print attempt (resolved
+    attempts are history and do not block). The job may be ``sliced`` or already
     ``printing`` — a multi-plate job switches to ``printing`` as soon as its
     first plate starts, and its remaining plates must stay queueable.
 
@@ -88,7 +90,7 @@ def _queueable_plates() -> QuerySet[PrintJobPlate]:
             gcode_file__isnull=False,
         )
         .exclude(gcode_file="")
-        .exclude(queue_entries__isnull=False)
+        .exclude(queue_entries__result="")
     )
 
 
@@ -108,16 +110,17 @@ class PrintQueueListView(LoginRequiredMixin, ListView):
 
     def get_queryset(self):
         return (
-            PrintQueue.objects.filter()
+            PrintQueue.objects.open()
+            .with_retry_count()
             .select_related("plate__print_job", "printer")
             .annotate(
-                is_waiting=Case(
-                    When(status=PrintQueue.STATUS_WAITING, then=Value(1)),
+                waiting_last=Case(
+                    When(started_at__isnull=True, completed_at__isnull=True, then=Value(1)),
                     default=Value(0),
                     output_field=IntegerField(),
                 )
             )
-            .order_by("printer__name", "printer_id", "is_waiting", *QUEUE_EXECUTION_ORDER)
+            .order_by("printer__name", "printer_id", "waiting_last", *QUEUE_EXECUTION_ORDER)
         )
 
     def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
@@ -129,7 +132,7 @@ class PrintQueueListView(LoginRequiredMixin, ListView):
             entry.queue_rank = None
             entry.can_move_up = False
             entry.can_move_down = False
-            if entry.status == PrintQueue.STATUS_WAITING:
+            if entry.is_waiting:
                 waiting_by_printer.setdefault(entry.printer_id, []).append(entry)
         for waiting in waiting_by_printer.values():
             for rank, entry in enumerate(waiting, start=1):
@@ -194,8 +197,8 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
             except (PrintJobPlate.DoesNotExist, ValueError):
                 pass
 
-        # All printers included
-        form.fields["printer"].queryset = PrinterProfile.objects.all()
+        # Deactivated printers get no new attempts
+        form.fields["printer"].queryset = PrinterProfile.objects.active()
         return form
 
     def get_context_data(self, **kwargs):
@@ -205,7 +208,7 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
         # Build a map: plate_pk -> [compatible printer PKs]
         plates = _queueable_plates().select_related("print_job__machine_profile")
 
-        printers = PrinterProfile.objects.all()
+        printers = PrinterProfile.objects.active()
 
         plate_printer_map: dict[str, list[int]] = {}
         for plate in plates:
@@ -225,15 +228,7 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
         plate = form.cleaned_data["plate"]
         priority = form.cleaned_data["priority"]
 
-        max_pos = PrintQueue.objects.filter(printer=printer).aggregate(m=Max("position"))["m"] or 0
-
-        entry = PrintQueue(
-            plate=plate,
-            printer=printer,
-            priority=priority,
-            position=max_pos + 1,
-        )
-        entry.save()
+        PrintQueue.enqueue(plate=plate, printer=printer, priority=priority)
 
         messages.success(
             self.request,
@@ -245,15 +240,18 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
 
 
 class PrintQueueDeleteView(QueueDequeueMixin, DeleteView):
-    """Remove a job from the queue.
+    """Remove an open print attempt from the queue.
+
+    A never-started attempt is deleted; a started one is kept as history
+    with ``result=cancelled`` (see :meth:`PrintQueue.remove`).  Resolved
+    attempts are history and cannot be removed (404).
 
     ``can_dequeue_job`` is held by both Operators and Designers, but only
     users who can *control the printer* (Operators/Admins) may remove an
-    entry that is already ``printing`` or ``awaiting_review`` — deleting
-    such an entry would desync the database from the real printer.
-    Designers (who lack ``can_control_printer``) are therefore restricted
-    to ``waiting`` entries; any other entry is simply not found (404) for
-    them.
+    entry that is already printing or awaiting review — removing such an
+    entry would desync the database from the real printer.  Designers (who
+    lack ``can_control_printer``) are therefore restricted to waiting
+    entries; any other entry is simply not found (404) for them.
     """
 
     model = PrintQueue
@@ -261,9 +259,9 @@ class PrintQueueDeleteView(QueueDequeueMixin, DeleteView):
     success_url = reverse_lazy("core:printqueue_list")
 
     def get_queryset(self):
-        queryset = PrintQueue.objects.all()
+        queryset = PrintQueue.objects.open()
         if not self.request.user.has_perm("core.can_control_printer"):
-            queryset = queryset.filter(status=PrintQueue.STATUS_WAITING)
+            queryset = queryset.waiting()
         return queryset
 
     def form_valid(self, form):
@@ -274,18 +272,28 @@ class PrintQueueDeleteView(QueueDequeueMixin, DeleteView):
             # status so a live entry can never be removed by a Designer.
             # A waiting entry whose print start is in progress (G-code upload)
             # is about to become printing, so it is protected the same way.
-            deleted, _ = (
-                PrintQueue.objects.filter(pk=self.object.pk, status=PrintQueue.STATUS_WAITING)
-                .exclude(PrintQueue.active_start_claim_q())
-                .delete()
-            )
-            if not deleted:
-                raise Http404("Queue entry is no longer waiting.")
+            with transaction.atomic():
+                deleted, _ = (
+                    PrintQueue.objects.waiting()
+                    .filter(pk=self.object.pk)
+                    .exclude(PrintQueue.active_start_claim_q())
+                    .delete()
+                )
+                if not deleted:
+                    raise Http404("Queue entry is no longer waiting.")
+                if self.object.plate is not None:
+                    self.object.plate.refresh_stored_status()
             messages.success(self.request, "Removed from queue.")
             return HttpResponseRedirect(self.get_success_url())
 
+        with transaction.atomic():
+            # Re-read under lock: the attempt may have been resolved since the page loaded.
+            entry = PrintQueue.objects.open().select_for_update().filter(pk=self.object.pk).first()
+            if entry is None:
+                raise Http404("Queue entry is no longer open.")
+            entry.remove()
         messages.success(self.request, "Removed from queue.")
-        return super().form_valid(form)
+        return HttpResponseRedirect(self.get_success_url())
 
 
 class PrintQueueMoveView(QueueManageMixin, View):
@@ -388,13 +396,13 @@ class RunNextQueueView(PrinterControlMixin, View):
 class RunAllQueuesView(PrinterControlMixin, View):
     """Start the next waiting job on every free printer.
 
-    Iterates over all printers that have a Moonraker URL.
+    Iterates over all active printers that have a Moonraker URL.
     For each printer that is free (no printing/awaiting_review entry), it
     picks the highest-priority waiting entry and starts the print.
     """
 
     def post(self, request: HttpRequest) -> HttpResponse:
-        printers = PrinterProfile.objects.filter().exclude(moonraker_url="")
+        printers = PrinterProfile.objects.active().exclude(moonraker_url="")
 
         started = 0
         skipped_busy = 0
@@ -447,17 +455,16 @@ class QueueEntryReviewView(PrinterControlMixin, View):
     **Pass:** Marks the plate as completed.  If all plates of the job are
     done, the job status is set to *completed*.
 
-    **Fail:** Increments ``retry_count`` and resets the entry to *waiting*
-    so it will be picked up again.  If ``retry_count >= max_retries`` the
-    entry is removed and a warning is shown.
+    **Fail:** Keeps the failed attempt as history and queues a retry
+    attempt, until the plate reaches ``max_retries`` failed attempts — then
+    the plate counts as failed and a warning is shown.
     """
 
     def _get_entry(self, request: HttpRequest, pk: int) -> PrintQueue:
         """Fetch the queue entry or 404."""
         return get_object_or_404(
-            PrintQueue.objects.select_related("plate__print_job", "printer"),
+            PrintQueue.objects.awaiting_review().with_retry_count().select_related("plate__print_job", "printer"),
             pk=pk,
-            status=PrintQueue.STATUS_AWAITING_REVIEW,
         )
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
@@ -494,7 +501,7 @@ class QueueEntryReviewView(PrinterControlMixin, View):
         elif result.outcome == "discarded":
             messages.error(
                 request,
-                f"{result.plate_label} failed and max retries ({result.max_retries}) exceeded — removed from queue.",
+                f"{result.plate_label} failed and max retries ({result.max_retries}) reached — plate marked failed.",
             )
         else:
             messages.warning(
@@ -526,8 +533,8 @@ class QueueCheckPrinterStatusView(LoginRequiredMixin, View):
             pk=pk,
         )
 
-        if entry.status != PrintQueue.STATUS_PRINTING:
-            payload: dict = {"status": entry.status}
+        if not entry.is_printing:
+            payload: dict = {"status": entry.state}
             if entry.last_error:
                 payload["message"] = entry.last_error
             return JsonResponse(payload)
@@ -557,9 +564,8 @@ class CancelQueueEntryView(PrinterControlMixin, View):
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         entry = get_object_or_404(
-            PrintQueue.objects.select_related("plate__print_job", "printer"),
+            PrintQueue.objects.printing().select_related("plate__print_job", "printer"),
             pk=pk,
-            status=PrintQueue.STATUS_PRINTING,
         )
         printer = entry.printer
         plate_label = f"Plate {entry.plate.plate_number} of '{entry.print_job}'"
@@ -574,9 +580,7 @@ class CancelQueueEntryView(PrinterControlMixin, View):
                 "Cancel command failed, but entry marked for review. Check server logs for details.",
             )
 
-        entry.status = PrintQueue.STATUS_AWAITING_REVIEW
-        entry.completed_at = timezone.now()
-        entry.save(update_fields=["status", "completed_at"])
+        entry.mark_finished()
 
         messages.info(
             request,

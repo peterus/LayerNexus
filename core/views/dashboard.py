@@ -55,7 +55,7 @@ class DashboardView(LoginRequiredMixin, TemplateView):
             *Project.aggregate_prefetch_lookups()
         )[:5]
         context["recent_jobs"] = PrintJob.objects.all()[:10]
-        context["printer_profiles"] = PrinterProfile.objects.all()
+        context["printer_profiles"] = PrinterProfile.objects.active()
 
         # Dashboard statistics
         all_jobs = PrintJob.objects.all()
@@ -72,33 +72,18 @@ class DashboardView(LoginRequiredMixin, TemplateView):
             or 0
         )
 
-        # Queue with entry statuses
-        user_queue = PrintQueue.objects.all()
+        # Queue (open attempts) with entry states
+        user_queue = PrintQueue.objects.open()
         context["queue_entries"] = user_queue.select_related("plate__print_job", "printer")[:5]
-        context["queue_waiting"] = user_queue.filter(
-            status=PrintQueue.STATUS_WAITING,
-        ).count()
-        context["queue_printing"] = user_queue.filter(
-            status=PrintQueue.STATUS_PRINTING,
-        ).count()
-        context["queue_review"] = user_queue.filter(
-            status=PrintQueue.STATUS_AWAITING_REVIEW,
-        ).count()
+        context["queue_waiting"] = user_queue.waiting().count()
+        context["queue_printing"] = user_queue.printing().count()
+        context["queue_review"] = user_queue.awaiting_review().count()
         context["queue_total"] = user_queue.count()
 
         # Farm overview
-        printers = PrinterProfile.objects.all()
+        printers = PrinterProfile.objects.active()
         context["total_printers"] = printers.count()
-        active_printer_ids = (
-            user_queue.filter(
-                status__in=[
-                    PrintQueue.STATUS_PRINTING,
-                    PrintQueue.STATUS_AWAITING_REVIEW,
-                ],
-            )
-            .values_list("printer_id", flat=True)
-            .distinct()
-        )
+        active_printer_ids = user_queue.active().values_list("printer_id", flat=True).distinct()
         context["busy_printers"] = active_printer_ids.count()
         context["idle_printers"] = (
             printers.exclude(
@@ -142,30 +127,22 @@ class FarmDashboardView(LoginRequiredMixin, TemplateView):
         """Build context with per-printer state and farm-wide stats."""
         context = super().get_context_data(**kwargs)
 
-        printers = PrinterProfile.objects.all().select_related("orca_machine_profile")
+        printers = PrinterProfile.objects.active().select_related("orca_machine_profile")
 
         # Pre-fetch active queue entries (printing / awaiting_review)
-        active_entries = PrintQueue.objects.filter(
-            status__in=[
-                PrintQueue.STATUS_PRINTING,
-                PrintQueue.STATUS_AWAITING_REVIEW,
-            ],
-        ).select_related("plate__print_job", "printer")
+        active_entries = PrintQueue.objects.active().with_retry_count().select_related("plate__print_job", "printer")
         active_map: dict[int, PrintQueue] = {e.printer_id: e for e in active_entries}
 
         # Per-printer info
         printer_cards: list[dict[str, Any]] = []
         for p in printers:
             entry = active_map.get(p.pk)
-            waiting_count = PrintQueue.objects.filter(
-                printer=p,
-                status=PrintQueue.STATUS_WAITING,
-            ).count()
+            waiting_count = PrintQueue.objects.waiting().filter(printer=p).count()
 
-            if entry and entry.status == PrintQueue.STATUS_PRINTING:
-                state = "printing"
-            elif entry and entry.status == PrintQueue.STATUS_AWAITING_REVIEW:
+            if entry and entry.is_awaiting_review:
                 state = "awaiting_review"
+            elif entry:
+                state = "printing"
             else:
                 state = "idle"
 
@@ -182,16 +159,10 @@ class FarmDashboardView(LoginRequiredMixin, TemplateView):
         context["printer_cards"] = printer_cards
 
         # Farm-wide statistics
-        all_entries = PrintQueue.objects.all()
-        context["total_waiting"] = all_entries.filter(
-            status=PrintQueue.STATUS_WAITING,
-        ).count()
-        context["total_printing"] = all_entries.filter(
-            status=PrintQueue.STATUS_PRINTING,
-        ).count()
-        context["total_awaiting_review"] = all_entries.filter(
-            status=PrintQueue.STATUS_AWAITING_REVIEW,
-        ).count()
+        all_entries = PrintQueue.objects.open()
+        context["total_waiting"] = all_entries.waiting().count()
+        context["total_printing"] = all_entries.printing().count()
+        context["total_awaiting_review"] = all_entries.awaiting_review().count()
         context["total_printers"] = printers.count()
         context["idle_printers"] = sum(1 for c in printer_cards if c["state"] == "idle" and c["has_moonraker"])
 
@@ -270,32 +241,17 @@ class StatisticsView(LoginRequiredMixin, TemplateView):
         factors = [e.accuracy_factor for e in estimates if e.accuracy_factor]
         context["avg_accuracy"] = round(sum(factors) / len(factors), 2) if factors else None
 
-        # Queue stats
-        user_queue = PrintQueue.objects.all()
+        # Queue stats (open attempts)
+        user_queue = PrintQueue.objects.open()
         context["queue_total"] = user_queue.count()
-        context["queue_waiting"] = user_queue.filter(
-            status=PrintQueue.STATUS_WAITING,
-        ).count()
-        context["queue_printing"] = user_queue.filter(
-            status=PrintQueue.STATUS_PRINTING,
-        ).count()
-        context["queue_review"] = user_queue.filter(
-            status=PrintQueue.STATUS_AWAITING_REVIEW,
-        ).count()
+        context["queue_waiting"] = user_queue.waiting().count()
+        context["queue_printing"] = user_queue.printing().count()
+        context["queue_review"] = user_queue.awaiting_review().count()
 
         # Printer stats
-        printers = PrinterProfile.objects.all()
+        printers = PrinterProfile.objects.active()
         context["total_printers"] = printers.count()
-        active_printer_ids = (
-            user_queue.filter(
-                status__in=[
-                    PrintQueue.STATUS_PRINTING,
-                    PrintQueue.STATUS_AWAITING_REVIEW,
-                ],
-            )
-            .values_list("printer_id", flat=True)
-            .distinct()
-        )
+        active_printer_ids = user_queue.active().values_list("printer_id", flat=True).distinct()
         context["busy_printers"] = active_printer_ids.count()
         context["idle_printers"] = (
             printers.exclude(
@@ -305,8 +261,8 @@ class StatisticsView(LoginRequiredMixin, TemplateView):
             .count()
         )
 
-        # Total retries across all queue entries
-        context["total_retries"] = user_queue.aggregate(total=Sum("retry_count"))["total"] or 0
+        # Total retries: attempts the system queued after a failed attempt
+        context["total_retries"] = PrintQueue.objects.filter(is_retry=True).count()
 
         return context
 
