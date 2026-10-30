@@ -311,11 +311,8 @@ class PrintQueue(models.Model):
     @property
     def is_printer_busy(self) -> bool:
         """Return True if this entry's printer has an active or unreviewed job, or a start in progress."""
-        others = PrintQueue.objects.filter(printer=self.printer).exclude(pk=self.pk)
-        return (
-            others.active().exists()
-            or PrintQueue.objects.filter(self.active_start_claim_q(), printer=self.printer).exists()
-        )
+        active = Q(result="") & (Q(started_at__isnull=False) | Q(completed_at__isnull=False)) & ~Q(pk=self.pk)
+        return PrintQueue.objects.filter(active | self.active_start_claim_q(), printer=self.printer).exists()
 
     # ── Transitions ─────────────────────────────────────────────────────
 

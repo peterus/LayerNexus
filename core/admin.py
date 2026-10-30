@@ -334,17 +334,26 @@ class PrintQueueAdmin(admin.ModelAdmin):
         return readonly
 
     def has_delete_permission(self, request: HttpRequest, obj: PrintQueue | None = None) -> bool:
-        """Refuse deleting started or resolved attempts — they are print history."""
-        if obj is not None and obj.is_history:
+        """Refuse deleting history and attempts whose print start is in progress."""
+        if obj is not None and (obj.is_history or obj.has_active_start_claim):
             return False
         return super().has_delete_permission(request, obj)
 
+    def delete_model(self, request: HttpRequest, obj: PrintQueue) -> None:
+        """Delete one never-started attempt (re-checked under lock) and refresh its plate."""
+        self.delete_queryset(request, PrintQueue.objects.filter(pk=obj.pk))
+
     def delete_queryset(self, request: HttpRequest, queryset: QuerySet) -> None:
-        """Bulk-delete only never-started attempts; refuse if the selection contains history."""
+        """Bulk-delete only never-started attempts; refuse if the selection contains protected ones."""
         with transaction.atomic():
-            if queryset.filter(PrintQueue.history_q()).exists():
-                raise PermissionDenied("Started or resolved print attempts are print history and cannot be deleted.")
+            if queryset.filter(PrintQueue.protected_q()).exists():
+                raise PermissionDenied(
+                    "Started or resolved attempts (print history) and starting prints cannot be deleted."
+                )
+            plates = list(PrintJobPlate.objects.filter(queue_entries__in=queryset).distinct())
             super().delete_queryset(request, queryset)
+            for plate in plates:
+                plate.refresh_stored_status()
 
 
 @admin.register(ScheduledQueueStart)

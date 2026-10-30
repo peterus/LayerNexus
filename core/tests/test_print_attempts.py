@@ -389,13 +389,44 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
         self.assertEqual(resp.status_code, 302)
         self.assertFalse(PrintJob.objects.filter(pk=self.job.pk).exists())
 
-    def test_reslice_refused_with_history(self):
+    def _make_sliceable(self) -> None:
+        """Give the job everything the slice view checks before the history guard."""
+        from core.models import OrcaMachineProfile, Part, PrintJobPart
+
+        self.job.machine_profile = OrcaMachineProfile.objects.create(
+            name="Guard Machine",
+            orca_name="guard_machine",
+            state=OrcaMachineProfile.STATE_RESOLVED,
+            instantiation=True,
+        )
+        self.job.save(update_fields=["machine_profile"])
+        Part.objects.filter(pk=self.part.pk).update(stl_file="stl_files/guard.stl")
+        PrintJobPart.objects.create(print_job=self.job, part=self.part, quantity=1)
+
+    def _post_slice(self):
+        from unittest import mock
+
         from django.urls import reverse
 
-        self.client.post(reverse("core:printjob_slice", args=[self.job.pk]))
+        with mock.patch("core.views.print_jobs._start_orcaslicer_worker") as worker:
+            resp = self.client.post(reverse("core:printjob_slice", args=[self.job.pk]), follow=True)
+        return resp, worker
+
+    def test_reslice_refused_with_history(self):
+        self._make_sliceable()
+        resp, worker = self._post_slice()
+        self.assertIn("has print history and cannot be re-sliced", " ".join(str(m) for m in resp.context["messages"]))
+        worker.assert_not_called()
         self.assertTrue(PrintJobPlate.objects.filter(pk=self.plate.pk).exists())
         self.job.refresh_from_db()
         self.assertEqual(self.job.status, PrintJob.STATUS_SLICED)
+
+    def test_reslice_allowed_without_history(self):
+        self._make_sliceable()
+        self.attempt.delete()
+        resp, worker = self._post_slice()
+        worker.assert_called_once()
+        self.assertFalse(PrintJobPlate.objects.filter(pk=self.plate.pk).exists())
 
     def test_admin_cannot_delete_job_or_plate_with_history(self):
         from django.contrib.auth.models import User
@@ -418,10 +449,44 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
 
         self.attempt.delete()
         claimed = self._attempt(start_claimed_at=timezone.now())
+        self._make_sliceable()
         self.client.post(reverse("core:printjob_delete", args=[self.job.pk]))
-        self.client.post(reverse("core:printjob_slice", args=[self.job.pk]))
+        resp, worker = self._post_slice()
+        self.assertIn("cannot be re-sliced", " ".join(str(m) for m in resp.context["messages"]))
+        worker.assert_not_called()
         self.assertTrue(PrintQueue.objects.filter(pk=claimed.pk).exists())
         self.assertTrue(PrintJobPlate.objects.filter(pk=self.plate.pk).exists())
+
+    def test_admin_cannot_delete_attempt_being_started(self):
+        from django.contrib.auth.models import User
+        from django.urls import reverse
+
+        User.objects.filter(pk=self.user.pk).update(is_staff=True, is_superuser=True)
+        claimed = self._attempt(self.plate2, start_claimed_at=timezone.now())
+        resp = self.client.post(reverse("admin:core_printqueue_delete", args=[claimed.pk]), {"post": "yes"})
+        self.assertEqual(resp.status_code, 403)
+        self.assertTrue(PrintQueue.objects.filter(pk=claimed.pk).exists())
+
+    def test_admin_delete_waiting_attempt_refreshes_plate(self):
+        from django.contrib.auth.models import User
+        from django.urls import reverse
+
+        User.objects.filter(pk=self.user.pk).update(is_staff=True, is_superuser=True)
+        for index in range(3):
+            self._attempt(
+                self.plate2,
+                state="awaiting_review",
+                result=PrintQueue.RESULT_FAILED,
+                resolved_at=timezone.now(),
+                is_retry=index > 0,
+            )
+        waiting = PrintQueue.enqueue(plate=self.plate2, printer=self.printer)
+        self.plate2.refresh_from_db()
+        self.assertEqual(self.plate2.status, PrintJobPlate.STATUS_WAITING)
+        resp = self.client.post(reverse("admin:core_printqueue_delete", args=[waiting.pk]), {"post": "yes"})
+        self.assertEqual(resp.status_code, 302)
+        self.plate2.refresh_from_db()
+        self.assertEqual(self.plate2.status, PrintJobPlate.STATUS_FAILED)
 
     def test_admin_history_fields_readonly(self):
         from core.admin import PrintQueueAdmin
