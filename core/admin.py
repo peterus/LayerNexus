@@ -193,7 +193,7 @@ class PrintJobAdmin(_PrintHistoryDeleteGuardMixin, admin.ModelAdmin):
     inlines = [PrintJobPartInline, PrintJobPlateInline]
 
     def _history_attempts(self, objs: Iterable[PrintJob]) -> QuerySet[PrintQueue]:
-        return PrintQueue.objects.filter(PrintQueue.history_q(), plate__print_job__in=[o.pk for o in objs])
+        return PrintQueue.objects.filter(PrintQueue.protected_q(), plate__print_job__in=[o.pk for o in objs])
 
 
 @admin.register(PrintJobPart)
@@ -214,7 +214,7 @@ class PrintJobPlateAdmin(_PrintHistoryDeleteGuardMixin, admin.ModelAdmin):
     list_filter = ("status", "print_job")
 
     def _history_attempts(self, objs: Iterable[PrintJobPlate]) -> QuerySet[PrintQueue]:
-        return PrintQueue.objects.filter(PrintQueue.history_q(), plate__in=[o.pk for o in objs])
+        return PrintQueue.objects.filter(PrintQueue.protected_q(), plate__in=[o.pk for o in objs])
 
 
 @admin.register(OrcaMachineProfile)

@@ -686,10 +686,6 @@ class PrintJobSliceView(RoleRequiredMixin, View):
             messages.error(request, "This job cannot be (re-)sliced right now.")
             return redirect("core:printjob_detail", pk=pk)
 
-        if job.has_print_history():
-            messages.error(request, "This job has print history and cannot be re-sliced.")
-            return redirect("core:printjob_detail", pk=pk)
-
         if not job.machine_profile:
             messages.error(
                 request,
@@ -711,13 +707,20 @@ class PrintJobSliceView(RoleRequiredMixin, View):
             )
             return redirect("core:printjob_detail", pk=pk)
 
-        # Queue for slicing via the unified OrcaSlicer worker
-        job.status = PrintJob.STATUS_PENDING
-        job.slicing_error = ""
-        job.save(update_fields=["status", "slicing_error"])
+        with transaction.atomic():
+            # Checked together with the plate delete: re-slicing deletes all
+            # plates, which must never take print history (or a starting print) along.
+            if job.has_print_history():
+                messages.error(request, "This job has print history and cannot be re-sliced.")
+                return redirect("core:printjob_detail", pk=pk)
 
-        # Delete any existing plates from a previous slice attempt
-        job.plates.all().delete()
+            # Queue for slicing via the unified OrcaSlicer worker
+            job.status = PrintJob.STATUS_PENDING
+            job.slicing_error = ""
+            job.save(update_fields=["status", "slicing_error"])
+
+            # Delete any existing plates from a previous slice attempt
+            job.plates.all().delete()
 
         _start_orcaslicer_worker()
         logger.info("Queued slicing for job %s (%s)", job.pk, job)

@@ -284,6 +284,15 @@ class PrintQueue(models.Model):
         """Return a filter for attempts that are print history (started or resolved)."""
         return ~Q(result="") | Q(started_at__isnull=False) | Q(completed_at__isnull=False)
 
+    @classmethod
+    def protected_q(cls) -> Q:
+        """Return a filter for attempts whose plate must not be deleted.
+
+        That is print history (:meth:`history_q`) plus a print start in
+        progress — deleting it mid-upload would let the print run untracked.
+        """
+        return cls.history_q() | cls.active_start_claim_q()
+
     @property
     def is_history(self) -> bool:
         """Return True once the attempt was started or resolved (it must not be deleted)."""

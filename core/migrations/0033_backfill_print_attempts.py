@@ -12,12 +12,14 @@ derived from timestamps + ``result``.  This migration:
 3. resolves duplicate open entries of one plate (keeps the most advanced
    one; never-started others are deleted, started ones become ``cancelled``), so the new
    "one open attempt per plate" constraint can be added;
+3b. resets plates stuck in ``printing`` without an open entry to ``waiting``;
 4. creates a ``passed`` attempt for each ``completed`` plate and
    ``max_retries`` ``failed`` attempts for each ``failed`` plate that has
    none yet (printer from ``PrintJob.printer`` if set, else unknown).
 
-The stored ``PrintJobPlate.status`` is not changed, so printed quantities
-and project progress stay exactly as before.  Idempotent.
+Apart from 3b (``printing`` -> ``waiting``) the stored ``PrintJobPlate.status``
+is not changed; ``completed`` plates stay untouched, so printed quantities and
+project progress stay exactly as before.  Idempotent.
 """
 
 from django.db import migrations
@@ -88,6 +90,10 @@ def backfill_print_attempts(apps, schema_editor) -> None:
                 resolved_at=resolved_at,
                 is_retry=True,
             )
+
+    # 3b: plates left "printing" without an open entry (old Operator dequeue or
+    # direct G-code upload) were stuck; they are not queued, i.e. "waiting".
+    PrintJobPlate.objects.filter(status="printing").exclude(queue_entries__result="").update(status="waiting")
 
     # 4: plates whose attempts were deleted after the review.
     plates = PrintJobPlate.objects.filter(status__in=["completed", "failed"]).select_related("print_job")

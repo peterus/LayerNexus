@@ -413,6 +413,16 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
         self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
         self.assertTrue(PrintQueue.objects.filter(pk=self.attempt.pk).exists())
 
+    def test_job_with_print_start_in_progress_not_deletable_or_resliceable(self):
+        from django.urls import reverse
+
+        self.attempt.delete()
+        claimed = self._attempt(start_claimed_at=timezone.now())
+        self.client.post(reverse("core:printjob_delete", args=[self.job.pk]))
+        self.client.post(reverse("core:printjob_slice", args=[self.job.pk]))
+        self.assertTrue(PrintQueue.objects.filter(pk=claimed.pk).exists())
+        self.assertTrue(PrintJobPlate.objects.filter(pk=self.plate.pk).exists())
+
     def test_admin_history_fields_readonly(self):
         from core.admin import PrintQueueAdmin
 

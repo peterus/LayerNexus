@@ -177,6 +177,18 @@ class PrintAttemptBackfillTests(TransactionTestCase):
         self.assertEqual(before, after)
         self.assertEqual(len(after), 1 + 3 + 3)
 
+    def test_backfill_resets_stuck_printing_plate(self) -> None:
+        job = self._job(["printing", "printing"], printer=self.printer)
+        stuck, active = job.plates.order_by("plate_number")
+        self.PrintQueue.objects.create(plate=active, printer=self.printer, status="printing", started_at=self.t0)
+
+        self._migrate()
+
+        stuck.refresh_from_db()
+        active.refresh_from_db()
+        self.assertEqual(stuck.status, "waiting")
+        self.assertEqual(active.status, "printing")
+
     def test_printed_quantity_unchanged_after_backfill(self) -> None:
         project = self.Project.objects.create(name="Legacy Project")
         part_full = self.Part.objects.create(name="Full", project=project, quantity=4)
