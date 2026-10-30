@@ -77,9 +77,7 @@ class CoreConfig(AppConfig):
         from core.models import Part, PrintJob
 
         # Reset parts stuck at 'estimating' → 'pending'
-        stuck_estimations = Part.objects.filter(
-            estimation_status=Part.ESTIMATION_ESTIMATING,
-        ).update(estimation_status=Part.ESTIMATION_PENDING)
+        stuck_estimations = Part.requeue_stuck_estimates()
 
         if stuck_estimations:
             logger.warning(

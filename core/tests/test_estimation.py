@@ -859,3 +859,155 @@ class WorkerConditionalCompletionTests(TestCase):
         # The completion must NOT have written a SUCCESS result over the PENDING re-queue.
         self.assertNotEqual(part.estimation_status, Part.ESTIMATION_SUCCESS)
         self.assertIsNone(part.filament_used_grams)
+
+
+class PartEstimateTransitionTests(TestDataMixin, TestCase):
+    """Estimation state transitions live on the Part model."""
+
+    def setUp(self):
+        super().setUp()
+        from core.models import OrcaPrintPreset
+
+        self.preset = OrcaPrintPreset.objects.create(
+            name="Transition Preset",
+            orca_name="transition_preset",
+            state=OrcaPrintPreset.STATE_RESOLVED,
+        )
+        self.part.stl_file = SimpleUploadedFile("t.stl", b"solid t")
+        self.part.print_preset = self.preset
+        self.part.filament_used_grams = 5
+        self.part.estimation_status = Part.ESTIMATION_SUCCESS
+        self.part.estimation_error = "old"
+        self.part.estimated_with_preset = self.preset
+        self.part.save()
+
+    def test_request_estimate_resets_and_queues(self):
+        """request_estimate clears the estimate and marks the part pending."""
+        self.assertTrue(self.part.request_estimate())
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_PENDING)
+        self.assertEqual(self.part.estimation_error, "")
+        self.assertIsNone(self.part.filament_used_grams)
+        self.assertIsNone(self.part.estimated_with_preset)
+
+    def test_request_estimate_without_prereqs_returns_false(self):
+        """Without a preset the part is left untouched."""
+        Part.objects.filter(pk=self.part.pk).update(print_preset=None)
+        self.part.refresh_from_db()
+        self.assertFalse(self.part.request_estimate())
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_SUCCESS)
+        self.assertEqual(self.part.filament_used_grams, 5)
+
+    def test_claim_estimate_is_atomic(self):
+        """Only the first claim of a pending part wins."""
+        self.part.request_estimate()
+        self.assertTrue(Part.claim_estimate(self.part.pk))
+        self.assertFalse(Part.claim_estimate(self.part.pk))
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_ESTIMATING)
+
+    def test_finish_estimate_ignored_when_not_estimating(self):
+        """A stale result is discarded when the part was re-queued meanwhile."""
+        self.part.request_estimate()
+        self.assertFalse(self.part.finish_estimate(filament_used_grams=9))
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_PENDING)
+        self.assertIsNone(self.part.filament_used_grams)
+
+    def test_finish_estimate_stores_when_estimating(self):
+        """A result is stored while the part is still estimating."""
+        self.part.request_estimate()
+        Part.claim_estimate(self.part.pk)
+        self.assertTrue(self.part.finish_estimate(filament_used_grams=9))
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_SUCCESS)
+        self.assertEqual(self.part.filament_used_grams, 9)
+
+    def test_fail_estimate_only_when_estimating(self):
+        """fail_estimate records the error only for an in-flight estimation."""
+        self.part.request_estimate()
+        self.part.fail_estimate("boom")
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_PENDING)
+        Part.claim_estimate(self.part.pk)
+        self.part.fail_estimate("boom")
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_ERROR)
+        self.assertEqual(self.part.estimation_error, "boom")
+
+    def test_requeue_stuck_estimates(self):
+        """Parts stuck at estimating go back to pending."""
+        Part.objects.filter(pk=self.part.pk).update(estimation_status=Part.ESTIMATION_ESTIMATING)
+        self.assertEqual(Part.requeue_stuck_estimates(), 1)
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_PENDING)
+
+
+class WorkerFailurePathTests(TestCase):
+    """_estimate_part_in_background records failures on a claimed (estimating) part."""
+
+    def setUp(self) -> None:
+        from core.models import OrcaMachineProfile, OrcaPrintPreset, Project
+
+        self.preset = OrcaPrintPreset.objects.create(
+            name="P", orca_name="P", state=OrcaPrintPreset.STATE_RESOLVED, instantiation=True
+        )
+        self.machine = OrcaMachineProfile.objects.create(
+            name="M", orca_name="M", state=OrcaMachineProfile.STATE_RESOLVED, instantiation=True
+        )
+        self.part = Part.objects.create(
+            name="p",
+            project=Project.objects.create(name="Proj"),
+            print_preset=self.preset,
+            estimation_status=Part.ESTIMATION_ESTIMATING,
+        )
+        self.part.stl_file.name = "stl_files/p.stl"
+        self.part.save(update_fields=["stl_file"])
+
+    def _run(self, **slice_kwargs) -> None:
+        from core.services import slicing_worker
+
+        with (
+            patch.object(slicing_worker, "_find_compatible_machine", return_value=self.machine),
+            patch.object(slicing_worker, "_build_slicer_kwargs", return_value={}),
+            patch.object(slicing_worker, "create_3mf_bundle", return_value=b"3mf"),
+            patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls,
+        ):
+            client_cls.return_value.slice_bundle.configure_mock(**slice_kwargs)
+            slicing_worker._estimate_part_in_background(self.part.pk)
+        self.part.refresh_from_db()
+
+    def test_slicer_error_marks_part_error(self) -> None:
+        """An OrcaSlicerError ends in ERROR with the message."""
+        from core.services.orcaslicer import OrcaSlicerError
+
+        self._run(side_effect=OrcaSlicerError("boom"))
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_ERROR)
+        self.assertEqual(self.part.estimation_error, "boom")
+
+    def test_unexpected_error_marks_part_error(self) -> None:
+        """Any other exception ends in ERROR with an 'Unexpected error' prefix."""
+        self._run(side_effect=RuntimeError("kaput"))
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_ERROR)
+        self.assertEqual(self.part.estimation_error, "Unexpected error: kaput")
+
+    def test_no_estimates_marks_part_error(self) -> None:
+        """A slice without filament/time results ends in ERROR."""
+        self._run(
+            return_value=MagicMock(
+                plates=[], total_filament_grams=None, total_filament_mm=None, total_print_time_seconds=None
+            )
+        )
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_ERROR)
+        self.assertEqual(self.part.estimation_error, "Slicing returned no filament or time estimates.")
+
+    def test_load_failure_marks_part_error(self) -> None:
+        """If loading the part itself fails, the stub still records the error."""
+        from core.services import slicing_worker
+
+        with patch.object(Part.objects, "select_related", side_effect=RuntimeError("db gone")):
+            slicing_worker._estimate_part_in_background(self.part.pk)
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_ERROR)
+        self.assertEqual(self.part.estimation_error, "Unexpected error: db gone")

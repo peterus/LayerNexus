@@ -35,6 +35,39 @@ class ApiUploadTests(APITestCase):
         self.assertIn("gear", self.part.stl_file.name)
         triggered.assert_called_once_with(self.part)
 
+    def _upload_over_existing_estimate(self, *, with_preset: bool) -> dict:
+        """Upload a new STL over a part that already has a successful estimate."""
+        from core.models import OrcaPrintPreset
+
+        if with_preset:
+            self.part.print_preset = OrcaPrintPreset.objects.create(
+                name="Upload Preset", orca_name="upload_preset", state=OrcaPrintPreset.STATE_RESOLVED
+            )
+        self.part.filament_used_grams = 4.5
+        self.part.estimation_status = Part.ESTIMATION_SUCCESS
+        self.part.save()
+        upload = SimpleUploadedFile("gear.stl", b"solid gear\nendsolid", content_type="model/stl")
+        with mock.patch("core.views.helpers._start_orcaslicer_worker"):
+            resp = self.client.post(f"/api/v1/parts/{self.part.pk}/stl/", {"stl_file": upload}, format="multipart")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.part.refresh_from_db()
+        return resp.data
+
+    def test_stl_upload_requeues_and_clears_stale_estimate(self) -> None:
+        """An estimable part is re-queued with its old values cleared; the response reflects that."""
+        data = self._upload_over_existing_estimate(with_preset=True)
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_PENDING)
+        self.assertIsNone(self.part.filament_used_grams)
+        self.assertEqual(data["estimation_status"], Part.ESTIMATION_PENDING)
+        self.assertIsNone(data["filament_used_grams"])
+
+    def test_stl_upload_without_preset_clears_estimate_to_none(self) -> None:
+        """A part that cannot be estimated just has its stale estimate cleared."""
+        data = self._upload_over_existing_estimate(with_preset=False)
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_NONE)
+        self.assertIsNone(self.part.filament_used_grams)
+        self.assertEqual(data["estimation_status"], Part.ESTIMATION_NONE)
+
     def test_3mf_upload_accepted(self) -> None:
         """Uploading a 3MF file is accepted just like an STL (parity with the UI form)."""
         upload = SimpleUploadedFile("gear.3mf", b"PK\x03\x04fake", content_type="model/3mf")

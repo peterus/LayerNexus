@@ -27,29 +27,25 @@ def _user_projects_qs(user: "User") -> QuerySet:
     return Project.objects.all()
 
 
-def _trigger_part_estimation(part: Part) -> None:
-    """Queue a part for background estimation if it is estimable.
+def _trigger_part_estimation(part: Part) -> bool:
+    """Queue a part for background estimation and make sure the worker is running.
 
-    Sets the part's estimation_status to 'pending' and ensures the
-    unified OrcaSlicer worker thread is running.  The worker processes
-    all OrcaSlicer work (estimations and slicing) sequentially.
-
-    Eligibility is delegated to :meth:`Part.is_estimable` (STL present and a preset
-    that resolves bottom-up: the part's own preset or the nearest project default).
+    Delegates the reset-and-queue step to :meth:`Part.request_estimate` (eligibility:
+    STL present and a preset that resolves bottom-up). The unified OrcaSlicer worker
+    processes all estimations and slicing sequentially.
 
     Args:
         part: The Part instance to estimate.
-    """
-    if not part.is_estimable():
-        return
 
-    Part.objects.filter(pk=part.pk).update(
-        estimation_status=Part.ESTIMATION_PENDING,
-        estimation_error="",
-    )
+    Returns:
+        ``True`` if the part was queued, ``False`` if it is not estimable.
+    """
+    if not part.request_estimate():
+        return False
 
     _start_orcaslicer_worker()
     logger.info("Queued estimation for part %s (%s)", part.pk, part.name)
+    return True
 
 
 def _requeue_stale_estimates(parts: Iterable[Part]) -> int:
@@ -84,14 +80,7 @@ def _requeue_stale_estimates(parts: Iterable[Part]) -> int:
                 effective_id = project_presets[part.project_id]
             if effective_id == part.estimated_with_preset_id:
                 continue
-            Part.objects.filter(pk=part.pk).update(
-                filament_used_grams=None,
-                filament_used_meters=None,
-                estimated_print_time=None,
-                estimation_status=Part.ESTIMATION_NONE if effective_id is None else Part.ESTIMATION_PENDING,
-                estimation_error="",
-                estimated_with_preset=None,
-            )
+            part.clear_estimate(queued=effective_id is not None)
             if effective_id is not None:
                 count += 1
     if count:
