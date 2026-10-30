@@ -213,3 +213,123 @@ class AttemptTransitionTests(_AttemptTestBase):
         attempt = self._attempt(state="printing")
         with self.assertRaises(ValueError):
             attempt.resolve(passed=True)
+
+
+class AttemptReaderTests(_AttemptTestBase):
+    """Queue list, worker, review and farm read open attempts only."""
+
+    def setUp(self):
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def _resolved(self, plate: PrintJobPlate, result: str = PrintQueue.RESULT_PASSED) -> PrintQueue:
+        return self._attempt(plate, state="awaiting_review", result=result, resolved_at=timezone.now())
+
+    def test_queue_list_hides_resolved_attempts(self):
+        from django.urls import reverse
+
+        resolved = self._resolved(self.plate)
+        waiting = self._attempt(self.plate2)
+        resp = self.client.get(reverse("core:printqueue_list"))
+        pks = [e.pk for e in resp.context["queue_entries"]]
+        self.assertEqual(pks, [waiting.pk])
+        self.assertNotIn(resolved.pk, pks)
+
+    def test_queue_list_query_count_independent_of_entries(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        from django.urls import reverse
+
+        def count_queries() -> int:
+            with CaptureQueriesContext(connection) as ctx:
+                self.client.get(reverse("core:printqueue_list"))
+            return len(ctx.captured_queries)
+
+        self._attempt(self.plate)
+        self._resolved(self.plate2, PrintQueue.RESULT_FAILED)
+        baseline = count_queries()
+        for number in range(3, 8):
+            plate = PrintJobPlate.objects.create(print_job=self.job, plate_number=number)
+            self._resolved(plate, PrintQueue.RESULT_FAILED)
+            self._attempt(plate, is_retry=True)
+        self.assertEqual(count_queries(), baseline)
+
+    def test_queue_list_shows_retry_count(self):
+        from django.urls import reverse
+
+        self._resolved(self.plate, PrintQueue.RESULT_FAILED)
+        retry = self._attempt(is_retry=True)
+        resp = self.client.get(reverse("core:printqueue_list"))
+        entry = next(e for e in resp.context["queue_entries"] if e.pk == retry.pk)
+        self.assertEqual(entry.retry_count, 1)
+        self.assertContains(resp, "(retry 1/3)")
+
+    def test_worker_active_entry_ignores_resolved(self):
+        from asgiref.sync import async_to_sync
+
+        from core.management.commands.moonraker_worker import _load_active_queue_entry
+
+        self._resolved(self.plate, PrintQueue.RESULT_CANCELLED)
+        self.assertIsNone(async_to_sync(_load_active_queue_entry)(self.printer.pk))
+        printing = self._attempt(self.plate2, state="printing")
+        self.assertEqual(async_to_sync(_load_active_queue_entry)(self.printer.pk), printing)
+
+    def test_concurrent_review_second_call_raises(self):
+        from core.services.queue import ReviewStateError, review_queue_entry
+
+        attempt = self._attempt(state="awaiting_review")
+        self.assertEqual(review_queue_entry(attempt.pk, False).outcome, "requeued")
+        with self.assertRaises(ReviewStateError):
+            review_queue_entry(attempt.pk, True, printer_pk=self.printer.pk)
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.result, PrintQueue.RESULT_FAILED)
+        self.assertEqual(self.plate.queue_entries.count(), 2)
+        self.assertEqual(PrintQueue.objects.open().filter(plate=self.plate).count(), 1)
+
+    def test_resolved_attempt_does_not_keep_printer_busy(self):
+        from core.services.queue import busy_entry_for_printer
+
+        self._resolved(self.plate)
+        self.assertIsNone(busy_entry_for_printer(self.printer))
+        review = self._attempt(self.plate2, state="awaiting_review")
+        self.assertEqual(busy_entry_for_printer(self.printer), review)
+
+    def test_farm_card_state_from_open_attempts(self):
+        from django.urls import reverse
+
+        self._resolved(self.plate)
+        resp = self.client.get(reverse("core:farm_dashboard"))
+        card = next(c for c in resp.context["printer_cards"] if c["printer"] == self.printer)
+        self.assertEqual(card["state"], "idle")
+        self.assertEqual(resp.context["completed_today"], 0)  # stored plate status untouched by fixture
+        self._attempt(self.plate2, state="awaiting_review")
+        resp = self.client.get(reverse("core:farm_dashboard"))
+        card = next(c for c in resp.context["printer_cards"] if c["printer"] == self.printer)
+        self.assertEqual(card["state"], "awaiting_review")
+
+    def test_queueable_plates_ignore_resolved_attempts(self):
+        from core.views.queue import _queueable_plates
+
+        self.plate.gcode_file = "gcode_jobs/a.gcode"
+        self.plate.save()
+        self.plate2.gcode_file = "gcode_jobs/b.gcode"
+        self.plate2.save()
+        self._resolved(self.plate, PrintQueue.RESULT_CANCELLED)
+        self._attempt(self.plate2)
+        self.assertEqual(list(_queueable_plates()), [self.plate])
+
+    def test_enqueue_failed_plate_resets_to_waiting(self):
+        for index in range(3):
+            self._attempt(
+                state="awaiting_review",
+                result=PrintQueue.RESULT_FAILED,
+                resolved_at=timezone.now(),
+                is_retry=index > 0,
+            )
+        self.plate.refresh_stored_status()
+        self.plate.refresh_from_db()
+        self.assertEqual(self.plate.status, PrintJobPlate.STATUS_FAILED)
+        PrintQueue.enqueue(plate=self.plate, printer=self.printer)
+        self.plate.refresh_from_db()
+        self.assertEqual(self.plate.status, PrintJobPlate.STATUS_WAITING)
+        self.assertEqual(self.plate.failed_attempts_since_manual_enqueue(), 0)
