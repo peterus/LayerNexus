@@ -64,12 +64,12 @@ class PartEstimateActionTests(APITestCase):
         self.part.estimation_status = Part.ESTIMATION_SUCCESS
         self.part.save()
 
-        with mock.patch("core.api.views._trigger_part_estimation"):
+        with mock.patch("core.views.helpers._start_orcaslicer_worker"):
             self.client.post(f"/api/v1/parts/{self.part.pk}/estimate/")
 
         self.part.refresh_from_db()
         self.assertIsNone(self.part.filament_used_grams)
-        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_NONE)
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_PENDING)
 
     def test_estimate_forbidden_without_manage_perm(self) -> None:
         """A read-only user is rejected with 403."""
@@ -141,12 +141,12 @@ class ProjectReEstimateActionTests(APITestCase):
         self.part_with_stl.estimation_status = Part.ESTIMATION_SUCCESS
         self.part_with_stl.save()
 
-        with mock.patch("core.api.views._trigger_part_estimation"):
+        with mock.patch("core.views.helpers._start_orcaslicer_worker"):
             self.client.post(f"/api/v1/projects/{self.project.pk}/re-estimate/")
 
         self.part_with_stl.refresh_from_db()
         self.assertIsNone(self.part_with_stl.filament_used_grams)
-        self.assertEqual(self.part_with_stl.estimation_status, Part.ESTIMATION_NONE)
+        self.assertEqual(self.part_with_stl.estimation_status, Part.ESTIMATION_PENDING)
 
     def test_reestimate_zero_eligible_returns_queued_zero(self) -> None:
         """A project whose parts all lack STL returns queued=0 (still 202)."""

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
@@ -172,6 +172,96 @@ class Part(models.Model):
     def is_estimable(self) -> bool:
         """Return whether this part has an STL file and a resolvable print preset."""
         return bool(self.stl_file) and self.effective_print_preset_id is not None
+
+    def clear_estimate(self, *, queued: bool = False) -> None:
+        """Discard the stored estimate and its provenance.
+
+        Writes straight to the database (not through ``save()``), so the in-memory
+        instance is not updated.
+
+        Args:
+            queued: Mark the part ``pending`` for the background worker instead of ``none``.
+        """
+        Part.objects.filter(pk=self.pk).update(
+            filament_used_grams=None,
+            filament_used_meters=None,
+            estimated_print_time=None,
+            estimation_status=self.ESTIMATION_PENDING if queued else self.ESTIMATION_NONE,
+            estimation_error="",
+            estimated_with_preset=None,
+        )
+
+    def request_estimate(self) -> bool:
+        """Clear the stored estimate and queue the part for background estimation.
+
+        The caller starts the OrcaSlicer worker afterwards (a model must not spawn threads).
+
+        Returns:
+            ``True`` if the part was queued, ``False`` if it is not estimable
+            (see :meth:`is_estimable`) and was left untouched.
+        """
+        if not self.is_estimable():
+            return False
+        self.clear_estimate(queued=True)
+        return True
+
+    @classmethod
+    def claim_estimate(cls, pk: int) -> bool:
+        """Atomically move a part from ``pending`` to ``estimating``.
+
+        Returns:
+            ``True`` if this caller claimed the part, ``False`` if it was no longer pending.
+        """
+        return bool(
+            cls.objects.filter(pk=pk, estimation_status=cls.ESTIMATION_PENDING).update(
+                estimation_status=cls.ESTIMATION_ESTIMATING
+            )
+        )
+
+    @classmethod
+    def requeue_stuck_estimates(cls) -> int:
+        """Reset every part stuck at ``estimating`` (e.g. after a crash) back to ``pending``.
+
+        Returns:
+            Number of parts reset.
+        """
+        return cls.objects.filter(estimation_status=cls.ESTIMATION_ESTIMATING).update(
+            estimation_status=cls.ESTIMATION_PENDING
+        )
+
+    def finish_estimate(self, **values: Any) -> bool:
+        """Store a successful estimate, but only if the part is still ``estimating``.
+
+        If the part was edited or re-queued while the slice was in flight, the stale
+        result is discarded so the newer request wins.
+
+        Args:
+            **values: Estimate fields to write (``filament_used_grams``, ``estimated_with_preset``, ...).
+
+        Returns:
+            ``True`` if the result was stored, ``False`` if it was superseded.
+        """
+        return bool(
+            Part.objects.filter(pk=self.pk, estimation_status=self.ESTIMATION_ESTIMATING).update(
+                estimation_status=self.ESTIMATION_SUCCESS,
+                estimation_error="",
+                **values,
+            )
+        )
+
+    def fail_estimate(self, error: str) -> None:
+        """Record a failed estimation, but only if the part is still ``estimating``."""
+        Part.objects.filter(pk=self.pk, estimation_status=self.ESTIMATION_ESTIMATING).update(
+            estimation_status=self.ESTIMATION_ERROR,
+            estimation_error=error,
+        )
+
+    def abort_estimate(self) -> None:
+        """Give up on estimating (no model file or no preset) and reset the part to ``none``."""
+        Part.objects.filter(pk=self.pk).update(
+            estimation_status=self.ESTIMATION_NONE,
+            estimated_with_preset=None,
+        )
 
     def deep_copy(self, *, project: Project) -> Part:
         """Copy this part (content, never history) into ``project``.

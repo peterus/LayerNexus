@@ -213,11 +213,7 @@ def _orcaslicer_worker_loop(lock_fh: IO[str] | None = None) -> None:
             )
 
             if next_estimation_pk is not None:
-                claimed = Part.objects.filter(
-                    pk=next_estimation_pk,
-                    estimation_status=Part.ESTIMATION_PENDING,
-                ).update(estimation_status=Part.ESTIMATION_ESTIMATING)
-                if claimed:
+                if Part.claim_estimate(next_estimation_pk):
                     _estimate_part_in_background(next_estimation_pk)
                 continue
 
@@ -303,25 +299,21 @@ def _estimate_part_in_background(part_pk: int) -> None:
     """
     from pathlib import Path as FSPath
 
+    # Stub so the failure handlers can record an error even if loading the part itself fails.
+    part = Part(pk=part_pk)
     try:
         part = Part.objects.select_related("print_preset", "project").get(pk=part_pk)
 
         if not part.stl_file:
             logger.debug("estimate_part(%s): no model file, skipping", part_pk)
-            Part.objects.filter(pk=part_pk).update(
-                estimation_status=Part.ESTIMATION_NONE,
-                estimated_with_preset=None,
-            )
+            part.abort_estimate()
             return
 
         # Own preset, else the nearest project default up the tree.
         print_preset = part.effective_print_preset
         if not print_preset:
             logger.debug("estimate_part(%s): no print preset, skipping", part_pk)
-            Part.objects.filter(pk=part_pk).update(
-                estimation_status=Part.ESTIMATION_NONE,
-                estimated_with_preset=None,
-            )
+            part.abort_estimate()
             return
 
         # Find a compatible machine profile for this preset
@@ -373,41 +365,25 @@ def _estimate_part_in_background(part_pk: int) -> None:
             fields["estimated_print_time"] = timedelta(seconds=total_time)
 
         if fields:
-            fields.update(
-                estimation_status=Part.ESTIMATION_SUCCESS,
-                estimation_error="",
-                estimated_with_preset=print_preset,
-            )
-            # Conditional completion: only write if the part is STILL the one we claimed
-            # (status ESTIMATING). If it was edited/re-queued while this slice was in flight
-            # it is now PENDING/NONE — discard this stale result so the newer request wins.
-            written = Part.objects.filter(pk=part_pk, estimation_status=Part.ESTIMATION_ESTIMATING).update(**fields)
-            if written:
+            # Conditional completion: only stored if the part is STILL the one we claimed
+            # (ESTIMATING); otherwise the stale result is discarded so the newer request wins.
+            if part.finish_estimate(estimated_with_preset=print_preset, **fields):
                 logger.info(
                     "estimate_part(%s): saved estimates — %sg, %sm, %ss", part_pk, total_g, total_mm, total_time
                 )
             else:
                 logger.info("estimate_part(%s): superseded by a newer re-estimation, result discarded", part_pk)
         else:
-            Part.objects.filter(pk=part_pk, estimation_status=Part.ESTIMATION_ESTIMATING).update(
-                estimation_status=Part.ESTIMATION_ERROR,
-                estimation_error="Slicing returned no filament or time estimates.",
-            )
+            part.fail_estimate("Slicing returned no filament or time estimates.")
             logger.warning("estimate_part(%s): slicing returned no estimates", part_pk)
 
     except (OrcaSlicerError, FileNotFoundError) as exc:
-        Part.objects.filter(pk=part_pk, estimation_status=Part.ESTIMATION_ESTIMATING).update(
-            estimation_status=Part.ESTIMATION_ERROR,
-            estimation_error=str(exc),
-        )
+        part.fail_estimate(str(exc))
         logger.warning("estimate_part(%s): slicing failed — %s", part_pk, exc)
     except Part.DoesNotExist:
         logger.debug("estimate_part(%s): part no longer exists", part_pk)
     except Exception as exc:
-        Part.objects.filter(pk=part_pk, estimation_status=Part.ESTIMATION_ESTIMATING).update(
-            estimation_status=Part.ESTIMATION_ERROR,
-            estimation_error=f"Unexpected error: {exc}",
-        )
+        part.fail_estimate(f"Unexpected error: {exc}")
         logger.exception("estimate_part(%s): unexpected error", part_pk)
 
 

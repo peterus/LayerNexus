@@ -859,3 +859,86 @@ class WorkerConditionalCompletionTests(TestCase):
         # The completion must NOT have written a SUCCESS result over the PENDING re-queue.
         self.assertNotEqual(part.estimation_status, Part.ESTIMATION_SUCCESS)
         self.assertIsNone(part.filament_used_grams)
+
+
+class PartEstimateTransitionTests(TestDataMixin, TestCase):
+    """Estimation state transitions live on the Part model."""
+
+    def setUp(self):
+        super().setUp()
+        from core.models import OrcaPrintPreset
+
+        self.preset = OrcaPrintPreset.objects.create(
+            name="Transition Preset",
+            orca_name="transition_preset",
+            state=OrcaPrintPreset.STATE_RESOLVED,
+        )
+        self.part.stl_file = SimpleUploadedFile("t.stl", b"solid t")
+        self.part.print_preset = self.preset
+        self.part.filament_used_grams = 5
+        self.part.estimation_status = Part.ESTIMATION_SUCCESS
+        self.part.estimation_error = "old"
+        self.part.estimated_with_preset = self.preset
+        self.part.save()
+
+    def test_request_estimate_resets_and_queues(self):
+        """request_estimate clears the estimate and marks the part pending."""
+        self.assertTrue(self.part.request_estimate())
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_PENDING)
+        self.assertEqual(self.part.estimation_error, "")
+        self.assertIsNone(self.part.filament_used_grams)
+        self.assertIsNone(self.part.estimated_with_preset)
+
+    def test_request_estimate_without_prereqs_returns_false(self):
+        """Without a preset the part is left untouched."""
+        Part.objects.filter(pk=self.part.pk).update(print_preset=None)
+        self.part.refresh_from_db()
+        self.assertFalse(self.part.request_estimate())
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_SUCCESS)
+        self.assertEqual(self.part.filament_used_grams, 5)
+
+    def test_claim_estimate_is_atomic(self):
+        """Only the first claim of a pending part wins."""
+        self.part.request_estimate()
+        self.assertTrue(Part.claim_estimate(self.part.pk))
+        self.assertFalse(Part.claim_estimate(self.part.pk))
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_ESTIMATING)
+
+    def test_finish_estimate_ignored_when_not_estimating(self):
+        """A stale result is discarded when the part was re-queued meanwhile."""
+        self.part.request_estimate()
+        self.assertFalse(self.part.finish_estimate(filament_used_grams=9))
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_PENDING)
+        self.assertIsNone(self.part.filament_used_grams)
+
+    def test_finish_estimate_stores_when_estimating(self):
+        """A result is stored while the part is still estimating."""
+        self.part.request_estimate()
+        Part.claim_estimate(self.part.pk)
+        self.assertTrue(self.part.finish_estimate(filament_used_grams=9))
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_SUCCESS)
+        self.assertEqual(self.part.filament_used_grams, 9)
+
+    def test_fail_estimate_only_when_estimating(self):
+        """fail_estimate records the error only for an in-flight estimation."""
+        self.part.request_estimate()
+        self.part.fail_estimate("boom")
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_PENDING)
+        Part.claim_estimate(self.part.pk)
+        self.part.fail_estimate("boom")
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_ERROR)
+        self.assertEqual(self.part.estimation_error, "boom")
+
+    def test_requeue_stuck_estimates(self):
+        """Parts stuck at estimating go back to pending."""
+        Part.objects.filter(pk=self.part.pk).update(estimation_status=Part.ESTIMATION_ESTIMATING)
+        self.assertEqual(Part.requeue_stuck_estimates(), 1)
+        self.part.refresh_from_db()
+        self.assertEqual(self.part.estimation_status, Part.ESTIMATION_PENDING)

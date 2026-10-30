@@ -367,16 +367,8 @@ class ProjectReEstimateView(ProjectManageMixin, View):
         for part, _needed in project._collect_parts_with_multiplier():
             if not part.stl_file or part.effective_print_preset_id is None:
                 continue
-            Part.objects.filter(pk=part.pk).update(
-                filament_used_grams=None,
-                filament_used_meters=None,
-                estimated_print_time=None,
-                estimation_status=Part.ESTIMATION_NONE,
-                estimation_error="",
-                estimated_with_preset=None,
-            )
-            _trigger_part_estimation(part)
-            count += 1
+            if _trigger_part_estimation(part):
+                count += 1
 
         if count:
             messages.info(request, f"Re-estimation started for {count} part(s).")

@@ -262,15 +262,14 @@ class ProjectReEstimateViewTests(TestDataMixin, TestCase):
         )
         inherited.stl_file.save("b.stl", SimpleUploadedFile("b.stl", b"solid\nendsolid"), save=True)
 
-        with mock.patch("core.views.projects._trigger_part_estimation") as triggered:
+        with mock.patch("core.views.helpers._start_orcaslicer_worker") as start_worker:
             resp = self.client.post(reverse("core:project_re_estimate", args=[self.project.pk]))
 
         self.assertEqual(resp.status_code, 302)
-        triggered.assert_called_once()  # self.part has no STL, so only the inherited part
-        self.assertEqual(triggered.call_args[0][0].pk, inherited.pk)
+        start_worker.assert_called_once()  # self.part has no STL, so only the inherited part
         inherited.refresh_from_db()
         self.assertIsNone(inherited.filament_used_grams)
-        self.assertEqual(inherited.estimation_status, Part.ESTIMATION_NONE)
+        self.assertEqual(inherited.estimation_status, Part.ESTIMATION_PENDING)
 
     def test_re_estimate_skips_part_without_resolvable_preset(self):
         """A part with an STL but no preset anywhere up the chain is not queued."""

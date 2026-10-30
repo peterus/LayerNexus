@@ -195,16 +195,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
         for part, _needed in project._collect_parts_with_multiplier():
             if not part.stl_file or part.effective_print_preset_id is None:
                 continue
-            Part.objects.filter(pk=part.pk).update(
-                filament_used_grams=None,
-                filament_used_meters=None,
-                estimated_print_time=None,
-                estimation_status=Part.ESTIMATION_NONE,
-                estimation_error="",
-                estimated_with_preset=None,
-            )
-            _trigger_part_estimation(part)
-            count += 1
+            if _trigger_part_estimation(part):
+                count += 1
         return Response({"queued": count}, status=status.HTTP_202_ACCEPTED)
 
     @extend_schema(
@@ -443,14 +435,6 @@ class PartViewSet(viewsets.ModelViewSet):
                 {"detail": "Part has no resolvable print preset (no override and no project default)."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        Part.objects.filter(pk=part.pk).update(
-            filament_used_grams=None,
-            filament_used_meters=None,
-            estimated_print_time=None,
-            estimation_status=Part.ESTIMATION_NONE,
-            estimation_error="",
-            estimated_with_preset=None,
-        )
         _trigger_part_estimation(part)
         part.refresh_from_db()
         serializer = PartSerializer(part, context=self.get_serializer_context())
@@ -522,9 +506,9 @@ class PartViewSet(viewsets.ModelViewSet):
 
         part.stl_file = uploaded
         part.save()
-        # The model file changed, so the stored estimate's provenance is stale.
-        Part.objects.filter(pk=part.pk).update(estimated_with_preset=None)
-        _trigger_part_estimation(part)
+        # The model file changed, so the stored estimate is stale: re-queue it, or just clear it.
+        if not _trigger_part_estimation(part):
+            part.clear_estimate()
         serializer = PartSerializer(part, context=self.get_serializer_context())
         return Response(serializer.data, status=status.HTTP_200_OK)
 

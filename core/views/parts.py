@@ -244,16 +244,9 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
         response = super().form_valid(form)
 
         if needs_re_estimate:
-            # Clear old estimates so new ones are written.
-            Part.objects.filter(pk=self.object.pk).update(
-                filament_used_grams=None,
-                filament_used_meters=None,
-                estimated_print_time=None,
-                estimation_status=Part.ESTIMATION_NONE,
-                estimation_error="",
-                estimated_with_preset=None,
-            )
-            _trigger_part_estimation(self.object)
+            # Clear old estimates so new ones are written; not estimable -> just clear.
+            if not _trigger_part_estimation(self.object):
+                self.object.clear_estimate()
         elif moved:
             # Moved part: re-estimate only if the inherited preset differs in the new project.
             _requeue_stale_estimates([self.object])
@@ -337,15 +330,6 @@ class PartReEstimateView(ProjectManageMixin, View):
             messages.warning(request, "No print preset configured — cannot estimate.")
             return redirect("core:part_detail", pk=part.pk)
 
-        # Clear the stored estimate and its provenance; the worker resolves the preset.
-        Part.objects.filter(pk=part.pk).update(
-            filament_used_grams=None,
-            filament_used_meters=None,
-            estimated_print_time=None,
-            estimation_status=Part.ESTIMATION_NONE,
-            estimation_error="",
-            estimated_with_preset=None,
-        )
         _trigger_part_estimation(part)
         messages.info(request, f"Re-estimation started for '{part.name}'.")
         return redirect("core:part_detail", pk=part.pk)
