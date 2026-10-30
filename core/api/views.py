@@ -509,6 +509,7 @@ class PartViewSet(viewsets.ModelViewSet):
         # The model file changed, so the stored estimate is stale: re-queue it, or just clear it.
         if not _trigger_part_estimation(part):
             part.clear_estimate()
+        part.refresh_from_db()
         serializer = PartSerializer(part, context=self.get_serializer_context())
         return Response(serializer.data, status=status.HTTP_200_OK)
 
