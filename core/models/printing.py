@@ -55,16 +55,20 @@ def _part_labels(parts: Iterable[Part]) -> dict[int, str]:
     """Return part pk → display name; parts sharing a name get their project path appended.
 
     The full path (not just the project name) tells deep-copied variants apart,
-    whose sub-projects keep their names.  It is only computed on a collision.
+    whose sub-projects keep their names.  The paths come from one
+    :meth:`Project.path_label_map` query, made only on a collision.
     """
+    from core.models.projects import Project
+
     parts = {part.pk: part for part in parts}
     name_counts: dict[str, int] = {}
     for part in parts.values():
         name_counts[part.name] = name_counts.get(part.name, 0) + 1
-    return {
-        pk: part.name if name_counts[part.name] == 1 else f"{part.name} ({part.project.path_label})"
-        for pk, part in parts.items()
-    }
+    paths = Project.path_label_map() if any(count > 1 for count in name_counts.values()) else {}
+    labels: dict[int, str] = {}
+    for pk, part in parts.items():
+        labels[pk] = part.name if name_counts[part.name] == 1 else f"{part.name} ({paths.get(part.project_id)})"
+    return labels
 
 
 class PrintJobQuerySet(models.QuerySet):
@@ -506,6 +510,17 @@ class PrintJob(models.Model):
                 missing[part_id] = unplaced
         return missing
 
+    def part_labels(self) -> dict[int, str]:
+        """Return part pk → display label for the job's parts (cached on the instance).
+
+        Same-named parts get their project path, see :func:`_part_labels`.
+        """
+        if "_part_labels_cache" not in self.__dict__:
+            from core.models.parts import Part
+
+            self._part_labels_cache = _part_labels(Part.objects.filter(job_entries__print_job=self))
+        return self._part_labels_cache
+
     def plate_assignment_warnings(self) -> list[str]:
         """Return user-facing warnings about the plate assignment of the job's parts.
 
@@ -523,9 +538,8 @@ class PrintJob(models.Model):
         missing = self.unplaced_copies()
         if not missing:
             return []
-        from core.models.parts import Part
 
-        labels = _part_labels(Part.objects.filter(job_entries__print_job=self).select_related("project"))
+        labels = self.part_labels()
         return [f"{count}× {labels[part_id]} on no plate" for part_id, count in sorted(missing.items())]
 
     def discard_slicing(self) -> None:
@@ -834,8 +848,9 @@ class PrintJobPlate(models.Model):
         if "plate_parts" in getattr(self, "_prefetched_objects_cache", {}):
             entries = list(self.plate_parts.all())
         else:
-            entries = list(self.plate_parts.select_related("part__project"))
-        labels = _part_labels(entry.part for entry in entries)
+            entries = list(self.plate_parts.select_related("part"))
+        # The detail view hands in the job's labels (one computation for all plates).
+        labels = getattr(self, "part_labels", None) or _part_labels(entry.part for entry in entries)
         counts: dict[tuple[int, bool], int] = {}
         for entry in entries:
             key = (entry.part_id, entry.meshes_on_plate < entry.mesh_count)

@@ -12,6 +12,7 @@ migration uses them as well, so keep them backwards compatible.
 """
 
 import logging
+import mmap
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -41,14 +42,14 @@ class PlateCopyShare:
     mesh_count: int
 
 
-def parse_gcode_object_ids(gcode: bytes) -> list[int]:
+def parse_gcode_object_ids(gcode: bytes | mmap.mmap) -> list[int]:
     """Return the bundle object IDs printed by a plate's G-code.
 
     Reads the ``EXCLUDE_OBJECT_DEFINE NAME=Object_<N>…`` lines; when there are
     none, falls back to the ``; printing object Object_<N>`` comments.
 
     Args:
-        gcode: Raw G-code of one plate.
+        gcode: Raw G-code of one plate (bytes, or a read-only ``mmap`` of the file).
 
     Returns:
         The unique object IDs, sorted ascending (empty if the G-code has no labels).

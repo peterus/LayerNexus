@@ -339,7 +339,7 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
             "job_parts__part__project",
             Prefetch(
                 "plates",
-                queryset=PrintJobPlate.objects.prefetch_related("queue_entries__printer", "plate_parts__part__project"),
+                queryset=PrintJobPlate.objects.prefetch_related("queue_entries__printer", "plate_parts__part"),
             ),
         )
 
@@ -350,6 +350,9 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
         context["job_parts"] = job.job_parts.select_related("part__project__parent__parent__parent")
         plates = list(job.plates.all())
         self._attach_queue_labels(plates)
+        part_labels = job.part_labels()
+        for plate in plates:
+            plate.part_labels = part_labels
         context["plates"] = plates
         context["first_queueable_plate"] = next((plate for plate in plates if plate.is_queueable), None)
         context["bed_dimensions"] = job.bed_dimensions

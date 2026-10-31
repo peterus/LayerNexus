@@ -233,6 +233,16 @@ class PlatePartsBackfillTests(TransactionTestCase):
         self.assertEqual([Path(call.args[0]).name for call in spy.call_args_list], ["Multi.3mf"])
         self.assertEqual(self.PrintJobPlatePart.objects.count(), 6)
 
+    def test_backfill_empty_gcode_file(self) -> None:
+        """An empty G-code file (no labels) on a single plate falls back to 'all objects on this plate'."""
+        part = self._part("P")
+        job = self._job("J", [(part, 2)], [b""])
+
+        self._migrate(BACKFILL)
+
+        self.assertTrue(self._known(job))
+        self.assertEqual(len(self._entries(job)), 2)
+
     def test_backfill_count_mismatch_marks_unknown(self) -> None:
         """An object ID beyond Σ quantity × meshes → the bundle order does not fit → unknown."""
         part = self._part("P")

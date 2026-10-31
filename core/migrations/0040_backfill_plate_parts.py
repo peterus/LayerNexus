@@ -29,6 +29,7 @@ no-op (the previous migration drops the table and field).
 """
 
 import logging
+import mmap
 from pathlib import Path
 
 from django.db import migrations
@@ -45,6 +46,15 @@ def _file_path(field_file) -> Path | None:
     except Exception:  # noqa: BLE001 — e.g. a suspicious stored name; treat as missing
         return None
     return path if path.is_file() else None
+
+
+def _gcode_object_ids(path: Path, parse) -> list[int]:
+    """Parse a plate's G-code via ``mmap`` so a large file is not read into memory at once."""
+    with path.open("rb") as handle:
+        if path.stat().st_size == 0:
+            return []
+        with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+            return parse(mapped)
 
 
 def _mesh_count(path: Path, cache: dict[Path, int | None]) -> int | None:
@@ -115,8 +125,8 @@ def _job_plate_shares(plates: list, job_parts: list, mesh_cache: dict[Path, int 
         parts.append((job_part.quantity, mesh_count))
 
     try:
-        plate_ids = {number: parse_gcode_object_ids(path.read_bytes()) for number, path in gcode_paths.items()}
-    except OSError:
+        plate_ids = {number: _gcode_object_ids(path, parse_gcode_object_ids) for number, path in gcode_paths.items()}
+    except (OSError, ValueError):
         return None, "gcode file unreadable"
     shares = assign_plate_objects(bundle_objects(parts), plate_ids)
     if shares is None:

@@ -445,6 +445,35 @@ class PlatePartLabelTests(TestCase):
 
         self.assertEqual(sorted(job.plates.get().parts_summary()), sorted(labels))
 
+    def test_detail_query_count_with_name_collisions(self) -> None:
+        """Colliding part names in deep trees do not add queries per plate or part."""
+        from django.contrib.auth.models import User
+
+        user = User.objects.create_superuser("root", "root@example.com", "pw")
+        self.client.force_login(user)
+
+        def build(name: str, plates: int, roots: int) -> PrintJob:
+            job = make_sliced_job(name, plates=plates)
+            for index in range(roots):
+                sub = Project.objects.create(name="Arm", parent=Project.objects.create(name=f"{name}{index}"))
+                leaf = Project.objects.create(name="Joint", parent=sub)
+                part = Part.objects.create(project=leaf, name="Bolt", quantity=1)
+                PrintJobPart.objects.create(print_job=job, part=part, quantity=plates)
+                for copy, plate in enumerate(job.plates.all()):
+                    PrintJobPlatePart.objects.create(plate=plate, part=part, copy_index=copy)
+            return job
+
+        def count(job: PrintJob) -> int:
+            from django.db import connection
+            from django.test.utils import CaptureQueriesContext
+
+            with CaptureQueriesContext(connection) as ctx:
+                response = self.client.get(reverse("core:printjob_detail", args=[job.pk]))
+            self.assertContains(response, "Bolt (")
+            return len(ctx.captured_queries)
+
+        self.assertEqual(count(build("Big", plates=3, roots=4)), count(build("Small", plates=1, roots=2)))
+
     def test_history_queries_return_each_row_once(self) -> None:
         """Many plates, plate parts and attempts still yield one job / one part (no fan-out duplicates)."""
         from core.tests.mixins import add_attempt
