@@ -193,7 +193,11 @@ class Part(models.Model):
             )
         )
         has_attempts = Exists(PrintQueue.objects.filter(plate__print_job=OuterRef("pk")))
-        return PrintJob.objects.filter((in_job & has_attempts) | on_attempted_plate)
+        # Restrict the outer scan to this part's jobs (indexed) before the correlated checks.
+        candidates = Q(pk__in=self.job_entries.values("print_job_id")) | Q(
+            pk__in=PrintJobPlatePart.objects.filter(part=self).values("plate__print_job_id")
+        )
+        return PrintJob.objects.filter(candidates).filter((in_job & has_attempts) | on_attempted_plate)
 
     def has_print_history(self) -> bool:
         """Return True if the part is in a print job (or on a plate) that has print attempts.

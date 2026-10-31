@@ -52,13 +52,17 @@ def _count_subquery(queryset: models.QuerySet, group_field: str) -> Coalesce:
 
 
 def _part_labels(parts: Iterable[Part]) -> dict[int, str]:
-    """Return part pk → display name; parts sharing a name get their project's name appended."""
+    """Return part pk → display name; parts sharing a name get their project path appended.
+
+    The full path (not just the project name) tells deep-copied variants apart,
+    whose sub-projects keep their names.  It is only computed on a collision.
+    """
     parts = {part.pk: part for part in parts}
     name_counts: dict[str, int] = {}
     for part in parts.values():
         name_counts[part.name] = name_counts.get(part.name, 0) + 1
     return {
-        pk: part.name if name_counts[part.name] == 1 else f"{part.name} ({part.project.name})"
+        pk: part.name if name_counts[part.name] == 1 else f"{part.name} ({part.project.path_label})"
         for pk, part in parts.items()
     }
 

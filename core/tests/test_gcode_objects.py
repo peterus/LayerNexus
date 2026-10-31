@@ -432,6 +432,19 @@ class PlatePartLabelTests(TestCase):
         self.assertEqual(sorted(plate.parts_summary()), ["Bracket (Left) ×1", "Bracket (Right) ×1"])
         self.assertEqual(job.plate_assignment_warnings(), ["1× Bracket (Left) on no plate"])
 
+    def test_deep_copy_variants_are_told_apart_by_path(self) -> None:
+        """Same part and sub-project names under different roots are labelled with the full path."""
+        labels = []
+        job = make_sliced_job("J", plates=1)
+        for root_name in ("Robot", "Robot (copy)"):
+            arm = Project.objects.create(name="Arm", parent=Project.objects.create(name=root_name), quantity=1)
+            part = Part.objects.create(project=arm, name="Bolt", quantity=1)
+            PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
+            PrintJobPlatePart.objects.create(plate=job.plates.get(), part=part, copy_index=0)
+            labels.append(f"Bolt ({root_name} › Arm) ×1")
+
+        self.assertEqual(sorted(job.plates.get().parts_summary()), sorted(labels))
+
     def test_history_queries_return_each_row_once(self) -> None:
         """Many plates, plate parts and attempts still yield one job / one part (no fan-out duplicates)."""
         from core.tests.mixins import add_attempt
@@ -446,6 +459,17 @@ class PlatePartLabelTests(TestCase):
             add_attempt(plate, None, "failed")
             add_attempt(plate, None, "passed")
 
-        self.assertEqual(list(part.history_jobs()), [job])
-        self.assertEqual(list(project.history_blocking_parts()), [part])
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            self.assertEqual(list(part.history_jobs()), [job])
+            self.assertEqual(list(project.history_blocking_parts()), [part])
+        # First query: the jobs; last query: the parts (``subtree_ids()`` may query in between).
+        jobs_sql, parts_sql = ctx.captured_queries[0]["sql"], ctx.captured_queries[-1]["sql"]
+        # No join fan-out (and so no DISTINCT); the job query is restricted to the part's jobs.
+        self.assertNotIn("DISTINCT", jobs_sql)
+        self.assertNotIn("DISTINCT", parts_sql)
+        self.assertIn('"core_printjob"."id" IN (SELECT', jobs_sql)
+        self.assertNotIn('INNER JOIN "core_printqueue"', parts_sql.split("EXISTS")[0])
         self.assertEqual(project.deletion_summary()["print_history"], 1)
