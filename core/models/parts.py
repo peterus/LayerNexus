@@ -171,7 +171,8 @@ class Part(models.Model):
         """
         from core.models.printing import PrintJob
 
-        return PrintJob.objects.filter(job_parts__part=self).unfinished().distinct()
+        # ``pk__in`` instead of a join: no row fan-out, so the display-status subqueries run once per job.
+        return PrintJob.objects.filter(pk__in=self.job_entries.values("print_job_id")).unfinished()
 
     def history_jobs(self) -> QuerySet[PrintJob]:
         """Return the print jobs with print attempts that contain this part (its print history)."""

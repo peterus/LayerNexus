@@ -414,10 +414,33 @@ class AdminJobContentsGuardTests(TestDataMixin, TestCase):
         )
         self.assertTrue(PrintJobPart.objects.filter(pk=self.entry.pk).exists())
 
-    def test_job_part_delete_allowed_before_first_attempt(self):
-        response = self.client.post(reverse("admin:core_printjobpart_delete", args=[self.entry.pk]), {"post": "yes"})
+    def _draft_entry(self) -> PrintJobPart:
+        draft = PrintJob.objects.create(name="Draft", status=PrintJob.STATUS_DRAFT)
+        return PrintJobPart.objects.create(print_job=draft, part=self.part, quantity=1)
+
+    def test_job_part_delete_allowed_for_draft_job(self):
+        entry = self._draft_entry()
+        response = self.client.post(reverse("admin:core_printjobpart_delete", args=[entry.pk]), {"post": "yes"})
         self.assertEqual(response.status_code, 302)
-        self.assertFalse(PrintJobPart.objects.filter(pk=self.entry.pk).exists())
+        self.assertFalse(PrintJobPart.objects.filter(pk=entry.pk).exists())
+
+    def test_job_part_change_refused_for_sliced_job_without_attempts(self):
+        """A sliced job's plates would go stale; only the web UI (which re-slices) may change it."""
+        response = self.client.post(reverse("admin:core_printjobpart_delete", args=[self.entry.pk]), {"post": "yes"})
+        self.assertEqual(response.status_code, 403)
+        response = self.client.post(
+            reverse("admin:core_printjobpart_add"),
+            {"print_job": self.job.pk, "part": self.other_part.pk, "quantity": 1},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(PrintJobPart.objects.filter(print_job=self.job, part=self.other_part).exists())
+
+    def test_plate_admin_add_refused_and_plate_pinned_to_job(self):
+        self.assertEqual(self.client.get(reverse("admin:core_printjobplate_add")).status_code, 403)
+        plate = self.job.plates.get()
+        response = self.client.get(reverse("admin:core_printjobplate_change", args=[plate.pk]))
+        self.assertNotIn("print_job", response.context["adminform"].form.fields)
+        self.assertNotIn("plate_number", response.context["adminform"].form.fields)
 
     def test_job_change_form_freezes_parts_and_machine_profile(self):
         add_attempt(self.job.plates.get(), self.printer, "printing")
@@ -442,13 +465,14 @@ class AdminJobContentsGuardTests(TestDataMixin, TestCase):
     def test_job_part_repoint_into_started_job_is_form_error(self):
         started = make_sliced_job("Started", plates=1)
         add_attempt(started.plates.get(), self.printer, PrintQueue.RESULT_PASSED)
+        entry = self._draft_entry()
         response = self.client.post(
-            reverse("admin:core_printjobpart_change", args=[self.entry.pk]),
+            reverse("admin:core_printjobpart_change", args=[entry.pk]),
             {"print_job": started.pk, "part": self.part.pk, "quantity": 2},
         )
         self.assertEqual(response.status_code, 200)
-        self.entry.refresh_from_db()
-        self.assertEqual(self.entry.print_job_id, self.job.pk)
+        entry.refresh_from_db()
+        self.assertNotEqual(entry.print_job_id, started.pk)
 
     def test_job_change_form_freezes_plates_and_slicing_status(self):
         add_attempt(self.job.plates.get(), self.printer, PrintQueue.RESULT_PASSED)
@@ -506,3 +530,53 @@ class ContentsLockTests(TestDataMixin, TestCase):
             job = make_sliced_job(f"More {index}", plates=2)
             PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
         self.assertEqual(count(), baseline)
+
+
+class RoundThreeRegressionTests(TestDataMixin, TestCase):
+    """Permissions and cheap lists after review round 3."""
+
+    def test_add_part_to_existing_job_requires_change_permission(self):
+        from django.contrib.auth.models import Permission, User
+
+        user = User.objects.create_user(username="adder", password="pw12345678")
+        user.user_permissions.add(Permission.objects.get(codename="add_printjob"))
+        self.client.login(username="adder", password="pw12345678")
+        job = make_sliced_job("Existing", plates=1, created_by=user)
+        self.part.stl_file = "stl_files/a.stl"
+        self.part.save()
+        response = self.client.post(
+            reverse("core:add_part_to_job", args=[self.part.pk]), {"job": job.pk, "quantity": 1}
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(PrintJob.objects.get(pk=job.pk).plates.count(), 1)
+
+    def test_lock_for_deleted_job_raises_value_error(self):
+        job = PrintJob.objects.create(name="Gone", status=PrintJob.STATUS_DRAFT)
+        stale = PrintJob.objects.get(pk=job.pk)
+        job.delete()
+        with self.assertRaises(ValueError):
+            stale.lock_for_contents_change()
+
+    def test_dashboard_recent_jobs_query_count_constant(self):
+        self.client.login(username="testuser", password="testpass123")
+
+        def count(url: str) -> int:
+            with CaptureQueriesContext(connection) as ctx:
+                self.client.get(url)
+            return len(ctx.captured_queries)
+
+        first = make_sliced_job("First", plates=2)
+        PrintJobPart.objects.create(print_job=first, part=self.part, quantity=1)
+        baseline = count(reverse("core:dashboard"))
+        for index in range(9):
+            job = make_sliced_job(f"Job {index}", plates=3)
+            PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
+        self.assertEqual(count(reverse("core:dashboard")), baseline)
+
+    def test_queueable_excludes_completed_and_queued_plates(self):
+        job = make_sliced_job("Q", plates=3)
+        PrintJobPlate.objects.filter(print_job=job).update(gcode_file="gcode_jobs/q.gcode")
+        first, second, third = list(job.plates.order_by("plate_number"))
+        complete_plate(first, self.printer)
+        add_attempt(second, self.printer, "printing")
+        self.assertEqual(list(PrintJobPlate.objects.queueable()), [third])

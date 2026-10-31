@@ -9,7 +9,8 @@ from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db import models, transaction
+from django.core.exceptions import PermissionDenied
+from django.db import DatabaseError, models, transaction
 from django.db.models import Prefetch, Q, QuerySet
 from django.forms import Form
 from django.http import HttpRequest, HttpResponse, JsonResponse, QueryDict
@@ -452,7 +453,12 @@ class PrintJobUpdateView(RoleRequiredMixin, UpdateView):
             # Only name / notes: write just those columns, so a concurrent slicing
             # worker's status and stats are neither overwritten nor stale.
             self.object = form.save(commit=False)
-            self.object.save(update_fields=[*form.changed_data, "updated_at"])
+            try:
+                self.object.save(update_fields=[*form.changed_data, "updated_at"])
+            except DatabaseError:
+                # update_fields affected no row: the job was deleted meanwhile.
+                messages.error(self.request, "This print job no longer exists.")
+                return redirect("core:printjob_list")
             messages.success(self.request, "Print job updated.")
             return redirect(self.get_success_url())
         try:
@@ -538,6 +544,10 @@ class AddPartToJobView(RoleRequiredMixin, View):
 
         job = form.cleaned_data.get("job")
         quantity = form.cleaned_data["quantity"]
+
+        if job is not None and not request.user.has_perm("core.change_printjob"):
+            # Changing an existing job may discard its slicing result — same permission as editing it.
+            raise PermissionDenied("Changing an existing print job requires the change_printjob permission.")
 
         # The job is pinned to the part's bottom-up resolved preset.
         incoming_preset_id = part.effective_print_preset_id

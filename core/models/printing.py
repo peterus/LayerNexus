@@ -427,9 +427,11 @@ class PrintJob(models.Model):
             The freshly read job.
 
         Raises:
-            ValueError: If the job has print attempts or is being sliced.
+            ValueError: If the job has print attempts, is being sliced or was deleted.
         """
-        locked = PrintJob.objects.select_for_update().get(pk=self.pk)
+        locked = PrintJob.objects.select_for_update().filter(pk=self.pk).first()
+        if locked is None:
+            raise ValueError(f"Job {self.pk} no longer exists.")
         if not locked.can_change_contents:
             raise ValueError(f"Job {self.pk} cannot change its contents (print started or slicing).")
         return locked
@@ -544,15 +546,18 @@ class PrintJobPlateQuerySet(models.QuerySet):
         ``not_queued`` or ``failed`` (a failed plate may be queued again; that
         manual enqueue resets its failure counter).
         """
-        return (
-            self.with_state()
-            .filter(
-                print_job__status=PrintJob.STATUS_SLICED,
-                gcode_file__isnull=False,
-                annotated_state__in=PrintJobPlate.QUEUEABLE_STATES,
-            )
+        from core.models.queue import PrintQueue
+
+        # Cheap indexed pre-filters first (completed plates and open attempts are the bulk of
+        # the history), so the state CASE only runs for the remaining candidates.
+        attempts = PrintQueue.objects.filter(plate=OuterRef("pk"))
+        candidates = (
+            self.filter(print_job__status=PrintJob.STATUS_SLICED, gcode_file__isnull=False)
             .exclude(gcode_file="")
+            .exclude(Exists(attempts.filter(result=PrintQueue.RESULT_PASSED)))
+            .exclude(Exists(attempts.filter(result="")))
         )
+        return candidates.with_state().filter(annotated_state__in=PrintJobPlate.QUEUEABLE_STATES)
 
 
 class PrintJobPlate(models.Model):

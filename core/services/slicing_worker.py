@@ -492,7 +492,8 @@ def _slice_job_in_background(job_pk: int) -> None:
         )
         job.status = PrintJob.STATUS_SLICED
         job.slicing_error = ""
-        job.save()
+        # Only the slicing columns: a concurrent name/notes edit must survive.
+        job.save(update_fields=["status", "slicing_error", "filament_used_grams", "print_time_estimate", "updated_at"])
         logger.info(
             "Background slicing completed for job %s (%d plates)",
             job_pk,
@@ -532,7 +533,7 @@ def _slice_job_in_background(job_pk: int) -> None:
             job = PrintJob.objects.get(pk=job_pk)
             job.status = PrintJob.STATUS_FAILED
             job.slicing_error = str(exc)
-            job.save()
+            job.save(update_fields=["status", "slicing_error", "updated_at"])
         except PrintJob.DoesNotExist:
             pass
     except PrintJob.DoesNotExist:
@@ -543,6 +544,6 @@ def _slice_job_in_background(job_pk: int) -> None:
             job = PrintJob.objects.get(pk=job_pk)
             job.status = PrintJob.STATUS_FAILED
             job.slicing_error = f"Unexpected error: {exc}"
-            job.save()
+            job.save(update_fields=["status", "slicing_error", "updated_at"])
         except PrintJob.DoesNotExist:
             pass

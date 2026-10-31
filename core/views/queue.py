@@ -173,18 +173,21 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
     template_name = "core/printqueue_form.html"
     success_url = reverse_lazy("core:printqueue_list")
 
+    def _queueable(self) -> list[PrintJobPlate]:
+        """Return the queueable plates, computed once per request."""
+        if not hasattr(self, "_queueable_cache"):
+            self._queueable_cache = list(_queueable_plates().select_related("print_job__machine_profile"))
+        return self._queueable_cache
+
     def get_form(self, form_class=None):
         form = super().get_form(form_class)
-        form.fields["plate"].queryset = _queueable_plates().select_related("print_job")
+        queueable_pks = [plate.pk for plate in self._queueable()]
+        form.fields["plate"].queryset = PrintJobPlate.objects.filter(pk__in=queueable_pks).select_related("print_job")
 
         # Pre-select plate from query parameter
         plate_pk = self.request.GET.get("plate")
-        if plate_pk:
-            try:
-                selected_plate = _queueable_plates().get(pk=plate_pk)
-                form.fields["plate"].initial = selected_plate.pk
-            except (PrintJobPlate.DoesNotExist, ValueError):
-                pass
+        if plate_pk and plate_pk.isdigit() and int(plate_pk) in queueable_pks:
+            form.fields["plate"].initial = int(plate_pk)
 
         # Deactivated printers get no new attempts
         form.fields["printer"].queryset = PrinterProfile.objects.active()
@@ -195,7 +198,7 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
         context = super().get_context_data(**kwargs)
 
         # Build a map: plate_pk -> [compatible printer PKs]
-        plates = _queueable_plates().select_related("print_job__machine_profile")
+        plates = self._queueable()
 
         printers = PrinterProfile.objects.active()
 

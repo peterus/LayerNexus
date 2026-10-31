@@ -108,7 +108,7 @@ class DashboardView(LoginRequiredMixin, TemplateView):
         context["projects"] = projects.select_related("parent__parent__parent").prefetch_related(
             *Project.aggregate_prefetch_lookups()
         )[:5]
-        context["recent_jobs"] = PrintJob.objects.with_display_status()[:10]
+        context["recent_jobs"] = PrintJob.objects.with_display_status().annotate(n_parts=Count("job_parts"))[:10]
         context["printer_profiles"] = PrinterProfile.objects.active()
 
         # Dashboard statistics
@@ -496,8 +496,13 @@ class AdminDashboardView(AdminRequiredMixin, TemplateView):
         # -- Recent activity --------------------------------------------------
         context["recent_projects"] = Project.objects.order_by("-updated_at")[:10]
         context["recent_parts"] = Part.objects.select_related("project").order_by("-updated_at")[:10]
+        # Pick the 10 rows first (``updated_at`` is not indexed), then annotate only those.
+        recent_pks = list(PrintJob.objects.order_by("-updated_at").values_list("pk", flat=True)[:10])
         context["recent_jobs"] = (
-            PrintJob.objects.with_display_status().select_related("created_by").order_by("-updated_at")[:10]
+            PrintJob.objects.with_display_status()
+            .select_related("created_by")
+            .filter(pk__in=recent_pks)
+            .order_by("-updated_at")
         )
 
         return context

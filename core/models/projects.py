@@ -327,13 +327,11 @@ class Project(models.Model):
             are not finished (display status not in
             :attr:`PrintJob.FINISHED_DISPLAY_STATUSES`).
         """
-        from core.models.printing import PrintJob
+        from core.models.printing import PrintJob, PrintJobPart
 
-        return (
-            PrintJob.objects.filter(job_parts__part__project_id__in=self.subtree_ids() if ids is None else ids)
-            .unfinished()
-            .distinct()
-        )
+        entries = PrintJobPart.objects.filter(part__project_id__in=self.subtree_ids() if ids is None else ids)
+        # ``pk__in`` instead of a join: no row fan-out, so the display-status subqueries run once per job.
+        return PrintJob.objects.filter(pk__in=entries.values("print_job_id")).unfinished()
 
     def history_blocking_parts(self, ids: set[int] | None = None) -> QuerySet[Part]:
         """Return the parts of this project's subtree that have print history.
