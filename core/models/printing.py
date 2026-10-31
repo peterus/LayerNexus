@@ -223,7 +223,9 @@ class PrintJob(models.Model):
         related_name="print_jobs",
         help_text="User who created this job",
     )
-    created_at = models.DateTimeField(auto_now_add=True)
+    # Indexed: lists sort by it, so the database can stop after one page instead of
+    # computing the display-status annotation for every job.
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     objects = PrintJobQuerySet.as_manager()
@@ -414,11 +416,29 @@ class PrintJob(models.Model):
 
     # ── Transitions ─────────────────────────────────────────────────────
 
+    def lock_for_contents_change(self) -> PrintJob:
+        """Re-read the job under lock and check that its contents may still change.
+
+        Call inside ``transaction.atomic()`` before changing parts or the machine
+        profile, so the decision (and whether the slicing must be discarded) uses
+        the current row, not one loaded earlier in the request.
+
+        Returns:
+            The freshly read job.
+
+        Raises:
+            ValueError: If the job has print attempts or is being sliced.
+        """
+        locked = PrintJob.objects.select_for_update().get(pk=self.pk)
+        if not locked.can_change_contents:
+            raise ValueError(f"Job {self.pk} cannot change its contents (print started or slicing).")
+        return locked
+
     def discard_slicing(self) -> None:
         """Throw the slicing result away and put the job back to ``draft``.
 
-        Deletes the plates (G-code and preview files stay on disk until
-        ``cleanup_orphan_media``, as for a re-slice) and clears the aggregate
+        Deletes the plates (their G-code and preview files are removed on commit
+        by the plate delete signal, as for a re-slice) and clears the aggregate
         slicing stats.  Called when the contents change after slicing; the user
         starts the next slice.  Only allowed while :attr:`can_change_contents`.
 
@@ -426,9 +446,7 @@ class PrintJob(models.Model):
             ValueError: If the job's contents may not change (print started or slicing).
         """
         with transaction.atomic():
-            locked = PrintJob.objects.select_for_update().get(pk=self.pk)
-            if not locked.can_change_contents:
-                raise ValueError(f"Job {self.pk} cannot change its contents (print started or slicing).")
+            self.lock_for_contents_change()
             self.plates.all().delete()
             self.status = self.STATUS_DRAFT
             self.slicing_error = ""

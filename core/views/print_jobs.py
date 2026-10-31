@@ -457,15 +457,18 @@ class PrintJobUpdateView(RoleRequiredMixin, UpdateView):
             return redirect(self.get_success_url())
         try:
             with transaction.atomic():
-                response = super().form_valid(form)
-                if job.status != PrintJob.STATUS_DRAFT:
+                # Decide on the current row (locked), not on the job loaded with the request.
+                current = job.lock_for_contents_change()
+                self.object = form.save(commit=False)
+                self.object.save(update_fields=[*form.changed_data, "updated_at"])
+                if current.status != PrintJob.STATUS_DRAFT:
                     job.discard_slicing()
                     messages.info(self.request, "Machine profile changed: plates discarded, the job is a draft again.")
         except ValueError:
             messages.error(self.request, "The machine profile can no longer be changed (print started or slicing).")
             return redirect("core:printjob_detail", pk=job.pk)
         messages.success(self.request, "Print job updated.")
-        return response
+        return redirect(self.get_success_url())
 
     def get_success_url(self):
         return reverse("core:printjob_detail", kwargs={"pk": self.object.pk})
@@ -569,7 +572,7 @@ class AddPartToJobView(RoleRequiredMixin, View):
         discarded = False
         try:
             with transaction.atomic():
-                if job.status != PrintJob.STATUS_DRAFT:
+                if job.lock_for_contents_change().status != PrintJob.STATUS_DRAFT:
                     job.discard_slicing()
                     discarded = True
                 existing_parts = list(job.job_parts.select_related("part").all())
@@ -652,11 +655,12 @@ class RemovePartFromJobView(RoleRequiredMixin, View):
 
         job_part = get_object_or_404(PrintJobPart, pk=job_part_pk, print_job=job)
         part_name = job_part.part.name
-        discarded = job.status != PrintJob.STATUS_DRAFT
+        discarded = False
         try:
             with transaction.atomic():
-                if discarded:
+                if job.lock_for_contents_change().status != PrintJob.STATUS_DRAFT:
                     job.discard_slicing()
+                    discarded = True
                 job_part.delete()
         except ValueError:
             messages.error(request, refused)

@@ -8,7 +8,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db import transaction
-from django.db.models import ProtectedError
+from django.db.models import Count, ProtectedError
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
@@ -144,7 +144,8 @@ class PartDetailView(LoginRequiredMixin, DetailView):
                 compatible_jobs.append(job)
 
         context["draft_jobs"] = compatible_jobs
-        context["part_jobs"] = part.print_jobs.with_display_status().distinct()
+        # One row per job (PrintJobPart is unique per job+part); plate count as an annotation, no N+1.
+        context["part_jobs"] = part.print_jobs.with_display_status().annotate(n_plates=Count("plates"))
 
         # Spoolman filament name lookup
         spoolman_filament_name = ""

@@ -428,3 +428,81 @@ class AdminJobContentsGuardTests(TestDataMixin, TestCase):
         self.assertFalse(inline.has_change_permission)
         self.assertFalse(inline.has_delete_permission)
         self.assertNotIn("machine_profile", response.context["adminform"].form.fields)
+
+    def test_job_part_add_to_started_job_is_form_error(self):
+        add_attempt(self.job.plates.get(), self.printer, PrintQueue.RESULT_PASSED)
+        response = self.client.post(
+            reverse("admin:core_printjobpart_add"),
+            {"print_job": self.job.pk, "part": self.other_part.pk, "quantity": 5},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "its parts cannot change")
+        self.assertFalse(PrintJobPart.objects.filter(print_job=self.job, part=self.other_part).exists())
+
+    def test_job_part_repoint_into_started_job_is_form_error(self):
+        started = make_sliced_job("Started", plates=1)
+        add_attempt(started.plates.get(), self.printer, PrintQueue.RESULT_PASSED)
+        response = self.client.post(
+            reverse("admin:core_printjobpart_change", args=[self.entry.pk]),
+            {"print_job": started.pk, "part": self.part.pk, "quantity": 2},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.entry.refresh_from_db()
+        self.assertEqual(self.entry.print_job_id, self.job.pk)
+
+    def test_job_change_form_freezes_plates_and_slicing_status(self):
+        add_attempt(self.job.plates.get(), self.printer, PrintQueue.RESULT_PASSED)
+        response = self.client.get(reverse("admin:core_printjob_change", args=[self.job.pk]))
+        plates = next(f for f in response.context["inline_admin_formsets"] if f.opts.model is PrintJobPlate)
+        self.assertFalse(plates.has_add_permission)
+        self.assertNotIn("status", response.context["adminform"].form.fields)
+
+    def test_part_delete_confirm_query_count_independent_of_jobs(self):
+        def count() -> int:
+            with CaptureQueriesContext(connection) as ctx:
+                self.client.get(reverse("admin:core_part_delete", args=[self.part.pk]))
+            return len(ctx.captured_queries)
+
+        add_attempt(self.job.plates.get(), self.printer, PrintQueue.RESULT_PASSED)
+        baseline = count()
+        for index in range(4):
+            job = make_sliced_job(f"More {index}", plates=1)
+            PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
+            add_attempt(job.plates.get(), self.printer, PrintQueue.RESULT_PASSED)
+        # At most one "has attempts" lookup per job (cached across its entries) plus Django's own
+        # per-object collection — no longer two queries per protected entry.
+        self.assertLessEqual(count() - baseline, 4 * 2)
+
+
+class ContentsLockTests(TestDataMixin, TestCase):
+    """``lock_for_contents_change`` decides on the current row."""
+
+    def test_lock_refuses_job_with_attempt_even_from_stale_instance(self):
+        job = make_sliced_job("Stale", plates=1)
+        stale = PrintJob.objects.get(pk=job.pk)
+        add_attempt(job.plates.get(), self.printer, "waiting")
+        with self.assertRaises(ValueError):
+            stale.lock_for_contents_change()
+
+    def test_lock_returns_current_row(self):
+        job = PrintJob.objects.create(name="Draft", status=PrintJob.STATUS_DRAFT)
+        stale = PrintJob.objects.get(pk=job.pk)
+        PrintJob.objects.filter(pk=job.pk).update(status=PrintJob.STATUS_SLICED)
+        self.assertEqual(stale.lock_for_contents_change().status, PrintJob.STATUS_SLICED)
+
+    def test_part_detail_job_list_query_count_constant(self):
+        self.client.login(username="testuser", password="testpass123")
+        url = reverse("core:part_detail", args=[self.part.pk])
+
+        def count() -> int:
+            with CaptureQueriesContext(connection) as ctx:
+                self.client.get(url)
+            return len(ctx.captured_queries)
+
+        job = make_sliced_job("One", plates=2)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
+        baseline = count()
+        for index in range(5):
+            job = make_sliced_job(f"More {index}", plates=2)
+            PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
+        self.assertEqual(count(), baseline)
