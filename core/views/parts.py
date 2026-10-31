@@ -8,7 +8,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db import transaction
-from django.db.models import Count, ProtectedError
+from django.db.models import Count, ProtectedError, QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
@@ -113,7 +113,7 @@ class PartDetailView(LoginRequiredMixin, DetailView):
     template_name = "core/part_detail.html"
     context_object_name = "part"
 
-    def get_queryset(self):
+    def get_queryset(self) -> QuerySet[Part]:
         """Load the part with everything its printed quantity and print sources need (no N+1)."""
         return Part.objects.prefetch_related(
             *Part.printed_quantity_prefetch_lookups(), "job_entries__print_job__plates__queue_entries"

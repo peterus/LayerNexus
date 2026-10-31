@@ -278,7 +278,8 @@ class PrintedPartRecordViewTests(TestDataMixin, TestCase):
             for index, plate in enumerate(job.plates.all()):
                 PrintJobPlatePart.objects.create(plate=plate, part=self.part, copy_index=index)
                 complete_plate(plate)
-            PrintedPartRecord.objects.create(part=self.part, quantity=1)
+            # With an author: the booking list shows it (guards a per-row user query).
+            PrintedPartRecord.objects.create(part=self.part, quantity=1, created_by=self.user)
 
         add_job()
         baseline = queries()
@@ -303,3 +304,27 @@ class PrintedPartRecordViewTests(TestDataMixin, TestCase):
         response = self.client.post(reverse("core:project_delete", args=[self.project.pk]))
         self.assertRedirects(response, reverse("core:project_delete", args=[self.project.pk]))
         self.assertTrue(Project.objects.filter(pk=self.project.pk).exists())
+
+
+class PrintedPlatesTests(TestCase):
+    """``Part.printed_plates()`` lists copies so that they add up to the counted quantity."""
+
+    def test_multi_mesh_copy_split_over_plates_listed_once(self) -> None:
+        project = Project.objects.create(name="P")
+        part = Part.objects.create(name="Multi", project=project, quantity=2)
+        job = make_sliced_job(plates=2)
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=2)
+        plate1, plate2 = job.plates.order_by("plate_number")
+        # Copy 0 split over both plates, copy 1 completely on plate 1.
+        PrintJobPlatePart.objects.create(plate=plate1, part=part, copy_index=0, meshes_on_plate=1, mesh_count=2)
+        PrintJobPlatePart.objects.create(plate=plate2, part=part, copy_index=0, meshes_on_plate=1, mesh_count=2)
+        PrintJobPlatePart.objects.create(plate=plate1, part=part, copy_index=1, meshes_on_plate=2, mesh_count=2)
+        complete_plate(plate1)
+
+        rows = {row["plate"].plate_number: (row["copies"], row["partial"]) for row in part.printed_plates()}
+        self.assertEqual(rows, {1: (1, 1)})
+
+        complete_plate(plate2)
+        rows = {row["plate"].plate_number: (row["copies"], row["partial"]) for row in part.printed_plates()}
+        self.assertEqual(rows, {1: (1, 0), 2: (1, 0)})
+        self.assertEqual(sum(copies for copies, _partial in rows.values()), part.printed_quantity)

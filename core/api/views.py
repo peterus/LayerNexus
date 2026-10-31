@@ -629,6 +629,11 @@ class PrintedPartRecordListCreate(_PartScopedMixin, generics.ListCreateAPIView):
 
     serializer_class = PrintedPartRecordSerializer
 
+    def list(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        """List the URL part's records; 404 for an unknown part (as for create)."""
+        self.get_part()
+        return super().list(request, *args, **kwargs)
+
     def perform_create(self, serializer: PrintedPartRecordSerializer) -> None:
         """Attach the record to the URL part and stamp the author."""
         serializer.save(part=self.get_part(), created_by=self.request.user)

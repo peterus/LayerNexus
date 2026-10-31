@@ -175,7 +175,7 @@
                 <td class="text-end">
                   <form method="post" action="{% url 'core:printed_record_delete' part.pk record.pk %}" class="d-inline">
                     {% csrf_token %}
-                    <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete booking"><i class="bi bi-trash"></i></button>
+                    <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete booking" onclick="return confirm('Delete this booking of {{ record.quantity }} printed copies?')"><i class="bi bi-trash"></i></button>
                   </form>
                 </td>
                 {% endif %}

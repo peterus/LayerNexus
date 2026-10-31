@@ -52,9 +52,10 @@ class ApiPrintedRecordTests(APITestCase):
         self.assertIn("quantity", resp.data)
         self.assertFalse(PrintedPartRecord.objects.exists())
 
-    def test_unknown_part_404_on_create(self) -> None:
-        resp = self.client.post("/api/v1/parts/999999/printed-records/", {"quantity": 1}, format="json")
-        self.assertEqual(resp.status_code, 404)
+    def test_unknown_part_404(self) -> None:
+        url = "/api/v1/parts/999999/printed-records/"
+        self.assertEqual(self.client.post(url, {"quantity": 1}, format="json").status_code, 404)
+        self.assertEqual(self.client.get(url).status_code, 404)
 
     def test_delete_record(self) -> None:
         record = PrintedPartRecord.objects.create(part=self.part, quantity=2)

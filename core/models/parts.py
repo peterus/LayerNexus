@@ -425,7 +425,7 @@ class Part(models.Model):
         return [
             Prefetch(f"{prefix}job_entries__print_job__plates", queryset=PrintJobPlate.objects.with_state()),
             f"{prefix}job_entries__print_job__plates__plate_parts",
-            f"{prefix}printed_records",
+            Prefetch(f"{prefix}printed_records", queryset=PrintedPartRecord.objects.select_related("created_by")),
         ]
 
     @property
@@ -463,9 +463,10 @@ class Part(models.Model):
         as well to read the dates without a query per plate.
 
         Returns:
-            Dicts with ``job``, ``plate`` (or ``None``), ``copies`` (complete copies on
-            the plate / counted for the job), ``partial`` (copies with only some
-            meshes on the plate) and ``date`` (when the plate passed), newest first.
+            Dicts with ``job``, ``plate`` (or ``None``), ``copies`` (copies completed
+            by this plate — a multi-mesh copy split over plates is listed on the last
+            one — or counted for the whole job), ``partial`` (meshes of copies that
+            are not complete yet) and ``date`` (when the plate passed), newest first.
         """
         from core.models.printing import PrintJobPlate
 
@@ -486,22 +487,27 @@ class Part(models.Model):
                     date = max(dates, default=None)
                     rows.append({"job": job, "plate": None, "copies": entry.quantity, "partial": 0, "date": date})
                 continue
-            for plate in plates:
-                if plate.state != PrintJobPlate.STATE_COMPLETED:
-                    continue
+            passed_plates = [plate for plate in plates if plate.state == PrintJobPlate.STATE_COMPLETED]
+            # Same completion rule as ``_printed_in_job``; a complete copy is listed on the
+            # (last) passed plate that finished it, so the listed copies add up to the count.
+            meshes: dict[int, int] = {}
+            mesh_counts: dict[int, int] = {}
+            finished_on: dict[int, PrintJobPlate] = {}
+            for plate in passed_plates:
+                for row in plate.plate_parts.all():
+                    if row.part_id == self.pk:
+                        meshes[row.copy_index] = meshes.get(row.copy_index, 0) + row.meshes_on_plate
+                        mesh_counts[row.copy_index] = row.mesh_count
+                        finished_on[row.copy_index] = plate
+            complete = {copy for copy, count in meshes.items() if count >= mesh_counts[copy]}
+            for plate in passed_plates:
                 mine = [row for row in plate.plate_parts.all() if row.part_id == self.pk]
-                if not mine:
-                    continue
-                partial = sum(1 for row in mine if row.meshes_on_plate < row.mesh_count)
-                rows.append(
-                    {
-                        "job": job,
-                        "plate": plate,
-                        "copies": len(mine) - partial,
-                        "partial": partial,
-                        "date": plate.completed_at,
-                    }
-                )
+                copies = sum(1 for copy in complete if finished_on[copy] is plate)
+                partial = sum(1 for row in mine if row.copy_index not in complete)
+                if copies or partial:
+                    rows.append(
+                        {"job": job, "plate": plate, "copies": copies, "partial": partial, "date": plate.completed_at}
+                    )
         rows.sort(key=lambda row: row["date"].timestamp() if row["date"] is not None else 0.0, reverse=True)
         return rows
 

@@ -623,8 +623,9 @@ class Project(models.Model):
 
         ``needed`` per part is its count for the **whole tree** (part quantity ×
         every sub-project quantity up to the root, see :meth:`chain_multiplier`),
-        because ``printed`` is :attr:`Part.printed_quantity` — all completed jobs of
-        the part, which serve the whole build. Each part is capped at its need, so
+        because ``printed`` is :attr:`Part.printed_quantity` — every printed copy of
+        the part (passed plates, jobs counted by the all-plates rule and manual
+        bookings), which serves the whole build. Each part is capped at its need, so
         over-printing one part never pushes the project past 100%.
 
         Returns:
@@ -681,8 +682,8 @@ class Project(models.Model):
         - ``pending``: parts exist but estimates are missing / not started
         - ``empty``: no parts in the project (and no sub-projects with parts)
 
-        The printed/complete signals come from :meth:`build_progress` (all completed
-        jobs per part); the estimation signals come from the parts themselves.
+        The printed/complete signals come from :meth:`build_progress` (each part's
+        :attr:`Part.printed_quantity`); the estimation signals come from the parts themselves.
 
         Returns:
             One of the STATUS_* constants.

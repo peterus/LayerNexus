@@ -219,6 +219,7 @@ class PartAdmin(_UnfinishedJobDeleteGuardMixin, admin.ModelAdmin):
 @admin.register(PrintedPartRecord)
 class PrintedPartRecordAdmin(admin.ModelAdmin):
     list_display = ("part", "quantity", "printed_on", "note", "created_by", "created_at")
+    list_select_related = ("part", "created_by")
     list_filter = ("printed_on",)
     search_fields = ("part__name", "note")
     autocomplete_fields = ("part",)
