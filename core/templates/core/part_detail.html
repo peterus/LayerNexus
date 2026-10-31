@@ -123,8 +123,92 @@
             {% endif %}
           </dd>
           <dt class="col-sm-5">Printed (total)</dt>
-          <dd class="col-sm-7">{{ part.printed_quantity }}</dd>
+          <dd class="col-sm-7" id="printed-total">{{ part.printed_quantity }}</dd>
         </dl>
+      </div>
+    </div>
+
+    <!-- Printed copies: counted from passed plates + manual bookings -->
+    <div class="card mb-4" id="printed-copies">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-check2-square me-2"></i>Printed Copies</h5>
+      </div>
+      <div class="card-body">
+        <h6 class="text-body-secondary">Counted automatically</h6>
+        {% if printed_plates %}
+        <div class="table-responsive mb-3">
+          <table class="table table-sm align-middle mb-0" id="printed-plates">
+            <thead>
+              <tr><th>Job</th><th>Plate</th><th class="text-end">Copies</th><th>Date</th></tr>
+            </thead>
+            <tbody>
+              {% for row in printed_plates %}
+              <tr>
+                <td><a href="{% url 'core:printjob_detail' row.job.pk %}" class="text-decoration-none">{{ row.job }}</a></td>
+                <td>{% if row.plate %}Plate {{ row.plate.plate_number }}{% else %}<span class="text-body-secondary">all plates</span>{% endif %}</td>
+                <td class="text-end">{{ row.copies }}{% if row.partial %} <span class="text-body-secondary small">+{{ row.partial }} partial</span>{% endif %}</td>
+                <td><small>{% if row.date %}{{ row.date|date:"Y-m-d" }}{% else %}—{% endif %}</small></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="text-body-secondary small">No passed plates with this part yet.</p>
+        {% endif %}
+
+        <h6 class="text-body-secondary">Booked manually</h6>
+        {% if printed_records %}
+        <div class="table-responsive mb-3">
+          <table class="table table-sm align-middle mb-0" id="printed-records">
+            <thead>
+              <tr><th>Date</th><th class="text-end">Copies</th><th>Note</th><th>By</th>{% if perms.core.can_manage_projects %}<th></th>{% endif %}</tr>
+            </thead>
+            <tbody>
+              {% for record in printed_records %}
+              <tr>
+                <td><small>{{ record.printed_on|date:"Y-m-d" }}</small></td>
+                <td class="text-end">{{ record.quantity }}</td>
+                <td><small>{{ record.note|default:"—" }}</small></td>
+                <td><small>{{ record.created_by|default:"—" }}</small></td>
+                {% if perms.core.can_manage_projects %}
+                <td class="text-end">
+                  <form method="post" action="{% url 'core:printed_record_delete' part.pk record.pk %}" class="d-inline">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete booking"><i class="bi bi-trash"></i></button>
+                  </form>
+                </td>
+                {% endif %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="text-body-secondary small">No manual bookings.</p>
+        {% endif %}
+
+        {% if perms.core.can_manage_projects %}
+        <form method="post" action="{% url 'core:printed_record_create' part.pk %}" id="printed-record-form">
+          {% csrf_token %}
+          <p class="small text-body-secondary mb-2">Book copies printed outside LayerNexus (or not counted above). Copies already counted above must not be booked again.</p>
+          <div class="row g-2 align-items-end">
+            <div class="col-3">
+              <label for="{{ record_form.quantity.id_for_label }}" class="form-label form-label-sm">Copies</label>
+              {{ record_form.quantity }}
+            </div>
+            <div class="col-4">
+              <label for="{{ record_form.printed_on.id_for_label }}" class="form-label form-label-sm">Date</label>
+              {{ record_form.printed_on }}
+            </div>
+            <div class="col-5">
+              <label for="{{ record_form.note.id_for_label }}" class="form-label form-label-sm">Note</label>
+              {{ record_form.note }}
+            </div>
+          </div>
+          <button type="submit" class="btn btn-sm btn-primary mt-2"><i class="bi bi-plus-lg me-1"></i>Book printed copies</button>
+        </form>
+        {% endif %}
       </div>
     </div>
 

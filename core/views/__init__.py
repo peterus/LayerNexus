@@ -56,6 +56,8 @@ from .parts import (
     PartDetailView,
     PartReEstimateView,
     PartUpdateView,
+    PrintedPartRecordCreateView,
+    PrintedPartRecordDeleteView,
 )
 from .print_jobs import (
     AddPartToJobView,
@@ -144,6 +146,8 @@ __all__ = [
     "PartDetailView",
     "PartReEstimateView",
     "PartUpdateView",
+    "PrintedPartRecordCreateView",
+    "PrintedPartRecordDeleteView",
     "PrintJobCreateView",
     "PrintJobDeleteView",
     "PrintJobDetailView",

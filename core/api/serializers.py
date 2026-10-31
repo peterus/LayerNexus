@@ -16,6 +16,7 @@ from core.models import (
     HardwarePart,
     OrcaPrintPreset,
     Part,
+    PrintedPartRecord,
     Project,
     ProjectDocument,
     ProjectHardware,
@@ -182,6 +183,17 @@ class ProjectHardwareSerializer(serializers.ModelSerializer):
         model = ProjectHardware
         fields = ["id", "hardware_part", "quantity", "notes", "created_at"]
         read_only_fields = ["id", "created_at"]
+
+
+class PrintedPartRecordSerializer(serializers.ModelSerializer):
+    """Serialize a manual printed-part booking (part supplied by the URL, author stamped)."""
+
+    created_by = serializers.StringRelatedField()
+
+    class Meta:
+        model = PrintedPartRecord
+        fields = ["id", "part", "quantity", "printed_on", "note", "created_by", "created_at"]
+        read_only_fields = ["id", "part", "created_by", "created_at"]
 
 
 class SpoolmanFilamentMappingSerializer(serializers.ModelSerializer):

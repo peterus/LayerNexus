@@ -30,6 +30,7 @@ from core.api.serializers import (
     OrcaPrintPresetSerializer,
     PartCopyRequestSerializer,
     PartSerializer,
+    PrintedPartRecordSerializer,
     ProjectCopyRequestSerializer,
     ProjectDocumentSerializer,
     ProjectHardwareSerializer,
@@ -41,6 +42,7 @@ from core.models import (
     HardwarePart,
     OrcaPrintPreset,
     Part,
+    PrintedPartRecord,
     PrintJob,
     Project,
     ProjectDocument,
@@ -139,7 +141,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
         description=(
             "Deletes the project with all sub-projects, parts, documents and hardware "
             "assignments. Refused with 409 while a part of the subtree has print history "
-            "(reason `print_history`: it is in a job with print attempts) or an unfinished "
+            "(reason `print_history`: it is in a job with print attempts, or has manual "
+            "printed-part records) or an unfinished "
             "print job (any display status other than completed / partially failed) contains "
             "a part of the subtree (reason `unfinished_jobs`)."
         ),
@@ -164,14 +167,14 @@ class ProjectViewSet(viewsets.ModelViewSet):
         project = self.get_object()
         with transaction.atomic():
             ids = project.subtree_ids()
+            history_parts = project.history_blocking_parts(ids)
             history = list(
-                PrintJob.objects.filter(
-                    job_parts__part__in=project.history_blocking_parts(ids), plates__queue_entries__isnull=False
-                )
+                PrintJob.objects.filter(job_parts__part__in=history_parts, plates__queue_entries__isnull=False)
                 .distinct()
                 .values_list("pk", flat=True)
             )
-            if history:
+            # Parts with only manual printed-part records have history without a job.
+            if history or history_parts.exists():
                 return _delete_blocked(
                     "Project cannot be deleted: parts of it have print history.", "print_history", history
                 )
@@ -391,7 +394,8 @@ class PartViewSet(viewsets.ModelViewSet):
         summary="Delete a part",
         description=(
             "Deletes the part with its model file. Refused with 409 while the part has print "
-            "history (reason `print_history`: it is in a job with print attempts) or an "
+            "history (reason `print_history`: it is in a job with print attempts, or has manual "
+            "printed-part records) or an "
             "unfinished print job (any display status other than completed / partially "
             "failed) contains it (reason `unfinished_jobs`)."
         ),
@@ -416,7 +420,8 @@ class PartViewSet(viewsets.ModelViewSet):
         part = self.get_object()
         with transaction.atomic():
             history = list(part.history_jobs().values_list("pk", flat=True))
-            if history:
+            # Manual printed-part records are print history without a job.
+            if history or part.printed_records.exists():
                 return _delete_blocked("Part cannot be deleted: it has print history.", "print_history", history)
             blocking = list(part.blocking_jobs().values_list("pk", flat=True))
             if blocking:
@@ -595,6 +600,50 @@ class OrcaPrintPresetViewSet(viewsets.ReadOnlyModelViewSet):
     )
     serializer_class = OrcaPrintPresetSerializer
     permission_classes = [ReadOrProjectManage]
+
+
+class _PartScopedMixin:
+    """Shared helpers for views nested under ``/parts/{part_pk}/``."""
+
+    permission_classes = [ReadOrProjectManage]
+
+    def get_part(self) -> Part:
+        """Return the part named by the URL, 404 if it does not exist."""
+        return get_object_or_404(Part, pk=self.kwargs["part_pk"])
+
+    def get_queryset(self) -> Any:
+        """Return the printed-part records of the URL part."""
+        return PrintedPartRecord.objects.filter(part_id=self.kwargs["part_pk"]).select_related("created_by")
+
+
+@extend_schema(
+    description=(
+        "Manual printed-part bookings of a part: copies printed outside LayerNexus (or not "
+        "counted from plates). They add to the part's printed quantity next to the copies "
+        "counted from passed plates. A part with bookings cannot be deleted. "
+        "Writes require the `can_manage_projects` permission."
+    )
+)
+class PrintedPartRecordListCreate(_PartScopedMixin, generics.ListCreateAPIView):
+    """List / book printed copies of a part."""
+
+    serializer_class = PrintedPartRecordSerializer
+
+    def perform_create(self, serializer: PrintedPartRecordSerializer) -> None:
+        """Attach the record to the URL part and stamp the author."""
+        serializer.save(part=self.get_part(), created_by=self.request.user)
+
+
+@extend_schema(
+    description=(
+        "Retrieve / delete a single printed-part booking (a correction is delete + book anew). "
+        "Deleting requires the `can_manage_projects` permission."
+    )
+)
+class PrintedPartRecordDetail(_PartScopedMixin, generics.RetrieveDestroyAPIView):
+    """Retrieve / delete a single printed-part booking."""
+
+    serializer_class = PrintedPartRecordSerializer
 
 
 class _ProjectScopedMixin:

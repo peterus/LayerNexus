@@ -4,8 +4,16 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from core.models import OrcaPrintPreset, Part, PrintJob, PrintJobPart, Project
-from core.tests.mixins import TestDataMixin
+from core.models import (
+    OrcaPrintPreset,
+    Part,
+    PrintedPartRecord,
+    PrintJob,
+    PrintJobPart,
+    PrintJobPlatePart,
+    Project,
+)
+from core.tests.mixins import TestDataMixin, complete_plate, make_sliced_job
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -172,3 +180,126 @@ class PartReEstimateViewTests(TestDataMixin, TestCase):
         self.part.refresh_from_db()
         # No preset available → warning redirect, values untouched
         self.assertEqual(self.part.filament_used_grams, 50.0)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class PrintedPartRecordViewTests(TestDataMixin, TestCase):
+    """Manual printed-part bookings on the part detail page."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.client.login(username="testuser", password="testpass123")
+
+    def _book(self, **data) -> object:
+        payload = {"quantity": 2, "printed_on": "2026-10-30", "note": "outside"} | data
+        return self.client.post(reverse("core:printed_record_create", args=[self.part.pk]), payload)
+
+    def test_designer_can_add_record(self) -> None:
+        response = self._book()
+        self.assertRedirects(response, reverse("core:part_detail", args=[self.part.pk]))
+        record = PrintedPartRecord.objects.get(part=self.part)
+        self.assertEqual((record.quantity, str(record.printed_on), record.note), (2, "2026-10-30", "outside"))
+        self.assertEqual(record.created_by, self.user)
+        self.assertEqual(Part.objects.get(pk=self.part.pk).printed_quantity, 2)
+
+    def test_quantity_zero_rejected(self) -> None:
+        response = self._book(quantity=0)
+        self.assertRedirects(response, reverse("core:part_detail", args=[self.part.pk]), fetch_redirect_response=False)
+        self.assertFalse(PrintedPartRecord.objects.exists())
+        response = self.client.get(reverse("core:part_detail", args=[self.part.pk]))
+        self.assertContains(response, "Printed copies not booked")
+
+    def test_get_not_allowed(self) -> None:
+        response = self.client.get(reverse("core:printed_record_create", args=[self.part.pk]))
+        self.assertEqual(response.status_code, 405)
+
+    def test_delete_record_reduces_printed_quantity(self) -> None:
+        keep = PrintedPartRecord.objects.create(part=self.part, quantity=1)
+        record = PrintedPartRecord.objects.create(part=self.part, quantity=4)
+        self.assertEqual(Part.objects.get(pk=self.part.pk).printed_quantity, 5)
+        response = self.client.post(reverse("core:printed_record_delete", args=[self.part.pk, record.pk]))
+        self.assertRedirects(response, reverse("core:part_detail", args=[self.part.pk]))
+        self.assertEqual(list(PrintedPartRecord.objects.all()), [keep])
+        self.assertEqual(Part.objects.get(pk=self.part.pk).printed_quantity, 1)
+
+    def test_delete_record_of_other_part_404(self) -> None:
+        record = PrintedPartRecord.objects.create(part=self.other_part, quantity=1)
+        response = self.client.post(reverse("core:printed_record_delete", args=[self.part.pk, record.pk]))
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(PrintedPartRecord.objects.filter(pk=record.pk).exists())
+
+    def test_part_detail_shows_records_and_form(self) -> None:
+        PrintedPartRecord.objects.create(part=self.part, quantity=3, note="spare set", created_by=self.user)
+        response = self.client.get(reverse("core:part_detail", args=[self.part.pk]))
+        self.assertContains(response, 'id="printed-records"')
+        self.assertContains(response, "spare set")
+        self.assertContains(response, 'id="printed-record-form"')
+        self.assertContains(response, reverse("core:printed_record_create", args=[self.part.pk]))
+
+    def test_part_detail_shows_auto_counted_plates(self) -> None:
+        """The automatically counted plates are listed read-only next to the bookings."""
+        job = make_sliced_job("Job 33", plates=2)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=3)
+        plate1, plate2 = job.plates.order_by("plate_number")
+        for copy_index in (0, 1):
+            PrintJobPlatePart.objects.create(plate=plate1, part=self.part, copy_index=copy_index)
+        PrintJobPlatePart.objects.create(plate=plate2, part=self.part, copy_index=2)
+        complete_plate(plate1)
+        legacy = make_sliced_job("Legacy job", plates=1, plate_parts_known=False)
+        PrintJobPart.objects.create(print_job=legacy, part=self.part, quantity=4)
+        complete_plate(legacy.plates.get())
+        PrintedPartRecord.objects.create(part=self.part, quantity=1)
+
+        response = self.client.get(reverse("core:part_detail", args=[self.part.pk]))
+
+        rows = response.context["printed_plates"]
+        self.assertEqual(
+            [(row["job"].pk, row["plate"] and row["plate"].plate_number, row["copies"]) for row in rows],
+            [(legacy.pk, None, 4), (job.pk, 1, 2)],
+        )
+        self.assertContains(response, 'id="printed-plates"')
+        self.assertContains(response, "Plate 1")
+        self.assertContains(response, "all plates")
+        self.assertContains(response, '<dd class="col-sm-7" id="printed-total">7</dd>', html=True)
+
+    def test_part_detail_query_count_independent_of_history(self) -> None:
+        """Printed quantity and the plate list come from one prefetch (no N+1 over jobs/plates)."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def queries() -> int:
+            with CaptureQueriesContext(connection) as captured:
+                self.client.get(reverse("core:part_detail", args=[self.part.pk]))
+            return len(captured)
+
+        def add_job() -> None:
+            job = make_sliced_job(plates=2)
+            PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
+            for index, plate in enumerate(job.plates.all()):
+                PrintJobPlatePart.objects.create(plate=plate, part=self.part, copy_index=index)
+                complete_plate(plate)
+            PrintedPartRecord.objects.create(part=self.part, quantity=1)
+
+        add_job()
+        baseline = queries()
+        for _ in range(3):
+            add_job()
+        self.assertEqual(queries(), baseline)
+
+    def test_part_with_records_not_deletable(self) -> None:
+        PrintedPartRecord.objects.create(part=self.part, quantity=1)
+        response = self.client.get(reverse("core:part_delete", args=[self.part.pk]))
+        self.assertContains(response, 'id="printed-records-block"')
+        self.assertNotContains(response, "Delete Part</button>")
+
+        response = self.client.post(reverse("core:part_delete", args=[self.part.pk]))
+        self.assertRedirects(response, reverse("core:part_delete", args=[self.part.pk]))
+        self.assertTrue(Part.objects.filter(pk=self.part.pk).exists())
+
+    def test_project_with_booked_part_not_deletable(self) -> None:
+        PrintedPartRecord.objects.create(part=self.part, quantity=1)
+        self.assertTrue(self.part.has_print_history())
+        self.assertEqual(list(self.project.history_blocking_parts()), [self.part])
+        response = self.client.post(reverse("core:project_delete", args=[self.project.pk]))
+        self.assertRedirects(response, reverse("core:project_delete", args=[self.project.pk]))
+        self.assertTrue(Project.objects.filter(pk=self.project.pk).exists())
