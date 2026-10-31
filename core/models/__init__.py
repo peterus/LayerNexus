@@ -8,7 +8,7 @@ from core.models.orca_profiles import (
     OrcaPrintPreset,
     OrcaProfileBase,
 )
-from core.models.parts import Part, PrintTimeEstimate
+from core.models.parts import Part, PrintedPartRecord, PrintTimeEstimate
 from core.models.printers import CostProfile, PrinterProfile
 from core.models.printing import PrintJob, PrintJobPart, PrintJobPlate, PrintJobPlatePart
 from core.models.projects import Project
@@ -25,6 +25,7 @@ __all__ = [
     "OrcaPrintPreset",
     "OrcaProfileBase",
     "Part",
+    "PrintedPartRecord",
     "PrintJob",
     "PrintJobPart",
     "PrintJobPlate",

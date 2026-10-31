@@ -3,7 +3,7 @@
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
-from core.models import OrcaPrintPreset, PrinterProfile, Project
+from core.models import OrcaPrintPreset, PrintedPartRecord, PrinterProfile, Project
 from core.tests.mixins import _RBACTestBase
 
 
@@ -132,3 +132,42 @@ class UnauthenticatedAccessTests(TestCase):
     def test_printqueue_create_denied(self):
         resp = self.client.get(reverse("core:printqueue_create"))
         self.assertIn(resp.status_code, [302, 403])
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class PrintedPartRecordPermissionTests(_RBACTestBase):
+    """Booking / deleting printed copies needs ``can_manage_projects`` (Admin, Designer)."""
+
+    def _book(self) -> object:
+        return self.client.post(
+            reverse("core:printed_record_create", args=[self.part.pk]), {"quantity": 1, "printed_on": "2026-10-30"}
+        )
+
+    def test_designer_can_add_record(self) -> None:
+        self.client.login(username="designer_user", password="testpass123")
+        self.assertEqual(self._book().status_code, 302)
+        self.assertEqual(PrintedPartRecord.objects.filter(part=self.part).count(), 1)
+
+    def test_operator_cannot_add_record(self) -> None:
+        self.client.login(username="operator_user", password="testpass123")
+        self.assertEqual(self._book().status_code, 403)
+        self.assertFalse(PrintedPartRecord.objects.exists())
+
+    def test_operator_cannot_delete_record(self) -> None:
+        record = PrintedPartRecord.objects.create(part=self.part, quantity=1)
+        self.client.login(username="operator_user", password="testpass123")
+        response = self.client.post(reverse("core:printed_record_delete", args=[self.part.pk, record.pk]))
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(PrintedPartRecord.objects.filter(pk=record.pk).exists())
+
+    def test_operator_sees_no_booking_controls(self) -> None:
+        PrintedPartRecord.objects.create(part=self.part, quantity=1)
+        self.client.login(username="operator_user", password="testpass123")
+        response = self.client.get(reverse("core:part_detail", args=[self.part.pk]))
+        self.assertContains(response, 'id="printed-records"')
+        self.assertNotContains(response, 'id="printed-record-form"')
+        self.assertNotContains(response, "Delete booking")
+
+    def test_anonymous_denied(self) -> None:
+        self.assertEqual(self._book().status_code, 403)
+        self.assertFalse(PrintedPartRecord.objects.exists())

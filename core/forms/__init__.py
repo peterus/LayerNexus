@@ -22,6 +22,7 @@ from .parts import (
     AddExistingPartForm,
     PartCopyForm,
     PartForm,
+    PrintedPartRecordForm,
 )
 from .print_jobs import (
     AddPartToJobForm,
@@ -54,6 +55,7 @@ __all__ = [
     "OrcaPrintPresetImportForm",
     "PartCopyForm",
     "PartForm",
+    "PrintedPartRecordForm",
     "PrintJobForm",
     "PrintQueueForm",
     "ScheduledStartForm",

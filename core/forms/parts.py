@@ -4,12 +4,13 @@ from django import forms
 from django.core.files.uploadedfile import UploadedFile
 
 from core.forms.projects import path_sorted_choices
-from core.models import Part, Project
+from core.models import Part, PrintedPartRecord, Project
 
 __all__ = [
     "PartForm",
     "PartCopyForm",
     "AddExistingPartForm",
+    "PrintedPartRecordForm",
 ]
 
 
@@ -158,3 +159,18 @@ class AddExistingPartForm(forms.Form):
             lambda part: " › ".join(filter(None, [labels.get(part.project_id), part.name])),
             field.empty_label,
         )
+
+
+class PrintedPartRecordForm(forms.ModelForm):
+    """Book printed copies of a part manually (quantity ≥ 1, date, optional note)."""
+
+    class Meta:
+        model = PrintedPartRecord
+        fields = ["quantity", "printed_on", "note"]
+        widgets = {
+            "quantity": forms.NumberInput(attrs={"class": "form-control form-control-sm", "min": 1}),
+            "printed_on": forms.DateInput(
+                attrs={"class": "form-control form-control-sm", "type": "date"}, format="%Y-%m-%d"
+            ),
+            "note": forms.TextInput(attrs={"class": "form-control form-control-sm", "placeholder": "Note (optional)"}),
+        }

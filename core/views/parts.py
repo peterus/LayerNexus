@@ -8,18 +8,19 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db import transaction
-from django.db.models import Count, ProtectedError
+from django.db.models import Count, ProtectedError, QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.views import View
 from django.views.generic import CreateView, DeleteView, DetailView, FormView, UpdateView
 
-from core.forms import PartCopyForm, PartForm
+from core.forms import PartCopyForm, PartForm, PrintedPartRecordForm
 from core.mixins import ProjectManageMixin
 from core.models import (
     OrcaPrintPreset,
     Part,
+    PrintedPartRecord,
     PrintJob,
     Project,
     SpoolmanFilamentMapping,
@@ -36,6 +37,8 @@ __all__ = [
     "PartDeleteView",
     "PartReEstimateView",
     "PartCopyView",
+    "PrintedPartRecordCreateView",
+    "PrintedPartRecordDeleteView",
 ]
 
 
@@ -110,6 +113,12 @@ class PartDetailView(LoginRequiredMixin, DetailView):
     template_name = "core/part_detail.html"
     context_object_name = "part"
 
+    def get_queryset(self) -> QuerySet[Part]:
+        """Load the part with everything its printed quantity and print sources need (no N+1)."""
+        return Part.objects.prefetch_related(
+            *Part.printed_quantity_prefetch_lookups(with_authors=True), "job_entries__print_job__plates__queue_entries"
+        )
+
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         part = self.object
@@ -158,6 +167,9 @@ class PartDetailView(LoginRequiredMixin, DetailView):
         context["spoolman_filament_name"] = spoolman_filament_name
 
         context["ancestors"] = part.project.ancestors()
+        context["printed_plates"] = part.printed_plates()
+        context["printed_records"] = part.printed_records.all()
+        context["record_form"] = PrintedPartRecordForm()
 
         return context
 
@@ -268,8 +280,9 @@ class PartDeleteView(ProjectManageMixin, DeleteView):
     """Delete a part.
 
     Refused while an unfinished print job contains the part, and while the part
-    has print history (it is in a job with print attempts) — the history must be
-    kept.  The checks run again inside the delete transaction.
+    has print history (it is in a job with print attempts, or has manual
+    printed-part records) — the history must be kept.  The checks run again
+    inside the delete transaction.
     """
 
     model = Part
@@ -279,6 +292,7 @@ class PartDeleteView(ProjectManageMixin, DeleteView):
         """Add the jobs with the part's print history and the unfinished jobs that block the delete."""
         context = super().get_context_data(**kwargs)
         context["history_jobs"] = list(self.object.history_jobs().order_by("-created_at"))
+        context["printed_records_count"] = self.object.printed_records.count()
         context["blocking_jobs"] = list(self.object.blocking_jobs().order_by("-created_at"))
         return context
 
@@ -378,3 +392,54 @@ class PartCopyView(ProjectManageMixin, FormView):
         suffix = " Re-estimation queued." if count else ""
         messages.success(self.request, f'Copied part "{source.name}" to "{new.project.name}".{suffix}')
         return redirect("core:part_detail", pk=new.pk)
+
+
+class PrintedPartRecordCreateView(ProjectManageMixin, View):
+    """Book printed copies of a part manually (POST from the part detail page)."""
+
+    http_method_names = ["post"]
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Create a :class:`PrintedPartRecord` for the part.
+
+        Args:
+            request: The incoming HTTP request.
+            pk: Primary key of the part.
+
+        Returns:
+            Redirect to the part detail page (with an error message if the input is invalid).
+        """
+        part = get_object_or_404(Part, pk=pk)
+        form = PrintedPartRecordForm(request.POST)
+        if not form.is_valid():
+            errors = "; ".join(f"{field}: {' '.join(msgs)}" for field, msgs in form.errors.items())
+            messages.error(request, f"Printed copies not booked — {errors}")
+            return redirect("core:part_detail", pk=part.pk)
+        record = form.save(commit=False)
+        record.part = part
+        record.created_by = request.user
+        record.save()
+        messages.success(request, f"Booked {record.quantity}× '{part.name}' as printed.")
+        return redirect("core:part_detail", pk=part.pk)
+
+
+class PrintedPartRecordDeleteView(ProjectManageMixin, View):
+    """Delete a manual printed-part record (corrections: delete and book anew)."""
+
+    http_method_names = ["post"]
+
+    def post(self, request: HttpRequest, pk: int, record_pk: int) -> HttpResponse:
+        """Delete the record of the part.
+
+        Args:
+            request: The incoming HTTP request.
+            pk: Primary key of the part.
+            record_pk: Primary key of the record (must belong to the part).
+
+        Returns:
+            Redirect to the part detail page.
+        """
+        record = get_object_or_404(PrintedPartRecord, pk=record_pk, part_id=pk)
+        record.delete()
+        messages.success(request, f"Removed the booking of {record.quantity} printed copies.")
+        return redirect("core:part_detail", pk=pk)

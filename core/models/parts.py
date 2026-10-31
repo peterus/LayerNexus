@@ -2,34 +2,78 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import TYPE_CHECKING, Any, Optional
 
+from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
-from django.db.models import CheckConstraint, Exists, OuterRef, Q, QuerySet, Sum, prefetch_related_objects
+from django.db.models import CheckConstraint, Exists, OuterRef, Prefetch, Q, QuerySet, prefetch_related_objects
+from django.utils import timezone
 
 from core.models.file_copy import CopiedFiles, duplicate_field_file
 
 if TYPE_CHECKING:
     from core.models.orca_profiles import OrcaPrintPreset
-    from core.models.printing import PrintJob, PrintJobPart
+    from core.models.printing import PrintJob, PrintJobPart, PrintJobPlate
     from core.models.projects import Project
 
 
-def _job_fully_printed(job: PrintJob) -> bool:
-    """Return whether every plate of a job (from the prefetch cache) is completed.
+def _printed_in_job(part_id: int, entry: PrintJobPart, plates: list[PrintJobPlate]) -> int:
+    """Return how many copies of a part one print job has printed.
+
+    * The job's plate parts are reliable (``plate_parts_known``) and recorded:
+      a copy counts once the ``meshes_on_plate`` over all plates with a passed
+      attempt add up to its ``mesh_count`` (a partly printed job counts its passed
+      plates; a multi-mesh copy counts only once all its meshes are printed).
+    * Otherwise (plate assignment unknown, or no plate parts recorded) the legacy
+      rule: all plates completed → the part's job ``quantity``, else nothing.
 
     Args:
-        job: Print job whose ``plates`` are already prefetched (with their
-            derived state, see :meth:`Project.aggregate_prefetch_lookups`).
+        part_id: Primary key of the part.
+        entry: The part's ``PrintJobPart`` of the job (with ``print_job`` loaded).
+        plates: The job's plates with their derived state and their ``plate_parts``
+            (cached; see :meth:`Part.printed_quantity_prefetch_lookups`).
 
     Returns:
-        ``True`` if the job has at least one plate and all of them are completed.
+        Number of printed copies, never more than the job ``quantity``.
     """
     from core.models.printing import PrintJobPlate
 
-    plates = job.plates.all()
-    return bool(plates) and all(plate.state == PrintJobPlate.STATE_COMPLETED for plate in plates)
+    if not plates:
+        return 0
+    plate_rows = [(plate.state == PrintJobPlate.STATE_COMPLETED, list(plate.plate_parts.all())) for plate in plates]
+    if not entry.print_job.plate_parts_known or not any(rows for _passed, rows in plate_rows):
+        return entry.quantity if all(passed for passed, _rows in plate_rows) else 0
+    printed_meshes: dict[int, int] = {}
+    mesh_counts: dict[int, int] = {}
+    for passed, rows in plate_rows:
+        if not passed:
+            continue
+        for row in rows:
+            if row.part_id == part_id:
+                printed_meshes[row.copy_index] = printed_meshes.get(row.copy_index, 0) + row.meshes_on_plate
+                mesh_counts[row.copy_index] = row.mesh_count
+    complete = sum(1 for copy, meshes in printed_meshes.items() if meshes >= mesh_counts[copy])
+    return min(complete, entry.quantity)
+
+
+def _finished_later(plate: PrintJobPlate, other: PrintJobPlate) -> bool:
+    """Return whether ``plate`` passed after ``other`` (by completion time, then plate number)."""
+    first, second = plate.completed_at, other.completed_at
+    if first is not None and second is not None and first != second:
+        return first > second
+    return plate.plate_number > other.plate_number
+
+
+def _counting_plate_parts() -> QuerySet:
+    """Return plate parts with only the columns the printed count needs (no ordering, no other fields)."""
+    from core.models.printing import PrintJobPlatePart
+
+    return PrintJobPlatePart.objects.only(
+        "id", "plate_id", "part_id", "copy_index", "meshes_on_plate", "mesh_count"
+    ).order_by()
 
 
 class Part(models.Model):
@@ -200,11 +244,12 @@ class Part(models.Model):
         return PrintJob.objects.filter(candidates).filter((in_job & has_attempts) | on_attempted_plate)
 
     def has_print_history(self) -> bool:
-        """Return True if the part is in a print job (or on a plate) that has print attempts.
+        """Return True if the part is in a print job (or on a plate) that has print attempts, or has manual
+        printed-part records.
 
         Such a part is not deletable — its print history must be kept.
         """
-        return self.history_jobs().exists()
+        return self.printed_records.exists() or self.history_jobs().exists()
 
     def is_estimable(self) -> bool:
         """Return whether this part has an STL file and a resolvable print preset."""
@@ -382,85 +427,208 @@ class Part(models.Model):
         """Display-friendly color string ('—' if not set)."""
         return self.color or "—"
 
-    @property
-    def printed_quantity(self) -> int:
-        """Number of this part already printed, summed over completed print jobs.
+    @staticmethod
+    def printed_quantity_prefetch_lookups(prefix: str = "", *, with_authors: bool = False) -> list[str | Prefetch]:
+        """Prefetch lookups that let :attr:`printed_quantity` run without any query.
 
-        Semantics: a print job counts as *printed* for this part only once
-        **all** of its plates are completed — have a passed print attempt (which part sits on which plate
-        is unknown, so a partially printed multi-plate job counts as nothing).
-        Each qualifying job contributes this part's job ``quantity`` exactly
-        **once**, no matter how many plates it has.
-
-        Two evaluation paths keep this correct *and* efficient for every caller:
-
-        * **Prefetched** — when the whole ``job_entries__print_job__plates``
-          chain is in the instance cache (see
-          :meth:`Project.aggregate_prefetch_lookups`), the count is summed in
-          Python with **no** extra query, which keeps project-list/detail/
-          dashboard rendering off the N+1 path. The branch is only taken when the
-          nested ``print_job`` and ``plates`` caches are present too, so a
-          partial ``job_entries``-only prefetch can never silently fan out into a
-          per-entry query.
-        * **Not prefetched** — fall back to a single DB aggregate: the distinct
-          completed-``job_entries`` PKs become an ``IN`` subquery inside the
-          ``Sum`` query, so a lone caller such as ``PartDetailView`` pays one
-          query no matter how many job entries exist (no per-entry N+1).
-
-        Both paths count each job's ``quantity`` once — there is no plate join
-        that fans the rows out.
-        """
-        entries = self._prefetched_job_entries()
-        if entries is not None:
-            return sum(entry.quantity for entry in entries if _job_fully_printed(entry.print_job))
-
-        completed_entry_pks = self._fully_printed_entry_pks()
-        return self.job_entries.filter(pk__in=completed_entry_pks).aggregate(total=Sum("quantity"))["total"] or 0
-
-    def _prefetched_job_entries(self) -> list[PrintJobPart] | None:
-        """Return the prefetched job entries if the whole plate chain is cached.
-
-        Only returns entries when ``job_entries__print_job__plates`` is fully in the
-        instance cache, so callers can evaluate completion without any query. A
-        partial ``job_entries``-only prefetch returns ``None`` so it can never
-        silently fan out into a per-entry query.
+        Args:
+            prefix: Lookup path to the parts (e.g. ``"parts__"`` from a project).
+            with_authors: Also load each manual record's ``created_by`` (for pages
+                that list the records).
 
         Returns:
-            The cached ``PrintJobPart`` list, or ``None`` if not (fully) prefetched.
-        """
-        prefetched = getattr(self, "_prefetched_objects_cache", None)
-        if prefetched is None or "job_entries" not in prefetched:
-            return None
-        entries = prefetched["job_entries"]
-        if all(
-            "print_job" in entry._state.fields_cache
-            and "plates" in getattr(entry.print_job, "_prefetched_objects_cache", {})
-            for entry in entries
-        ):
-            return entries
-        return None
-
-    def _fully_printed_entry_pks(self) -> QuerySet:
-        """Return PKs of this part's job entries whose job has all plates completed.
-
-        A plate is completed once it has a passed print attempt.  Evaluated lazily
-        as an ``IN`` subquery by the callers, so the full aggregate still costs a
-        single query.
-
-        Returns:
-            Distinct ``values_list`` queryset of qualifying ``PrintJobPart`` PKs.
+            ``prefetch_related`` arguments: the job entries with their jobs, the
+            plates (annotated with their derived state) and plate parts, and the
+            manual printed-part records.
         """
         from core.models.printing import PrintJobPlate
-        from core.models.queue import PrintQueue
 
-        passed = PrintQueue.objects.filter(plate=OuterRef("pk"), result=PrintQueue.RESULT_PASSED)
-        unfinished_job_ids = PrintJobPlate.objects.filter(~Exists(passed)).values("print_job_id")
-        return (
-            self.job_entries.filter(print_job__plates__isnull=False)
-            .exclude(print_job_id__in=unfinished_job_ids)
-            .values_list("pk", flat=True)
-            .distinct()
-        )
+        records = PrintedPartRecord.objects.select_related("created_by") if with_authors else PrintedPartRecord.objects
+        return [
+            Prefetch(f"{prefix}job_entries__print_job__plates", queryset=PrintJobPlate.objects.with_state()),
+            Prefetch(f"{prefix}job_entries__print_job__plates__plate_parts", queryset=_counting_plate_parts()),
+            Prefetch(f"{prefix}printed_records", queryset=records.all()),
+        ]
+
+    @property
+    def printed_quantity(self) -> int:
+        """Number of copies of this part printed so far (derived, never stored).
+
+        The sum of
+
+        * the copies printed by print jobs (see :func:`_printed_in_job`): copies
+          whose meshes all lie on plates with a passed attempt, or — for jobs whose
+          plate assignment is unknown — the job ``quantity`` once every plate is
+          completed, and
+        * the manual :class:`PrintedPartRecord` quantities.
+
+        Evaluated from the prefetch cache when
+        :meth:`printed_quantity_prefetch_lookups` (part of
+        :meth:`Project.aggregate_prefetch_lookups`) was applied, so lists and the
+        project detail stay off the N+1 path; otherwise from a constant number of
+        queries.  Both paths run the same counting code.
+        """
+        sources = self._prefetched_print_sources()
+        if sources is None:
+            sources = self._load_print_sources()
+        entries, plates_by_job, records = sources
+        printed = sum(_printed_in_job(self.pk, entry, plates_by_job.get(entry.print_job_id, [])) for entry in entries)
+        return printed + sum(record.quantity for record in records)
+
+    def printed_plates(self) -> list[dict[str, Any]]:
+        """Return where the automatically counted copies were printed (read-only overview).
+
+        One row per passed plate that carries copies of this part (jobs with a known
+        plate assignment), or one row per completed job counted by the legacy
+        all-plates rule (``plate`` is ``None`` then).  Uses the same inputs as
+        :attr:`printed_quantity`; prefetch ``job_entries__print_job__plates__queue_entries``
+        as well to read the dates without a query per plate.
+
+        Returns:
+            Dicts with ``job``, ``plate`` (or ``None``), ``copies`` (copies completed
+            by this plate — a multi-mesh copy split over plates is listed on the one
+            that passed last — or counted for the whole job), ``partial`` (meshes of copies that
+            are not complete yet) and ``date`` (when the plate passed), newest first.
+        """
+        from core.models.printing import PrintJobPlate
+
+        sources = self._prefetched_print_sources()
+        if sources is None:
+            sources = self._load_print_sources()
+        entries, plates_by_job, _records = sources
+        rows: list[dict[str, Any]] = []
+        for entry in entries:
+            plates = plates_by_job.get(entry.print_job_id, [])
+            if not plates:
+                continue
+            job = entry.print_job
+            has_plate_parts = any(plate.plate_parts.all() for plate in plates)
+            if not job.plate_parts_known or not has_plate_parts:
+                if _printed_in_job(self.pk, entry, plates):
+                    dates = [plate.completed_at for plate in plates if plate.completed_at is not None]
+                    date = max(dates, default=None)
+                    rows.append({"job": job, "plate": None, "copies": entry.quantity, "partial": 0, "date": date})
+                continue
+            passed_plates = [plate for plate in plates if plate.state == PrintJobPlate.STATE_COMPLETED]
+            # Same completion rule as ``_printed_in_job``; a complete copy is listed on the
+            # passed plate that finished it (latest completion), so the listed copies add up to the count.
+            meshes: dict[int, int] = {}
+            mesh_counts: dict[int, int] = {}
+            finished_on: dict[int, PrintJobPlate] = {}
+            for plate in passed_plates:
+                for row in plate.plate_parts.all():
+                    if row.part_id == self.pk:
+                        meshes[row.copy_index] = meshes.get(row.copy_index, 0) + row.meshes_on_plate
+                        mesh_counts[row.copy_index] = row.mesh_count
+                        current = finished_on.get(row.copy_index)
+                        if current is None or _finished_later(plate, current):
+                            finished_on[row.copy_index] = plate
+            complete = {copy for copy, count in meshes.items() if count >= mesh_counts[copy]}
+            for plate in passed_plates:
+                mine = [row for row in plate.plate_parts.all() if row.part_id == self.pk]
+                copies = sum(1 for copy in complete if finished_on[copy] is plate)
+                partial = sum(1 for row in mine if row.copy_index not in complete)
+                if copies or partial:
+                    rows.append(
+                        {"job": job, "plate": plate, "copies": copies, "partial": partial, "date": plate.completed_at}
+                    )
+        rows.sort(key=lambda row: row["date"].timestamp() if row["date"] is not None else 0.0, reverse=True)
+        return rows
+
+    def _prefetched_print_sources(
+        self,
+    ) -> tuple[list[PrintJobPart], dict[int, list[PrintJobPlate]], list[PrintedPartRecord]] | None:
+        """Return the counting inputs from the prefetch cache, or ``None`` if not fully cached.
+
+        Only returns them when the whole chain of
+        :meth:`printed_quantity_prefetch_lookups` is cached, so a partial prefetch
+        can never silently fan out into per-entry queries.
+
+        Returns:
+            ``(job entries, plates per job pk, manual records)`` or ``None``.
+        """
+        prefetched = getattr(self, "_prefetched_objects_cache", {})
+        if "job_entries" not in prefetched or "printed_records" not in prefetched:
+            return None
+        entries = list(prefetched["job_entries"])
+        plates_by_job: dict[int, list[PrintJobPlate]] = {}
+        for entry in entries:
+            if "print_job" not in entry._state.fields_cache:
+                return None
+            job_cache = getattr(entry.print_job, "_prefetched_objects_cache", {})
+            if "plates" not in job_cache:
+                return None
+            plates = list(job_cache["plates"])
+            if any("plate_parts" not in getattr(plate, "_prefetched_objects_cache", {}) for plate in plates):
+                return None
+            plates_by_job[entry.print_job_id] = plates
+        return entries, plates_by_job, list(prefetched["printed_records"])
+
+    def _load_print_sources(
+        self,
+    ) -> tuple[list[PrintJobPart], dict[int, list[PrintJobPlate]], list[PrintedPartRecord]]:
+        """Load the counting inputs from the database (four queries, independent of the job count).
+
+        Nothing is cached on the instance, so a later call sees new attempts and records.
+
+        Returns:
+            ``(job entries, plates per job pk, manual records)``.
+        """
+        from core.models.printing import PrintJobPlate
+
+        entries = list(self.job_entries.select_related("print_job"))
+        plates_by_job: dict[int, list[PrintJobPlate]] = {}
+        if entries:
+            job_ids = {entry.print_job_id for entry in entries}
+            plates = PrintJobPlate.objects.with_state().filter(print_job_id__in=job_ids)
+            plates = plates.prefetch_related(Prefetch("plate_parts", queryset=_counting_plate_parts()))
+            for plate in plates:
+                plates_by_job.setdefault(plate.print_job_id, []).append(plate)
+        return entries, plates_by_job, list(self.printed_records.all())
+
+
+def validate_not_in_future(value: date) -> None:
+    """Reject a date after today (a printed-part booking cannot be in the future)."""
+    if value > timezone.localdate():
+        raise ValidationError("The print date cannot be in the future.")
+
+
+class PrintedPartRecord(models.Model):
+    """A manual booking of printed copies of a part (printed outside LayerNexus or not counted).
+
+    Adds to :attr:`Part.printed_quantity` next to the copies counted from passed
+    plates.  A part with records is print history and cannot be deleted
+    (``PROTECT``); a wrong record is corrected by deleting it and booking anew.
+    """
+
+    part = models.ForeignKey(Part, on_delete=models.PROTECT, related_name="printed_records")
+    quantity = models.PositiveIntegerField(
+        validators=[MinValueValidator(1)],
+        help_text="Number of printed copies",
+    )
+    printed_on = models.DateField(
+        default=timezone.localdate,
+        validators=[validate_not_in_future],
+        help_text="When the copies were printed",
+    )
+    note = models.CharField(max_length=255, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="printed_part_records",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-printed_on", "-pk"]
+        constraints = [
+            CheckConstraint(condition=Q(quantity__gte=1), name="printedpartrecord_quantity_gte_1"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.quantity}× {self.part.name} on {self.printed_on}"
 
 
 class PrintTimeEstimate(models.Model):

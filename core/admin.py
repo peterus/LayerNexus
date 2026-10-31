@@ -19,6 +19,7 @@ from .models import (
     OrcaMachineProfile,
     OrcaPrintPreset,
     Part,
+    PrintedPartRecord,
     PrinterProfile,
     PrintJob,
     PrintJobPart,
@@ -213,6 +214,22 @@ class PartAdmin(_UnfinishedJobDeleteGuardMixin, admin.ModelAdmin):
         return PrintJob.objects.filter(
             pk__in=PrintJobPart.objects.filter(part__in=self._part_ids(objs)).values("print_job_id")
         )
+
+
+@admin.register(PrintedPartRecord)
+class PrintedPartRecordAdmin(admin.ModelAdmin):
+    list_display = ("part", "quantity", "printed_on", "note", "created_by", "created_at")
+    list_select_related = ("part", "created_by")
+    list_filter = ("printed_on",)
+    search_fields = ("part__name", "note")
+    autocomplete_fields = ("part",)
+    readonly_fields = ("created_by", "created_at")
+
+    def save_model(self, request: HttpRequest, obj: PrintedPartRecord, form: Any, change: bool) -> None:
+        """Stamp the author on a new record."""
+        if not change:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
 
 
 @admin.register(PrinterProfile)

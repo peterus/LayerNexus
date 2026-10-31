@@ -2,7 +2,6 @@
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError
-from django.db.models import Prefetch
 from django.test import TestCase, override_settings
 
 from core.models import (
@@ -145,20 +144,21 @@ class PartModelTests(TestDataMixin, TestCase):
         plate1, plate2 = job.plates.order_by("plate_number")
         complete_plate(plate1, self.printer)
         add_attempt(plate2, self.printer, "waiting")
-        part = Part.objects.prefetch_related(
-            Prefetch("job_entries__print_job__plates", queryset=PrintJobPlate.objects.with_state())
-        ).get(pk=self.part.pk)
+        part = Part.objects.prefetch_related(*Part.printed_quantity_prefetch_lookups()).get(pk=self.part.pk)
         with self.assertNumQueries(0):
             self.assertEqual(part.printed_quantity, 0)
 
     def test_printed_quantity_no_n_plus_1_without_prefetch(self):
-        """Without a prefetch, printed_quantity is a single query (no per-entry N+1)."""
+        """Without a prefetch, printed_quantity costs a constant number of queries (no per-entry N+1).
+
+        Job entries, plates (with state), plate parts and manual records — four queries.
+        """
         for _i in range(5):
             job = make_completed_job(created_by=self.user)
             PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
         # Reload without any prefetch so the DB fallback path is exercised.
         part = Part.objects.get(pk=self.part.pk)
-        with self.assertNumQueries(1):
+        with self.assertNumQueries(4):
             self.assertEqual(part.printed_quantity, 5)
 
     def test_estimation_status_default(self):

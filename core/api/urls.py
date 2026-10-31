@@ -2,8 +2,8 @@
 
 Top-level resources are registered on a ``DefaultRouter`` (which also provides the
 browsable API root at ``/api/v1/``); documents and hardware assignments are nested
-under a project with explicit paths. The tree itself is expressed by ``Project.parent``
-and ``Part.project``.
+under a project, printed-part records under a part, with explicit paths. The tree
+itself is expressed by ``Project.parent`` and ``Part.project``.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ from core.api.views import (
     HardwarePartViewSet,
     OrcaPrintPresetViewSet,
     PartViewSet,
+    PrintedPartRecordDetail,
+    PrintedPartRecordListCreate,
     ProjectDocumentDetail,
     ProjectDocumentListCreate,
     ProjectHardwareDetail,
@@ -34,6 +36,16 @@ router.register("print-presets", OrcaPrintPresetViewSet, basename="print-preset"
 
 urlpatterns = [
     path("", include(router.urls)),
+    path(
+        "parts/<int:part_pk>/printed-records/",
+        PrintedPartRecordListCreate.as_view(),
+        name="part-printed-records",
+    ),
+    path(
+        "parts/<int:part_pk>/printed-records/<int:pk>/",
+        PrintedPartRecordDetail.as_view(),
+        name="part-printed-record-detail",
+    ),
     path(
         "projects/<int:project_pk>/documents/",
         ProjectDocumentListCreate.as_view(),

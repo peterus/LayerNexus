@@ -699,7 +699,8 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
     Groups the subtree's parts by ``(effective_print_preset_id, spoolman_filament_id)``
     so that each job contains only compatible parts.  Each part gets
     ``needed − printed`` copies (``needed`` from the tree multiplier, ``printed``
-    from all its completed jobs); parts without a model file, without a
+    = :attr:`Part.printed_quantity`: passed plates, all-plates jobs and manual
+    bookings); parts without a model file, without a
     resolvable preset, or with nothing remaining are skipped.
 
     Each job is named ``"<Project> — <Material / Preset>"``.
