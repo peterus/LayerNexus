@@ -590,3 +590,13 @@ class RoundThreeRegressionTests(TestDataMixin, TestCase):
         complete_plate(first, self.printer)
         add_attempt(second, self.printer, "printing")
         self.assertEqual(list(PrintJobPlate.objects.queueable()), [third])
+
+    def test_job_delete_confirm_query_count_independent_of_plates(self):
+        self.client.login(username="testuser", password="testpass123")
+
+        def count(job: PrintJob) -> int:
+            with CaptureQueriesContext(connection) as ctx:
+                self.client.get(reverse("core:printjob_delete", args=[job.pk]))
+            return len(ctx.captured_queries)
+
+        self.assertEqual(count(make_sliced_job("Few", plates=1)), count(make_sliced_job("Many", plates=12)))

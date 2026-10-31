@@ -494,6 +494,10 @@ class PrintJobDeleteView(RoleRequiredMixin, DeleteView):
     template_name = "core/printjob_confirm_delete.html"
     success_url = reverse_lazy("core:printjob_list")
 
+    def get_queryset(self) -> QuerySet[PrintJob]:
+        """Annotate the display status, so the confirmation page needs no query per plate."""
+        return PrintJob.objects.with_display_status()
+
     def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
         """Add whether the job has print attempts (deletion refused)."""
         context = super().get_context_data(**kwargs)
@@ -504,7 +508,8 @@ class PrintJobDeleteView(RoleRequiredMixin, DeleteView):
         """Delete the job unless it has print attempts (re-checked in the delete transaction)."""
         job = self.object
         with transaction.atomic():
-            if not job.can_delete:
+            # Live check (not the annotation loaded with the page): an attempt may have appeared since.
+            if PrintQueue.objects.filter(plate__print_job=job).exists():
                 messages.error(
                     self.request,
                     f"Cannot delete print job '{job}': it has print attempts. "
