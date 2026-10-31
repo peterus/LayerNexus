@@ -203,9 +203,9 @@
             <td>{{ entry.printer.name }}</td>
             <td>{% include "core/includes/_priority_badge.html" with priority=entry.priority display=entry.get_priority_display %}</td>
             <td>
-              {% if entry.status == 'printing' %}
+              {% if entry.state == 'printing' %}
                 <span class="badge bg-primary"><i class="bi bi-printer me-1"></i>Printing</span>
-              {% elif entry.status == 'awaiting_review' %}
+              {% elif entry.state == 'awaiting_review' %}
                 <span class="badge bg-warning text-dark"><i class="bi bi-clipboard-check me-1"></i>Review</span>
               {% else %}
                 <span class="badge bg-secondary">Waiting</span>

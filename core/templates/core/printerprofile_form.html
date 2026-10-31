@@ -25,7 +25,7 @@
 
           <h5 class="border-bottom pb-2 mb-3"><i class="bi bi-info-circle me-2"></i>General</h5>
           {% for field in form %}
-          {% if field.name == 'name' or field.name == 'description' %}
+          {% if field.name == 'name' or field.name == 'description' or field.name == 'is_active' %}
             {% include "core/includes/_form_field.html" with field=field %}
           {% endif %}
           {% endfor %}

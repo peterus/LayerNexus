@@ -189,6 +189,8 @@ def next_job_dialog(printer: PrinterProfile, header_lines: tuple[str, ...] = ())
     busy = busy_entry_for_printer(printer)
     if busy is not None:
         return _info_dialog(*header_lines, "Printer busy", _busy_line(busy))
+    if not printer.is_active:
+        return _info_dialog(*header_lines, "Printer deactivated")
 
     entry = next_waiting_entry(printer)
     if entry is None:
@@ -211,7 +213,8 @@ def next_job_dialog(printer: PrinterProfile, header_lines: tuple[str, ...] = ())
 def pending_review_entry(printer: PrinterProfile) -> PrintQueue | None:
     """Return the printer's entry awaiting review, if any."""
     return (
-        PrintQueue.objects.filter(printer=printer, status=PrintQueue.STATUS_AWAITING_REVIEW)
+        PrintQueue.objects.awaiting_review()
+        .filter(printer=printer)
         .select_related("plate__print_job")
         .order_by("completed_at", "pk")
         .first()
@@ -238,7 +241,7 @@ def _review_result_line(result_outcome: str, plates_completed: int, plate_count:
         return f"Plate passed ({plates_completed}/{plate_count} plates done)"
     if result_outcome == "requeued":
         return f"Failed - requeued (retry {retry})"
-    return "Failed - max retries reached, removed from queue"
+    return "Failed - max retries reached, plate failed"
 
 
 def _handle_review(printer: PrinterProfile, action: Review) -> OperatorDialog:

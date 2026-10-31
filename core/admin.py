@@ -3,6 +3,7 @@
 from collections.abc import Iterable
 from typing import Any
 
+from django import forms
 from django.contrib import admin
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
@@ -48,6 +49,42 @@ class PrintJobPlateInline(admin.TabularInline):
     model = PrintJobPlate
     extra = 0
     readonly_fields = ("gcode_file", "filament_used_grams", "print_time_estimate")
+
+    def has_delete_permission(self, request: HttpRequest, obj: PrintJob | None = None) -> bool:
+        """Refuse deleting plates of a job with print history (the cascade would delete it)."""
+        if obj is not None and obj.has_print_history():
+            return False
+        return super().has_delete_permission(request, obj)
+
+
+class _PrintHistoryDeleteGuardMixin:
+    """Refuse admin deletes of objects whose cascade would delete print history.
+
+    Subclasses implement :meth:`_history_attempts` for the objects to delete.
+    """
+
+    def _history_attempts(self, objs: Iterable[Model]) -> QuerySet[PrintQueue]:
+        raise NotImplementedError
+
+    def has_delete_permission(self, request: HttpRequest, obj: Model | None = None) -> bool:
+        """Hide the delete action for an object with print history."""
+        if obj is not None and self._history_attempts([obj]).exists():
+            return False
+        return super().has_delete_permission(request, obj)
+
+    def delete_model(self, request: HttpRequest, obj: Model) -> None:
+        """Delete one object after re-checking the guard in the same transaction."""
+        with transaction.atomic():
+            if self._history_attempts([obj]).exists():
+                raise PermissionDenied("This object has print history and cannot be deleted.")
+            super().delete_model(request, obj)
+
+    def delete_queryset(self, request: HttpRequest, queryset: QuerySet) -> None:
+        """Bulk-delete after re-checking the guard in the same transaction."""
+        with transaction.atomic():
+            if self._history_attempts(queryset).exists():
+                raise PermissionDenied("The selection contains print history and cannot be deleted.")
+            super().delete_queryset(request, queryset)
 
 
 class _UnfinishedJobDeleteGuardMixin:
@@ -142,7 +179,7 @@ class PrinterProfileAdmin(admin.ModelAdmin):
 
 
 @admin.register(PrintJob)
-class PrintJobAdmin(admin.ModelAdmin):
+class PrintJobAdmin(_PrintHistoryDeleteGuardMixin, admin.ModelAdmin):
     list_display = (
         "name",
         "machine_profile",
@@ -156,6 +193,9 @@ class PrintJobAdmin(admin.ModelAdmin):
     search_fields = ("name",)
     inlines = [PrintJobPartInline, PrintJobPlateInline]
 
+    def _history_attempts(self, objs: Iterable[PrintJob]) -> QuerySet[PrintQueue]:
+        return PrintQueue.objects.filter(PrintQueue.protected_q(), plate__print_job__in=[o.pk for o in objs])
+
 
 @admin.register(PrintJobPart)
 class PrintJobPartAdmin(admin.ModelAdmin):
@@ -164,7 +204,7 @@ class PrintJobPartAdmin(admin.ModelAdmin):
 
 
 @admin.register(PrintJobPlate)
-class PrintJobPlateAdmin(admin.ModelAdmin):
+class PrintJobPlateAdmin(_PrintHistoryDeleteGuardMixin, admin.ModelAdmin):
     list_display = (
         "print_job",
         "plate_number",
@@ -173,6 +213,9 @@ class PrintJobPlateAdmin(admin.ModelAdmin):
         "print_time_estimate",
     )
     list_filter = ("status", "print_job")
+
+    def _history_attempts(self, objs: Iterable[PrintJobPlate]) -> QuerySet[PrintQueue]:
+        return PrintQueue.objects.filter(PrintQueue.protected_q(), plate__in=[o.pk for o in objs])
 
 
 @admin.register(OrcaMachineProfile)
@@ -249,21 +292,133 @@ class PrintTimeEstimateAdmin(admin.ModelAdmin):
     list_filter = ("printer",)
 
 
+class PrintQueueAdminForm(forms.ModelForm):
+    """Admin form that validates "one open attempt per plate" itself.
+
+    ``result`` is read-only in the admin, so Django skips the conditional
+    unique constraint (its condition references an excluded field) — without
+    this check a duplicate would only fail in the database (500).
+    """
+
+    class Meta:
+        model = PrintQueue
+        fields = [
+            "plate",
+            "printer",
+            "priority",
+            "position",
+            "max_retries",
+            "result",
+            "resolved_at",
+            "is_retry",
+            "started_at",
+            "completed_at",
+            "progress",
+            "status_updated_at",
+            "last_error",
+            "start_claimed_at",
+        ]
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        if "printer" in self.fields:
+            # Deactivated printers get no new attempts (same as the queue form).
+            self.fields["printer"].queryset = PrinterProfile.objects.active()
+
+    def clean_plate(self) -> PrintJobPlate | None:
+        """Reject a plate that already has another open attempt."""
+        plate = self.cleaned_data.get("plate")
+        if plate is not None and not self.instance.result:
+            others = PrintQueue.objects.open().filter(plate=plate).exclude(pk=self.instance.pk)
+            if others.exists():
+                raise forms.ValidationError("This plate already has an open print attempt.")
+        return plate
+
+
 @admin.register(PrintQueue)
 class PrintQueueAdmin(admin.ModelAdmin):
+    form = PrintQueueAdminForm
     list_display = (
         "plate",
         "printer",
-        "status",
+        "state_display",
         "priority",
         "position",
-        "retry_count",
+        "is_retry",
         "started_at",
         "completed_at",
+        "resolved_at",
         "added_at",
     )
-    list_filter = ("printer", "priority", "status")
+    list_filter = ("printer", "priority", "result", "is_retry")
     ordering = ["-priority", "position"]
+
+    @admin.display(description="State")
+    def state_display(self, obj: PrintQueue) -> str:
+        """Return the derived attempt state."""
+        return obj.get_state_display()
+
+    #: Set only by the model transitions (``mark_started``, ``mark_finished``,
+    #: ``resolve``, ``remove``) and by the worker / print start; editing them
+    #: here (or saving a stale form over them) would bypass the transitions.
+    MANAGED_FIELDS = (
+        "result",
+        "resolved_at",
+        "is_retry",
+        "started_at",
+        "completed_at",
+        "start_claimed_at",
+        "progress",
+        "status_updated_at",
+        "last_error",
+    )
+    #: Frozen after creation: moving an attempt would break the retry cycle and
+    #: queue order; remove it and enqueue it again instead.
+    IDENTITY_FIELDS = ("plate", "printer")
+    #: Planning fields, additionally frozen once the attempt is history or starting.
+    PLANNING_FIELDS = ("priority", "position", "max_retries")
+
+    def get_readonly_fields(self, request: HttpRequest, obj: PrintQueue | None = None) -> tuple[str, ...]:
+        """Allow a manual enqueue (add) and re-planning of open attempts; everything else is read-only."""
+        readonly = tuple(super().get_readonly_fields(request, obj)) + self.MANAGED_FIELDS
+        if obj is None:
+            return readonly
+        readonly += self.IDENTITY_FIELDS
+        if obj.is_history or obj.has_active_start_claim:
+            readonly += self.PLANNING_FIELDS
+        return readonly
+
+    def save_model(self, request: HttpRequest, obj: PrintQueue, form: Any, change: bool) -> None:
+        """Save and refresh the stored status of the affected plate(s)."""
+        old_plate_id = (
+            PrintQueue.objects.filter(pk=obj.pk).values_list("plate_id", flat=True).first() if change else None
+        )
+        with transaction.atomic():
+            super().save_model(request, obj, form, change)
+            for plate in PrintJobPlate.objects.filter(pk__in={old_plate_id, obj.plate_id} - {None}):
+                plate.refresh_stored_status()
+
+    def has_delete_permission(self, request: HttpRequest, obj: PrintQueue | None = None) -> bool:
+        """Refuse deleting history and attempts whose print start is in progress."""
+        if obj is not None and (obj.is_history or obj.has_active_start_claim):
+            return False
+        return super().has_delete_permission(request, obj)
+
+    def delete_model(self, request: HttpRequest, obj: PrintQueue) -> None:
+        """Delete one never-started attempt (re-checked under lock) and refresh its plate."""
+        self.delete_queryset(request, PrintQueue.objects.filter(pk=obj.pk))
+
+    def delete_queryset(self, request: HttpRequest, queryset: QuerySet) -> None:
+        """Bulk-delete only never-started attempts; refuse if the selection contains protected ones."""
+        with transaction.atomic():
+            if queryset.filter(PrintQueue.protected_q()).exists():
+                raise PermissionDenied(
+                    "Started or resolved attempts (print history) and starting prints cannot be deleted."
+                )
+            plates = list(PrintJobPlate.objects.filter(queue_entries__in=queryset).distinct())
+            super().delete_queryset(request, queryset)
+            for plate in plates:
+                plate.refresh_stored_status()
 
 
 @admin.register(ScheduledQueueStart)

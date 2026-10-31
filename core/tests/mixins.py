@@ -1,9 +1,33 @@
 """Shared test helpers and base classes."""
 
+from datetime import datetime
+from typing import Any
+
 from django.contrib.auth.models import Group, User
 from django.test import TestCase
+from django.utils import timezone
 
 from core.models import Part, PrinterProfile, Project
+
+
+def queue_state_fields(state: str, when: datetime | None = None) -> dict[str, Any]:
+    """Return the ``PrintQueue`` field values that produce an open attempt state.
+
+    Args:
+        state: ``"waiting"``, ``"printing"`` or ``"awaiting_review"``.
+        when: Timestamp to use (defaults to now).
+
+    Returns:
+        Keyword arguments for ``PrintQueue.objects.create()`` / ``.update()``.
+    """
+    when = when or timezone.now()
+    if state == "waiting":
+        return {"started_at": None, "completed_at": None}
+    if state == "printing":
+        return {"started_at": when, "completed_at": None}
+    if state == "awaiting_review":
+        return {"started_at": when, "completed_at": when}
+    raise ValueError(f"Unknown open attempt state: {state}")
 
 
 class TestDataMixin:

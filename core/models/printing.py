@@ -6,6 +6,7 @@ from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import CheckConstraint, Q, Sum
+from django.utils import timezone
 
 
 class PrintJob(models.Model):
@@ -167,6 +168,51 @@ class PrintJob(models.Model):
         """Number of plates in this job."""
         return self.plates.count()
 
+    def has_print_history(self) -> bool:
+        """Return True if a plate of this job has a started or resolved print attempt.
+
+        A print start in progress (active start claim) counts as well.  Such a
+        job (and its plates) must not be deleted or re-sliced — that would
+        delete the print history or let a starting print run untracked.
+        """
+        from core.models.queue import PrintQueue
+
+        return PrintQueue.objects.filter(PrintQueue.protected_q(), plate__print_job=self).exists()
+
+    def refresh_stored_print_status(self) -> None:
+        """Re-derive the stored print status (``printing`` / ``completed``) from the plates.
+
+        Only touches jobs in the print phase (``sliced`` / ``printing`` /
+        ``completed``): a job whose plates are all completed is ``completed``,
+        a job with a started print attempt is ``printing``.  Called by the
+        plate after each attempt transition — transitional until the print
+        status is derived on the fly.
+        """
+        if self.status not in (self.STATUS_SLICED, self.STATUS_PRINTING, self.STATUS_COMPLETED):
+            return
+        from core.models.queue import PrintQueue
+
+        now = timezone.now()
+        update_fields: list[str] = []
+        attempts = PrintQueue.objects.filter(plate__print_job=self)
+        if self.all_plates_completed:
+            new_status = self.STATUS_COMPLETED
+            if self.completed_at is None:
+                self.completed_at = now
+                update_fields.append("completed_at")
+        elif attempts.filter(Q(started_at__isnull=False) | Q(completed_at__isnull=False)).exists():
+            new_status = self.STATUS_PRINTING
+        else:
+            new_status = self.status if self.status != self.STATUS_COMPLETED else self.STATUS_PRINTING
+        if new_status == self.STATUS_PRINTING and self.started_at is None:
+            self.started_at = now
+            update_fields.append("started_at")
+        if new_status != self.status:
+            self.status = new_status
+            update_fields.append("status")
+        if update_fields:
+            self.save(update_fields=update_fields)
+
 
 class PrintJobPart(models.Model):
     """Through model linking a part to a print job with quantity."""
@@ -245,3 +291,65 @@ class PrintJobPlate(models.Model):
 
     def __str__(self) -> str:
         return f"Plate {self.plate_number} of {self.print_job}"
+
+    def has_print_history(self) -> bool:
+        """Return True if the plate has a started or resolved attempt or a start in progress (not deletable)."""
+        from core.models.queue import PrintQueue
+
+        return self.queue_entries.filter(PrintQueue.protected_q()).exists()
+
+    def failed_attempts_since_manual_enqueue(self) -> int:
+        """Count failed attempts since (and including) the last user-enqueued attempt.
+
+        Retries created by the system (``is_retry=True``) do not reset the
+        count; a manual enqueue does.  ``cancelled`` attempts never count.
+
+        Returns:
+            The number of ``failed`` attempts in the current retry cycle.
+        """
+        from core.models.queue import PrintQueue
+
+        attempts = self.queue_entries.all()
+        last_manual = attempts.filter(is_retry=False).order_by("-pk").values_list("pk", flat=True).first()
+        if last_manual is not None:
+            attempts = attempts.filter(pk__gte=last_manual)
+        return attempts.filter(result=PrintQueue.RESULT_FAILED).count()
+
+    def refresh_stored_status(self) -> None:
+        """Re-derive and store ``status`` / ``started_at`` / ``completed_at`` from the print attempts.
+
+        The **only** place that writes ``PrintJobPlate.status`` (transitional
+        until the plate status is derived on the fly).  Priority:
+
+        1. a passed attempt -> ``completed`` (at its ``resolved_at``);
+        2. an open attempt -> ``printing`` once started, else ``waiting``;
+        3. ``max_retries`` failed attempts since the last manual enqueue -> ``failed``;
+        4. otherwise ``waiting``.
+
+        Also refreshes the job's stored print status.
+        """
+        from core.models.queue import PrintQueue
+
+        attempts = list(self.queue_entries.order_by("pk"))
+        passed = [a for a in attempts if a.result == PrintQueue.RESULT_PASSED]
+        open_attempt = next((a for a in attempts if not a.result), None)
+        started = [a.started_at for a in attempts if a.started_at is not None]
+
+        completed_at = self.completed_at
+        if passed:
+            status = self.STATUS_COMPLETED
+            completed_at = passed[0].resolved_at or completed_at
+        elif open_attempt is not None:
+            started_open = open_attempt.started_at is not None or open_attempt.completed_at is not None
+            status = self.STATUS_PRINTING if started_open else self.STATUS_WAITING
+        else:
+            manual = [a for a in attempts if not a.is_retry]
+            max_retries = manual[-1].max_retries if manual else (attempts[-1].max_retries if attempts else 0)
+            failures = self.failed_attempts_since_manual_enqueue()
+            status = self.STATUS_FAILED if failures and failures >= max_retries else self.STATUS_WAITING
+
+        self.status = status
+        self.started_at = max(started) if started else self.started_at
+        self.completed_at = completed_at
+        self.save(update_fields=["status", "started_at", "completed_at"])
+        self.print_job.refresh_stored_print_status()

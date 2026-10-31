@@ -40,6 +40,14 @@ def _is_private_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return False
 
 
+class PrinterProfileQuerySet(models.QuerySet):
+    """Filters for printer profiles."""
+
+    def active(self) -> PrinterProfileQuerySet:
+        """Return printers that are not deactivated."""
+        return self.filter(is_active=True)
+
+
 class PrinterProfile(models.Model):
     """Configuration for a 3D printer including slicer and connection settings.
 
@@ -77,6 +85,15 @@ class PrinterProfile(models.Model):
         ),
     )
 
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name="Active",
+        help_text=(
+            "Inactive printers get no new queue entries, start no waiting prints and are hidden from the "
+            "farm dashboard; their print history stays visible."
+        ),
+    )
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -88,6 +105,8 @@ class PrinterProfile(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    objects = PrinterProfileQuerySet.as_manager()
+
     class Meta:
         permissions = [
             ("can_manage_printers", "Can create, edit, and delete printers"),
@@ -96,6 +115,14 @@ class PrinterProfile(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
+    def has_print_history(self) -> bool:
+        """Return True if any print attempt (queue entry) references this printer.
+
+        Such a printer cannot be deleted (``PrintQueue.printer`` is
+        ``PROTECT``); deactivate it instead.
+        """
+        return self.queue.exists()
 
     def clean(self) -> None:
         """Validate moonraker_url against SSRF attacks.

@@ -15,7 +15,7 @@ from core.models import (
     PrintJobPlate,
     PrintQueue,
 )
-from core.tests.mixins import _RBACTestBase
+from core.tests.mixins import _RBACTestBase, queue_state_fields
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -44,7 +44,7 @@ class PrinterControlMixinTests(_RBACTestBase):
         self.queue_entry = PrintQueue.objects.create(
             plate=self.plate,
             printer=self.printer,
-            status=PrintQueue.STATUS_WAITING,
+            **queue_state_fields("waiting"),
             priority=2,
         )
 
@@ -134,7 +134,7 @@ class QueueDequeueMixinTests(_RBACTestBase):
         self.queue_entry = PrintQueue.objects.create(
             plate=self.plate,
             printer=self.printer,
-            status=PrintQueue.STATUS_WAITING,
+            **queue_state_fields("waiting"),
         )
 
     def test_operator_can_delete_queue_entry(self):

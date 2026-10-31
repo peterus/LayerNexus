@@ -143,6 +143,12 @@ raw `request.user.is_staff` check.
   `Project`: `ancestors()`, `path_label` / `path_label_map()`, `subtree_ids()`,
   `chain_multiplier()`, `blocking_jobs()`, `deletion_summary()`. Print presets resolve
   bottom-up (`Part.effective_print_preset`); only top-level projects require one.
+- **Print attempts:** every `PrintQueue` row is a print attempt kept as history. Store facts only
+  (`started_at`, `completed_at`, `result` + `resolved_at`, `is_retry`); the state is derived
+  (`PrintQueue.state`, querysets `.open()/.waiting()/.printing()/.awaiting_review()/.active()`).
+  Transitions only via model methods (`enqueue`, `mark_started`, `mark_finished`, `resolve`, `remove`);
+  `PrintJobPlate.refresh_stored_status()` is the only writer of the plate status. Printers with
+  attempts are `PROTECT`ed — deactivate them (`is_active`) instead of deleting.
 - **Sub-project aggregation:** recurse with a quantity multiplier — see
   `Project._collect_parts_with_multiplier()` (and `_collect_hardware_with_multiplier`,
   `_collect_documents`) as the reference shape.

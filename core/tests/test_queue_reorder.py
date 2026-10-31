@@ -13,7 +13,7 @@ from core.services.queue import (
     next_waiting_entry,
     ordered_waiting_entries,
 )
-from core.tests.mixins import _RBACTestBase
+from core.tests.mixins import _RBACTestBase, queue_state_fields
 
 
 class _QueueFixtureMixin:
@@ -25,7 +25,7 @@ class _QueueFixtureMixin:
         *,
         priority: int = 2,
         position: int = 0,
-        status: str = PrintQueue.STATUS_WAITING,
+        status: str = PrintQueue.STATE_WAITING,
     ) -> PrintQueue:
         plate = PrintJobPlate.objects.create(
             print_job=self.job,
@@ -36,7 +36,7 @@ class _QueueFixtureMixin:
             printer=printer,
             priority=priority,
             position=position,
-            status=status,
+            **queue_state_fields(status),
         )
 
     def _order(self, printer: PrinterProfile) -> list[int]:
@@ -104,17 +104,17 @@ class MoveQueueEntryServiceTests(_QueueFixtureMixin, _RBACTestBase):
         self.assertEqual(self.c.priority, 2)
 
     def test_non_waiting_entry_cannot_be_moved(self):
-        for status in (PrintQueue.STATUS_PRINTING, PrintQueue.STATUS_AWAITING_REVIEW):
+        for status in (PrintQueue.STATE_PRINTING, PrintQueue.STATE_AWAITING_REVIEW):
             entry = self._make_entry(self.printer, status=status, position=5)
             with self.assertRaises(QueueReorderError):
                 move_queue_entry(entry.pk, direction="up")
 
     def test_non_waiting_entries_untouched(self):
-        printing = self._make_entry(self.printer, status=PrintQueue.STATUS_PRINTING, position=7)
+        printing = self._make_entry(self.printer, status=PrintQueue.STATE_PRINTING, position=7)
         move_queue_entry(self.c.pk, target_index=0)
         printing.refresh_from_db()
         self.assertEqual(printing.position, 7)
-        self.assertEqual(printing.status, PrintQueue.STATUS_PRINTING)
+        self.assertEqual(printing.state, PrintQueue.STATE_PRINTING)
 
     def test_other_printer_queue_untouched(self):
         other = PrinterProfile.objects.create(name="Other Printer")
@@ -211,7 +211,7 @@ class PrintQueueMoveViewTests(_QueueFixtureMixin, _RBACTestBase):
         self.assertEqual(resp.status_code, 405)
 
     def test_printing_entry_refused_with_warning(self):
-        printing = self._make_entry(self.printer, status=PrintQueue.STATUS_PRINTING, position=3)
+        printing = self._make_entry(self.printer, status=PrintQueue.STATE_PRINTING, position=3)
         self.client.login(username="admin_user", password="testpass123")
         resp = self._move(printing, direction="up")
         self.assertRedirects(resp, reverse("core:printqueue_list"), fetch_redirect_response=False)
@@ -265,18 +265,19 @@ class PrintQueueMoveViewTests(_QueueFixtureMixin, _RBACTestBase):
         self.client.post(reverse("core:run_all_queues"))
         mock_get_backend.return_value.start_print.assert_called_once()
         low.refresh_from_db()
-        self.assertEqual(low.status, PrintQueue.STATUS_PRINTING)
+        self.assertEqual(low.state, PrintQueue.STATE_PRINTING)
 
     def test_failed_retry_requeues_first_in_priority_group(self):
         """A failed print goes back to the front of its priority group, not an arbitrary rank."""
         c = self._make_entry(self.printer, position=3)
         self.client.login(username="admin_user", password="testpass123")
         self._move(c, position="1")  # order: c, a, b -> positions 1, 2, 3
-        PrintQueue.objects.filter(pk=self.b.pk).update(status=PrintQueue.STATUS_AWAITING_REVIEW)
+        PrintQueue.objects.filter(pk=self.b.pk).update(**queue_state_fields("awaiting_review"))
         self.client.post(reverse("core:printqueue_review", args=[self.b.pk]), {"action": "fail"})
         self.b.refresh_from_db()
-        self.assertEqual(self.b.status, PrintQueue.STATUS_WAITING)
-        self.assertEqual(self._order(self.printer), [self.b.pk, c.pk, self.a.pk])
+        self.assertEqual(self.b.state, PrintQueue.RESULT_FAILED)
+        retry = PrintQueue.objects.open().get(plate=self.b.plate)
+        self.assertEqual(self._order(self.printer), [retry.pk, c.pk, self.a.pk])
 
     @mock.patch("core.services.queue.get_printer_backend")
     def test_run_next_starts_manually_reordered_entry(self, mock_get_backend):
@@ -290,7 +291,7 @@ class PrintQueueMoveViewTests(_QueueFixtureMixin, _RBACTestBase):
         self.client.post(reverse("core:run_queue", args=[self.printer.pk]))
         mock_get_backend.return_value.start_print.assert_called_once()
         low_first.refresh_from_db()
-        self.assertEqual(low_first.status, PrintQueue.STATUS_PRINTING)
+        self.assertEqual(low_first.state, PrintQueue.STATE_PRINTING)
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -302,7 +303,7 @@ class PrintQueueListReorderUITests(_QueueFixtureMixin, _RBACTestBase):
         self.job = PrintJob.objects.create(
             name="Reorder Job", status=PrintJob.STATUS_SLICED, created_by=self.admin_user
         )
-        self.printing = self._make_entry(self.printer, status=PrintQueue.STATUS_PRINTING, priority=1, position=9)
+        self.printing = self._make_entry(self.printer, status=PrintQueue.STATE_PRINTING, priority=1, position=9)
         self.a = self._make_entry(self.printer, position=1)
         self.b = self._make_entry(self.printer, position=2)
         self.move_url_a = reverse("core:printqueue_move", args=[self.a.pk])

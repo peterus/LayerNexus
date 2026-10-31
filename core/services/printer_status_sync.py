@@ -56,8 +56,10 @@ def apply_status_event(entry: PrintQueue, event: dict[str, Any]) -> bool:
 
     Args:
         entry: The PrintQueue entry currently associated with the
-            printer that produced the event.  Must have ``status ==
-            STATUS_PRINTING`` for any transition to happen.
+            printer that produced the event.  Must be printing (started,
+            not finished, no result) for any transition to happen; the
+            write is re-checked in the database, so a stale instance of an
+            attempt resolved meanwhile (e.g. removed as cancelled) is ignored.
         event: The raw Moonraker notification payload (a JSON-RPC
             request dict with ``method`` and ``params``).
 
@@ -79,7 +81,7 @@ def apply_status_event(entry: PrintQueue, event: dict[str, Any]) -> bool:
 
 
 def _handle_history_changed(entry: PrintQueue, params: list[Any]) -> bool:
-    if entry.status != PrintQueue.STATUS_PRINTING:
+    if not entry.is_printing:
         return False
     if not params:
         return False
@@ -95,7 +97,7 @@ def _handle_history_changed(entry: PrintQueue, params: list[Any]) -> bool:
 
 
 def _handle_status_update(entry: PrintQueue, params: list[Any]) -> bool:
-    if entry.status != PrintQueue.STATUS_PRINTING:
+    if not entry.is_printing:
         return False
     if not params:
         return False
@@ -145,34 +147,33 @@ def _handle_status_update(entry: PrintQueue, params: list[Any]) -> bool:
         logger.debug("Ignoring out-of-range virtual_sdcard.progress: %r", new_progress)
         return False
 
+    # Conditional write: the attempt may have been finished or resolved
+    # (e.g. removed) since this instance was loaded.
+    if not PrintQueue.objects.printing().filter(pk=entry.pk).update(progress=progress_value, status_updated_at=now):
+        return False
     entry.progress = progress_value
     entry.status_updated_at = now
-    entry.save(update_fields=["progress", "status_updated_at"])
     return True
 
 
 def _transition_to_review(entry: PrintQueue, normalized_state: str, raw_state: str) -> bool:
-    """Mark the entry as awaiting review with the given terminal state."""
-    now = timezone.now()
-    entry.status = PrintQueue.STATUS_AWAITING_REVIEW
-    entry.completed_at = now
-    entry.status_updated_at = now
+    """Mark the entry as awaiting review with the given terminal state.
+
+    Returns:
+        True if the attempt moved to "awaiting review", False if it was no
+        longer printing in the database (finished or resolved meanwhile).
+    """
     if normalized_state in (
         NormalizedJobStatus.STATE_ERROR,
         NormalizedJobStatus.STATE_CANCELLED,
     ):
-        entry.last_error = f"Printer reported: {raw_state}"
+        error = f"Printer reported: {raw_state}"
     else:
-        # Clear any leftover error from a previous retry.
-        entry.last_error = ""
-    entry.save(
-        update_fields=[
-            "status",
-            "completed_at",
-            "status_updated_at",
-            "last_error",
-        ]
-    )
+        # Clear any leftover error from a previous attempt.
+        error = ""
+    if not entry.mark_finished(error=error):
+        logger.info("Ignoring end of queue entry %s (state=%s): no longer printing", entry.pk, raw_state)
+        return False
     logger.info(
         "Queue entry %s transitioned to awaiting_review (state=%s)",
         entry.pk,

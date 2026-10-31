@@ -1,10 +1,14 @@
 """Printer profile views for the LayerNexus application."""
 
 import logging
+from typing import Any
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.http import JsonResponse
+from django.db import IntegrityError
+from django.db.models.deletion import ProtectedError
+from django.forms import Form
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.views import View
@@ -49,6 +53,9 @@ class PrinterProfileListView(LoginRequiredMixin, ListView):
         # Check real printer backend connectivity for each printer
         statuses = {}
         for printer in context["printer_profiles"]:
+            if not printer.is_active:
+                statuses[printer.pk] = "inactive"
+                continue
             try:
                 backend = get_printer_backend(printer)
                 backend.get_printer_status()
@@ -108,15 +115,40 @@ class PrinterProfileUpdateView(PrinterManageMixin, UpdateView):
 
 
 class PrinterProfileDeleteView(PrinterManageMixin, DeleteView):
-    """Delete a printer profile."""
+    """Delete a printer profile.
+
+    A printer with print attempts (queue entries, incl. history) cannot be
+    deleted — ``PrintQueue.printer`` is ``PROTECT``.  The page explains this
+    and offers deactivating the printer instead.
+    """
 
     model = PrinterProfile
     template_name = "core/printerprofile_confirm_delete.html"
     success_url = reverse_lazy("core:printerprofile_list")
 
-    def form_valid(self, form):
+    def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
+        """Add whether the printer has print history (deletion refused)."""
+        context = super().get_context_data(**kwargs)
+        context["has_print_history"] = self.object.has_print_history()
+        return context
+
+    def form_valid(self, form: Form) -> HttpResponse:
+        """Delete the printer, or refuse with a message if it has print history.
+
+        The ``PROTECT`` foreign key makes the database enforce the guard, so an
+        attempt created after the page was rendered cannot be lost either.
+        """
+        name = self.object.name
+        try:
+            response = super().form_valid(form)
+        except (ProtectedError, IntegrityError):
+            messages.error(
+                self.request,
+                f"Cannot delete printer '{name}': it has print history. Deactivate it instead.",
+            )
+            return redirect("core:printerprofile_delete", pk=self.object.pk)
         messages.success(self.request, "Printer profile deleted.")
-        return super().form_valid(form)
+        return response
 
 
 class PrinterStatusView(LoginRequiredMixin, View):
@@ -156,9 +188,8 @@ class UploadToPrinterView(PrinterControlMixin, View):
 
         try:
             backend = get_printer_backend(job.printer)
+            # Upload only: the plate status follows print attempts (queue), not uploads.
             backend.upload_gcode(plate.gcode_file.path)
-            plate.status = PrintJobPlate.STATUS_PRINTING
-            plate.save(update_fields=["status"])
             messages.success(request, f"G-code for plate {plate.plate_number} uploaded to printer.")
         except PrinterNotConfiguredError as exc:
             messages.error(request, str(exc))

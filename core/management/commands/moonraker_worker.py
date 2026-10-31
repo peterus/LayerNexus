@@ -80,10 +80,8 @@ def _load_printer(pk: int) -> PrinterProfile | None:
 @sync_to_async
 def _load_active_queue_entry(printer_pk: int) -> PrintQueue | None:
     return (
-        PrintQueue.objects.filter(
-            printer_id=printer_pk,
-            status=PrintQueue.STATUS_PRINTING,
-        )
+        PrintQueue.objects.printing()
+        .filter(printer_id=printer_pk)
         .select_related("plate__print_job")
         .order_by("started_at")
         .first()
@@ -115,7 +113,7 @@ async def _handle_event_for_printer(
     if entry is None:
         return
     await _apply_event_sync(entry, event)
-    if ui is not None and entry.status == PrintQueue.STATUS_AWAITING_REVIEW:
+    if ui is not None and entry.is_awaiting_review:
         await ui.on_review_pending(entry.pk)
 
 

@@ -11,6 +11,7 @@ from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db import models, transaction
 from django.db.models import Q, QuerySet
+from django.forms import Form
 from django.http import HttpRequest, HttpResponse, JsonResponse, QueryDict
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
@@ -391,7 +392,9 @@ class PrintJobUpdateView(RoleRequiredMixin, UpdateView):
 class PrintJobDeleteView(RoleRequiredMixin, DeleteView):
     """Delete a print job.
 
-    Related queue entries and plates are deleted automatically via CASCADE.
+    Related plates and never-started queue entries are deleted via CASCADE.
+    A job with print history (a started or resolved attempt) is not
+    deletable — the history must be kept.
     """
 
     permission_required = "core.delete_printjob"
@@ -400,13 +403,25 @@ class PrintJobDeleteView(RoleRequiredMixin, DeleteView):
     template_name = "core/printjob_confirm_delete.html"
     success_url = reverse_lazy("core:printjob_list")
 
-    def form_valid(self, form):
-        job = self.get_object()
+    def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
+        """Add whether the job has print history (deletion refused)."""
+        context = super().get_context_data(**kwargs)
+        context["has_print_history"] = self.object.has_print_history()
+        return context
+
+    def form_valid(self, form: Form) -> HttpResponse:
+        """Delete the job unless it has print history (re-checked in the delete transaction)."""
+        job = self.object
+        with transaction.atomic():
+            if job.has_print_history():
+                messages.error(self.request, f"Cannot delete print job '{job}': it has print history.")
+                return redirect("core:printjob_detail", pk=job.pk)
+            response = super().form_valid(form)
         messages.success(
             self.request,
             f"Print job '{job}' deleted (including plates and queue entries).",
         )
-        return super().form_valid(form)
+        return response
 
 
 class AddPartToJobView(RoleRequiredMixin, View):
@@ -692,13 +707,20 @@ class PrintJobSliceView(RoleRequiredMixin, View):
             )
             return redirect("core:printjob_detail", pk=pk)
 
-        # Queue for slicing via the unified OrcaSlicer worker
-        job.status = PrintJob.STATUS_PENDING
-        job.slicing_error = ""
-        job.save(update_fields=["status", "slicing_error"])
+        with transaction.atomic():
+            # Checked together with the plate delete: re-slicing deletes all
+            # plates, which must never take print history (or a starting print) along.
+            if job.has_print_history():
+                messages.error(request, "This job has print history and cannot be re-sliced.")
+                return redirect("core:printjob_detail", pk=pk)
 
-        # Delete any existing plates from a previous slice attempt
-        job.plates.all().delete()
+            # Queue for slicing via the unified OrcaSlicer worker
+            job.status = PrintJob.STATUS_PENDING
+            job.slicing_error = ""
+            job.save(update_fields=["status", "slicing_error"])
+
+            # Delete any existing plates from a previous slice attempt
+            job.plates.all().delete()
 
         _start_orcaslicer_worker()
         logger.info("Queued slicing for job %s (%s)", job.pk, job)

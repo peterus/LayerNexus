@@ -19,6 +19,7 @@ from core.management.commands.moonraker_worker import (
     _Supervisor,
 )
 from core.models import PrinterProfile
+from core.tests.mixins import queue_state_fields
 
 
 class FakeTaskGroup:
@@ -246,8 +247,7 @@ class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
         self.entry = PrintQueue.objects.create(
             plate=self.plate,
             printer=self.printer,
-            status=PrintQueue.STATUS_PRINTING,
-            started_at=timezone.now(),
+            **queue_state_fields("printing"),
         )
         self.client_mock = MagicMock()
 
@@ -285,7 +285,7 @@ class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
         # The worker builds no UI for printers without the flag.
         await _handle_event_for_printer(self.printer, self._finished_event(), None)
         entry = await self._refresh(self.entry)
-        self.assertEqual(entry.status, "awaiting_review")
+        self.assertEqual(entry.state, "awaiting_review")
         self.client_mock.run_gcode.assert_not_called()
 
     async def test_no_dialog_without_queue_entry(self):
@@ -326,7 +326,7 @@ class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
         await ui.wait_idle()
 
         entry = await self._refresh(entry)
-        self.assertEqual(entry.status, PrintQueue.STATUS_PRINTING)
+        self.assertEqual(entry.state, PrintQueue.STATE_PRINTING)
         mock_get_backend.return_value.start_print.assert_called_once()
         self.assertIn("Started: Bracket, plate 1", self._scripts()[-1])
 
@@ -348,16 +348,16 @@ class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
     async def test_gcode_response_ignored_when_flag_off(self):
         from core.models import PrintQueue
 
-        await sync_to_async(PrintQueue.objects.filter(pk=self.entry.pk).update)(status="awaiting_review")
+        await sync_to_async(PrintQueue.objects.filter(pk=self.entry.pk).update)(**queue_state_fields("awaiting_review"))
         event = {"method": "notify_gcode_response", "params": [f"LN REVIEW ENTRY={self.entry.pk} RESULT=PASS"]}
         await _handle_event_for_printer(self.printer, event, None)
         entry = await self._refresh(self.entry)
-        self.assertEqual(entry.status, "awaiting_review")
+        self.assertEqual(entry.state, "awaiting_review")
 
     async def test_gcode_response_from_other_printer_is_rejected(self):
         from core.models import PrintQueue
 
-        await sync_to_async(PrintQueue.objects.filter(pk=self.entry.pk).update)(status="awaiting_review")
+        await sync_to_async(PrintQueue.objects.filter(pk=self.entry.pk).update)(**queue_state_fields("awaiting_review"))
         other = await sync_to_async(PrinterProfile.objects.create)(
             name="P2", moonraker_url="http://p2:7125", operator_prompts_enabled=True
         )
@@ -365,7 +365,7 @@ class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
         await ui.on_gcode_response([f"LN REVIEW ENTRY={self.entry.pk} RESULT=PASS"])
         await ui.wait_idle()
         entry = await self._refresh(self.entry)
-        self.assertEqual(entry.status, "awaiting_review")
+        self.assertEqual(entry.state, "awaiting_review")
         self.assertIn("Already handled", self._scripts()[-1])
 
     async def test_non_ln_gcode_response_is_ignored(self):
@@ -377,7 +377,7 @@ class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
     async def test_menu_shows_pending_review(self):
         from core.models import PrintQueue
 
-        await sync_to_async(PrintQueue.objects.filter(pk=self.entry.pk).update)(status="awaiting_review")
+        await sync_to_async(PrintQueue.objects.filter(pk=self.entry.pk).update)(**queue_state_fields("awaiting_review"))
         ui = self._ui()
         await ui.on_gcode_response(["LN MENU"])
         await ui.wait_idle()
@@ -391,7 +391,7 @@ class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
         with self.assertLogs("core.services.moonraker_operator_ui", level="WARNING"):
             await _handle_event_for_printer(self.printer, self._finished_event(), self._ui())
         entry = await self._refresh(self.entry)
-        self.assertEqual(entry.status, "awaiting_review")
+        self.assertEqual(entry.state, "awaiting_review")
 
     async def test_failing_action_is_logged_not_raised(self):
         ui = self._ui()
@@ -436,7 +436,9 @@ class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
             with self.subTest(enabled=enabled):
                 from core.models import PrintQueue
 
-                await sync_to_async(PrintQueue.objects.filter(pk=self.entry.pk).update)(status="printing")
+                await sync_to_async(PrintQueue.objects.filter(pk=self.entry.pk).update)(
+                    **queue_state_fields("printing")
+                )
                 self.printer.operator_prompts_enabled = enabled
                 with (
                     patch("core.management.commands.moonraker_worker.MoonrakerWebSocketClient", FakeWS),

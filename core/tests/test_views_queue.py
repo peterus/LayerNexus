@@ -6,7 +6,7 @@ from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
 from core.models import PrinterProfile, PrintJob, PrintJobPlate, PrintQueue
-from core.tests.mixins import TestDataMixin, _RBACTestBase
+from core.tests.mixins import TestDataMixin, _RBACTestBase, queue_state_fields
 from core.views.queue import PrintQueueDeleteView
 
 
@@ -60,7 +60,7 @@ class PrintQueueCreatePlateChoiceTests(TestDataMixin, TestCase):
 
     def _start_plate(self, plate: PrintJobPlate) -> None:
         """Mirror ``start_print_for_queue_entry``: plate, entry and job go to printing."""
-        PrintQueue.objects.create(plate=plate, printer=self.printer, status=PrintQueue.STATUS_PRINTING)
+        PrintQueue.objects.create(plate=plate, printer=self.printer, **queue_state_fields("printing"))
         plate.status = PrintJobPlate.STATUS_PRINTING
         plate.save(update_fields=["status"])
         self.job.status = PrintJob.STATUS_PRINTING
@@ -86,7 +86,7 @@ class PrintQueueCreatePlateChoiceTests(TestDataMixin, TestCase):
             {"plate": self.plates[1].pk, "printer": self.printer.pk, "priority": 3},
         )
         self.assertEqual(r.status_code, 302)
-        self.assertTrue(PrintQueue.objects.filter(plate=self.plates[1], status=PrintQueue.STATUS_WAITING).exists())
+        self.assertTrue(PrintQueue.objects.waiting().filter(plate=self.plates[1]).exists())
 
     def test_already_queued_plate_not_offered(self):
         PrintQueue.objects.create(plate=self.plates[0], printer=self.printer)
@@ -140,12 +140,12 @@ class PrintQueueDeleteStatusGuardTests(_RBACTestBase):
             return PrintQueue.objects.create(
                 plate=plate,
                 printer=self.printer,
-                status=status,
+                **queue_state_fields(status),
             )
 
-        self.waiting_entry = make_entry(PrintQueue.STATUS_WAITING)
-        self.printing_entry = make_entry(PrintQueue.STATUS_PRINTING)
-        self.review_entry = make_entry(PrintQueue.STATUS_AWAITING_REVIEW)
+        self.waiting_entry = make_entry(PrintQueue.STATE_WAITING)
+        self.printing_entry = make_entry(PrintQueue.STATE_PRINTING)
+        self.review_entry = make_entry(PrintQueue.STATE_AWAITING_REVIEW)
 
     def _delete(self, entry):
         return self.client.post(reverse("core:printqueue_delete", args=[entry.pk]))
@@ -172,18 +172,20 @@ class PrintQueueDeleteStatusGuardTests(_RBACTestBase):
         self.assertTrue(PrintQueue.objects.filter(pk=self.review_entry.pk).exists())
 
     def test_operator_can_delete_printing_entry(self):
-        """Operator holds can_control_printer -- may dequeue any state."""
+        """Operator holds can_control_printer -- may dequeue any state (kept as cancelled history)."""
         self.client.login(username="operator_user", password="testpass123")
         resp = self._delete(self.printing_entry)
         self.assertEqual(resp.status_code, 302)
-        self.assertFalse(PrintQueue.objects.filter(pk=self.printing_entry.pk).exists())
+        self.printing_entry.refresh_from_db()
+        self.assertEqual(self.printing_entry.result, PrintQueue.RESULT_CANCELLED)
 
     def test_operator_can_delete_awaiting_review_entry(self):
         """Operator may dequeue an awaiting_review entry."""
         self.client.login(username="operator_user", password="testpass123")
         resp = self._delete(self.review_entry)
         self.assertEqual(resp.status_code, 302)
-        self.assertFalse(PrintQueue.objects.filter(pk=self.review_entry.pk).exists())
+        self.review_entry.refresh_from_db()
+        self.assertEqual(self.review_entry.result, PrintQueue.RESULT_CANCELLED)
 
     def test_designer_delete_is_atomic_against_status_race(self):
         """A status change between SELECT and DELETE must not let a live entry go.
@@ -200,14 +202,14 @@ class PrintQueueDeleteStatusGuardTests(_RBACTestBase):
         def racing_get_object(view_self, queryset=None):
             obj = original_get_object(view_self, queryset)
             # Worker transitions the row after it was fetched as "waiting".
-            PrintQueue.objects.filter(pk=entry.pk).update(status=PrintQueue.STATUS_PRINTING)
+            PrintQueue.objects.filter(pk=entry.pk).update(**queue_state_fields("printing"))
             return obj
 
         with mock.patch.object(PrintQueueDeleteView, "get_object", racing_get_object):
             resp = self._delete(entry)
 
         self.assertEqual(resp.status_code, 404)
-        self.assertTrue(PrintQueue.objects.filter(pk=entry.pk, status=PrintQueue.STATUS_PRINTING).exists())
+        self.assertTrue(PrintQueue.objects.printing().filter(pk=entry.pk).exists())
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -219,7 +221,7 @@ class QueueEntryReviewRaceTests(TestDataMixin, TestCase):
 
         job = PrintJob.objects.create(name="Race", status=PrintJob.STATUS_PRINTING, created_by=self.user)
         plate = PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_PRINTING)
-        entry = PrintQueue.objects.create(plate=plate, printer=self.printer, status=PrintQueue.STATUS_AWAITING_REVIEW)
+        entry = PrintQueue.objects.create(plate=plate, printer=self.printer, **queue_state_fields("awaiting_review"))
         self.client.login(username="testuser", password="testpass123")
 
         with mock.patch("core.views.queue.review_queue_entry", side_effect=ReviewStateError("gone")):

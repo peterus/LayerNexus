@@ -13,7 +13,7 @@ from django.db import transaction
 from django.db.models import QuerySet
 from django.utils import timezone
 
-from core.models import PrinterProfile, PrintJob, PrintJobPlate, PrintQueue
+from core.models import PrinterProfile, PrintJobPlate, PrintQueue
 from core.models.queue import START_CLAIM_TIMEOUT
 from core.services.printer_backend import PrinterError, get_printer_backend
 
@@ -77,7 +77,7 @@ class ReviewResult:
         plate_number: The reviewed plate's number.
         plates_completed: Completed plates of the job after the review.
         plate_count: Total plates of the job.
-        retry_count: The entry's retry count after the review.
+        retry_count: Failed attempts of the plate since its last manual enqueue.
         max_retries: The entry's maximum retries.
     """
 
@@ -96,7 +96,7 @@ class StartResult:
 
     Attributes:
         outcome: ``"started"``, ``"busy"``, ``"empty"``, ``"not_next"``,
-            ``"no_gcode"``, ``"not_configured"`` or ``"error"``.
+            ``"no_gcode"``, ``"not_configured"``, ``"inactive"`` or ``"error"``.
         entry: The started entry (``"started"``), or the entry that would have
             been started (``"not_next"``, ``"error"``).
         busy_entry: The printing / awaiting-review entry for ``"busy"``.
@@ -136,7 +136,7 @@ def ordered_waiting_entries(printer: PrinterProfile | int) -> QuerySet[PrintQueu
     Returns:
         A queryset of waiting ``PrintQueue`` entries, next-to-print first.
     """
-    return PrintQueue.objects.filter(printer=printer, status=PrintQueue.STATUS_WAITING).order_by(*QUEUE_EXECUTION_ORDER)
+    return PrintQueue.objects.waiting().filter(printer=printer).order_by(*QUEUE_EXECUTION_ORDER)
 
 
 def next_waiting_entry(printer: PrinterProfile) -> PrintQueue | None:
@@ -166,7 +166,7 @@ def busy_entry_for_printer(printer: PrinterProfile | int) -> PrintQueue | None:
         The busy-making entry, or ``None`` if the printer is free.
     """
     entries = PrintQueue.objects.filter(printer=printer).select_related("plate__print_job")
-    busy = entries.filter(status__in=[PrintQueue.STATUS_PRINTING, PrintQueue.STATUS_AWAITING_REVIEW]).first()
+    busy = entries.active().first()
     if busy is not None:
         return busy
     return entries.filter(PrintQueue.active_start_claim_q()).first()
@@ -174,20 +174,21 @@ def busy_entry_for_printer(printer: PrinterProfile | int) -> PrintQueue | None:
 
 def queue_entry_status_label(entry: PrintQueue) -> str:
     """Return a display label for a busy entry ("Starting" for a claimed waiting entry)."""
-    if entry.status == PrintQueue.STATUS_WAITING and entry.start_claimed_at is not None:
-        return "Starting"
-    return entry.get_status_display()
+    return entry.get_state_display()
 
 
 def review_queue_entry(entry_pk: int, passed: bool, *, printer_pk: int | None = None) -> ReviewResult:
     """Confirm a finished print as Pass or Fail.
 
-    **Pass:** marks the plate completed and removes the entry; if all plates
-    of the job are completed the job is completed as well.
+    The attempt is kept as history; see :meth:`PrintQueue.resolve`.
 
-    **Fail:** increments ``retry_count`` and requeues the entry at
-    ``position=0`` (first within its priority group).  If ``retry_count``
-    reaches ``max_retries`` the plate is marked failed and the entry removed.
+    **Pass:** ``result=passed``; the plate is completed (and the job, once all
+    of its plates are).
+
+    **Fail:** ``result=failed``; a new retry attempt is queued at
+    ``position=0`` (first within its priority group) until the plate reaches
+    ``max_retries`` failed attempts since its last manual enqueue — then the
+    plate counts as failed.
 
     The entry is re-fetched and its state checked inside one transaction, so
     concurrent reviews (web + printer) cannot both apply.
@@ -206,9 +207,10 @@ def review_queue_entry(entry_pk: int, passed: bool, *, printer_pk: int | None = 
     """
     with transaction.atomic():
         entry = (
-            PrintQueue.objects.select_for_update()
+            PrintQueue.objects.awaiting_review()
+            .select_for_update()
             .select_related("plate__print_job")
-            .filter(pk=entry_pk, status=PrintQueue.STATUS_AWAITING_REVIEW)
+            .filter(pk=entry_pk)
             .first()
         )
         if entry is None or entry.plate is None:
@@ -219,37 +221,7 @@ def review_queue_entry(entry_pk: int, passed: bool, *, printer_pk: int | None = 
         plate = entry.plate
         job = plate.print_job
         plate_label = f"Plate {plate.plate_number} of '{job}'"
-
-        if passed:
-            plate.status = PrintJobPlate.STATUS_COMPLETED
-            plate.completed_at = timezone.now()
-            plate.save(update_fields=["status", "completed_at"])
-            entry.delete()
-            if job.all_plates_completed:
-                job.status = PrintJob.STATUS_COMPLETED
-                job.completed_at = timezone.now()
-                job.save(update_fields=["status", "completed_at"])
-            outcome = "passed"
-        else:
-            entry.retry_count += 1
-            if entry.retry_count >= entry.max_retries:
-                plate.status = PrintJobPlate.STATUS_FAILED
-                plate.save(update_fields=["status"])
-                entry.delete()
-                outcome = "discarded"
-            else:
-                entry.status = PrintQueue.STATUS_WAITING
-                entry.started_at = None
-                entry.completed_at = None
-                # Waiting positions are renumbered 1..n by manual reordering, so
-                # a stale position would land the retry at an arbitrary rank.
-                # Position 0 puts it first within its priority group (it was
-                # the entry being printed, i.e. it was next in line).
-                entry.position = 0
-                entry.save(update_fields=["status", "retry_count", "started_at", "completed_at", "position"])
-                plate.status = PrintJobPlate.STATUS_WAITING
-                plate.save(update_fields=["status"])
-                outcome = "requeued"
+        outcome = entry.resolve(passed)
 
         result = ReviewResult(
             outcome=outcome,
@@ -257,7 +229,7 @@ def review_queue_entry(entry_pk: int, passed: bool, *, printer_pk: int | None = 
             plate_number=plate.plate_number,
             plates_completed=job.plates.filter(status=PrintJobPlate.STATUS_COMPLETED).count(),
             plate_count=job.plate_count,
-            retry_count=entry.retry_count,
+            retry_count=plate.failed_attempts_since_manual_enqueue(),
             max_retries=entry.max_retries,
         )
 
@@ -268,7 +240,7 @@ def review_queue_entry(entry_pk: int, passed: bool, *, printer_pk: int | None = 
 def start_next_for_printer(printer: PrinterProfile, *, expected_entry_pk: int | None = None) -> StartResult:
     """Start the next waiting entry on ``printer`` (same rules as "Run Next").
 
-    The printer must be free (no printing / awaiting-review entry).  The
+    The printer must be active and free (no printing / awaiting-review entry).  The
     busy check and next-entry lookup run in a short transaction; the G-code
     upload and start happen **after** it so the SQLite write lock is not
     held during the (possibly slow) upload.
@@ -285,6 +257,9 @@ def start_next_for_printer(printer: PrinterProfile, *, expected_entry_pk: int | 
         return StartResult(outcome="not_configured")
 
     with transaction.atomic():
+        # Re-read the flag: a printer deactivated meanwhile must not start its waiting attempts.
+        if not PrinterProfile.objects.filter(pk=printer.pk, is_active=True).exists():
+            return StartResult(outcome="inactive", error=f'Printer "{printer.name}" is deactivated.')
         busy_entry = busy_entry_for_printer(printer)
         if busy_entry is not None:
             return StartResult(outcome="busy", busy_entry=busy_entry)
@@ -302,7 +277,7 @@ def start_next_for_printer(printer: PrinterProfile, *, expected_entry_pk: int | 
         # Claim the entry before releasing the lock: a concurrent start (web
         # Run Next / Run All vs. the printer's Start button) then sees the
         # printer as busy instead of uploading and starting the same entry
-        # twice.  The entry itself stays ``waiting`` until the printer has
+        # twice.  The entry itself stays waiting (unstarted) until the printer has
         # accepted the start, so status sync and Cancel never see it early.
         PrintQueue.objects.filter(pk=entry.pk).update(start_claimed_at=timezone.now())
 
@@ -382,7 +357,7 @@ def move_queue_entry(
 
     with transaction.atomic():
         entry = PrintQueue.objects.select_for_update().get(pk=entry_pk)
-        if entry.status != PrintQueue.STATUS_WAITING:
+        if not entry.is_waiting:
             raise QueueReorderError("Only waiting queue entries can be reordered.")
 
         waiting = list(ordered_waiting_entries(entry.printer_id).select_for_update())
@@ -488,26 +463,4 @@ def mark_queue_entry_started(entry: PrintQueue, remote_filename: str) -> None:
         entry: The queue entry that was started.
         remote_filename: The file name on the printer.
     """
-    plate = entry.plate
-    job = plate.print_job
-
-    # Update queue entry
-    entry.status = PrintQueue.STATUS_PRINTING
-    entry.started_at = timezone.now()
-    entry.start_claimed_at = None
-    # A re-queued entry must not show the progress of its previous attempt.
-    entry.progress = None
-    entry.status_updated_at = None
-    entry.save(update_fields=["status", "started_at", "start_claimed_at", "progress", "status_updated_at"])
-
-    # Update plate status
-    plate.status = PrintJobPlate.STATUS_PRINTING
-    plate.remote_job_id = remote_filename
-    plate.started_at = timezone.now()
-    plate.save(update_fields=["status", "remote_job_id", "started_at"])
-
-    # Update job status
-    job.status = PrintJob.STATUS_PRINTING
-    if not job.started_at:
-        job.started_at = timezone.now()
-    job.save(update_fields=["status", "started_at"])
+    entry.mark_started(remote_filename=remote_filename)
