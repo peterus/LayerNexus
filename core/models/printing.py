@@ -38,6 +38,9 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from core.models.parts import Part
     from core.models.printers import PrinterProfile
     from core.models.queue import PrintQueue
 
@@ -46,6 +49,18 @@ def _count_subquery(queryset: models.QuerySet, group_field: str) -> Coalesce:
     """Return ``COUNT(*)`` of ``queryset`` (already filtered on an ``OuterRef``) as a subquery expression."""
     counted = queryset.order_by().values(group_field).annotate(n=Count("pk")).values("n")
     return Coalesce(Subquery(counted, output_field=IntegerField()), 0)
+
+
+def _part_labels(parts: Iterable[Part]) -> dict[int, str]:
+    """Return part pk → display name; parts sharing a name get their project's name appended."""
+    parts = {part.pk: part for part in parts}
+    name_counts: dict[str, int] = {}
+    for part in parts.values():
+        name_counts[part.name] = name_counts.get(part.name, 0) + 1
+    return {
+        pk: part.name if name_counts[part.name] == 1 else f"{part.name} ({part.project.name})"
+        for pk, part in parts.items()
+    }
 
 
 class PrintJobQuerySet(models.QuerySet):
@@ -497,14 +512,17 @@ class PrintJob(models.Model):
         if not self.plates.exists():
             return []
         if not self.plate_parts_known and not self.has_plate_parts():
-            return ["Plate assignment unknown: the G-code does not show which parts lie on which plate."]
+            return [
+                "Plate assignment unknown: it could not be determined which parts lie on which plate. "
+                "Printed parts of this job count only once every plate is completed."
+            ]
         missing = self.unplaced_copies()
         if not missing:
             return []
         from core.models.parts import Part
 
-        names = dict(Part.objects.filter(pk__in=missing).values_list("pk", "name"))
-        return [f"{count}× {names[part_id]} on no plate" for part_id, count in sorted(missing.items())]
+        labels = _part_labels(Part.objects.filter(job_entries__print_job=self).select_related("project"))
+        return [f"{count}× {labels[part_id]} on no plate" for part_id, count in sorted(missing.items())]
 
     def discard_slicing(self) -> None:
         """Throw the slicing result away and put the job back to ``draft``.
@@ -806,17 +824,22 @@ class PrintJobPlate(models.Model):
         """Return the parts on this plate as ``"<part> ×<copies>"`` labels (from the prefetch cache when present).
 
         Copies of a multi-mesh part with only some meshes on this plate are
-        labelled ``"<part> (partial) ×<copies>"``.
+        labelled ``"<part> (partial) ×<copies>"``.  Parts sharing a name are told
+        apart by their project.
         """
         if "plate_parts" in getattr(self, "_prefetched_objects_cache", {}):
-            entries = self.plate_parts.all()
+            entries = list(self.plate_parts.all())
         else:
-            entries = self.plate_parts.select_related("part")
-        counts: dict[str, int] = {}
+            entries = list(self.plate_parts.select_related("part__project"))
+        labels = _part_labels(entry.part for entry in entries)
+        counts: dict[tuple[int, bool], int] = {}
         for entry in entries:
-            name = entry.part.name if entry.meshes_on_plate >= entry.mesh_count else f"{entry.part.name} (partial)"
-            counts[name] = counts.get(name, 0) + 1
-        return [f"{name} ×{count}" for name, count in counts.items()]
+            key = (entry.part_id, entry.meshes_on_plate < entry.mesh_count)
+            counts[key] = counts.get(key, 0) + 1
+        return [
+            f"{labels[part_id]}{' (partial)' if partial else ''} ×{count}"
+            for (part_id, partial), count in counts.items()
+        ]
 
     def failed_attempts_since_manual_enqueue(self) -> int:
         """Count failed attempts since (and including) the last user-enqueued attempt.

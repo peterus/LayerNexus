@@ -208,13 +208,30 @@ class PlatePartsBackfillTests(TransactionTestCase):
         """Any parser error on a stored upload marks the job unknown instead of failing the migration."""
         from unittest import mock
 
-        part = self._part("P")
-        job = self._job("J", [(part, 1)], [plate_gcode([1])])
+        part = self._part("P", data=_two_mesh_3mf(), suffix="3mf")
+        job = self._job("J", [(part, 1)], [plate_gcode([1, 2])])
 
         with mock.patch("core.services.threemf.read_model_meshes", side_effect=RuntimeError("encrypted zip")):
             self._migrate(BACKFILL)
 
         self.assertFalse(self._known(job))
+
+    def test_backfill_parses_each_3mf_once_and_never_stl(self) -> None:
+        """Mesh counts are memoized across jobs; STL files are not parsed again."""
+        from unittest import mock
+
+        from core.services import threemf
+
+        multi = self._part("Multi", data=_two_mesh_3mf(), suffix="3mf")
+        stl = self._part("S")
+        for name in ("J1", "J2", "J3"):
+            self._job(name, [(multi, 1), (stl, 1)], [plate_gcode([1, 2, 3])])
+
+        with mock.patch.object(threemf, "read_model_meshes", wraps=threemf.read_model_meshes) as spy:
+            self._migrate(BACKFILL)
+
+        self.assertEqual([Path(call.args[0]).name for call in spy.call_args_list], ["Multi.3mf"])
+        self.assertEqual(self.PrintJobPlatePart.objects.count(), 6)
 
     def test_backfill_count_mismatch_marks_unknown(self) -> None:
         """An object ID beyond Σ quantity × meshes → the bundle order does not fit → unknown."""

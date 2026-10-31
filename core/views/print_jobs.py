@@ -338,7 +338,8 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
         return PrintJob.objects.select_related("machine_profile").prefetch_related(
             "job_parts__part__project",
             Prefetch(
-                "plates", queryset=PrintJobPlate.objects.prefetch_related("queue_entries__printer", "plate_parts__part")
+                "plates",
+                queryset=PrintJobPlate.objects.prefetch_related("queue_entries__printer", "plate_parts__part__project"),
             ),
         )
 

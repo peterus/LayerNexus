@@ -178,14 +178,22 @@ class Part(models.Model):
         """Return the print jobs with print attempts that contain this part (its print history).
 
         A job counts if the part is one of its parts while any plate has attempts,
-        or if the part lies on a plate (plate parts) that has attempts.
+        or if the part lies on a plate (plate parts) that has attempts.  Built from
+        ``EXISTS`` subqueries, so no row fan-out over plates and attempts.
         """
-        from core.models.printing import PrintJob
+        from core.models.printing import PrintJob, PrintJobPart, PrintJobPlatePart
+        from core.models.queue import PrintQueue
 
-        return PrintJob.objects.filter(
-            Q(job_parts__part=self) | Q(plates__plate_parts__part=self),
-            plates__queue_entries__isnull=False,
-        ).distinct()
+        in_job = Exists(PrintJobPart.objects.filter(print_job=OuterRef("pk"), part=self))
+        on_attempted_plate = Exists(
+            PrintJobPlatePart.objects.filter(
+                plate__print_job=OuterRef("pk"),
+                part=self,
+                plate__queue_entries__isnull=False,
+            )
+        )
+        has_attempts = Exists(PrintQueue.objects.filter(plate__print_job=OuterRef("pk")))
+        return PrintJob.objects.filter((in_job & has_attempts) | on_attempted_plate)
 
     def has_print_history(self) -> bool:
         """Return True if the part is in a print job (or on a plate) that has print attempts.

@@ -47,19 +47,42 @@ def _file_path(field_file) -> Path | None:
     return path if path.is_file() else None
 
 
-def _job_plate_shares(plates: list, job_parts: list) -> tuple[dict | None, str]:
+def _mesh_count(path: Path, cache: dict[Path, int | None]) -> int | None:
+    """Return the number of meshes the bundler takes from a model file (``None`` = unreadable).
+
+    A binary STL is always one mesh (the bundler sliced it, so it parsed; a
+    later replacement is caught by the mtime check), so it is not parsed again.
+    3MF files are parsed with the bundler's own rule.  Results are memoized per
+    path, since the same part usually appears in many jobs.
+    """
+    from core.services.threemf import read_model_meshes
+
+    if path not in cache:
+        if path.suffix.lower() != ".3mf":
+            cache[path] = 1
+        else:
+            try:
+                cache[path] = len(read_model_meshes(path))
+            except Exception:  # noqa: BLE001 — any broken upload must not block ``migrate`` on startup
+                logger.exception("Model file %s is unreadable", path)
+                cache[path] = None
+    return cache[path]
+
+
+def _job_plate_shares(plates: list, job_parts: list, mesh_cache: dict[Path, int | None]) -> tuple[dict | None, str]:
     """Derive the plate shares of one legacy job.
 
     Args:
         plates: The job's plates (historical model instances).
         job_parts: The job's ``PrintJobPart`` rows in pk order, with ``part`` loaded.
+        mesh_cache: Memo of :func:`_mesh_count` shared across jobs.
 
     Returns:
         Tuple of (plate number → list of ``PlateCopyShare``, or ``None`` if
         unknown; the reason when unknown).
     """
     from core.services.gcode_objects import assign_plate_objects, parse_gcode_object_ids
-    from core.services.threemf import bundle_objects, read_model_meshes
+    from core.services.threemf import bundle_objects
 
     gcode_paths: dict[int, Path] = {}
     for plate in plates:
@@ -86,10 +109,8 @@ def _job_plate_shares(plates: list, job_parts: list) -> tuple[dict | None, str]:
 
     parts: list[tuple[int, int]] = []
     for job_part, path in zip(job_parts, model_paths, strict=True):
-        try:
-            mesh_count = len(read_model_meshes(path))
-        except Exception:  # noqa: BLE001 — any broken upload must not block ``migrate`` on startup
-            logger.exception("Model file %s of part %s is unreadable", path, job_part.part_id)
+        mesh_count = _mesh_count(path, mesh_cache)
+        if mesh_count is None:
             return None, "model file unreadable"
         parts.append((job_part.quantity, mesh_count))
 
@@ -111,13 +132,14 @@ def backfill_plate_parts(apps, schema_editor) -> None:
     PrintJobPlatePart = apps.get_model("core", "PrintJobPlatePart")
 
     mapped = legacy = 0
+    mesh_cache: dict[Path, int | None] = {}
     unknown: dict[str, int] = {}
     for job in PrintJob.objects.filter(plates__isnull=False).distinct().order_by("pk"):
         if PrintJobPlatePart.objects.filter(plate__print_job=job).exists():
             continue
         plates = list(PrintJobPlate.objects.filter(print_job=job).order_by("plate_number"))
         job_parts = list(PrintJobPart.objects.filter(print_job=job).select_related("part").order_by("pk"))
-        shares, reason = _job_plate_shares(plates, job_parts)
+        shares, reason = _job_plate_shares(plates, job_parts, mesh_cache)
         if shares is None:
             unknown[reason] = unknown.get(reason, 0) + 1
             logger.warning("Plate parts of job %s unknown: %s", job.pk, reason)

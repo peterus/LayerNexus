@@ -413,3 +413,39 @@ class PlatePartAdminTests(TestDataMixin, TestCase):
         request = RequestFactory().get("/")
         request.user = self.user
         self.assertIn("plate_parts_known", site._registry[PrintJob].get_readonly_fields(request, job))
+
+
+class PlatePartLabelTests(TestCase):
+    """Same-named parts are told apart; history queries return each row once."""
+
+    def test_same_named_parts_are_disambiguated(self) -> None:
+        """Two parts called 'Bracket' in different projects get their project name appended."""
+        left = Part.objects.create(project=Project.objects.create(name="Left"), name="Bracket", quantity=1)
+        right = Part.objects.create(project=Project.objects.create(name="Right"), name="Bracket", quantity=1)
+        job = make_sliced_job("J", plates=1)
+        PrintJobPart.objects.create(print_job=job, part=left, quantity=2)
+        PrintJobPart.objects.create(print_job=job, part=right, quantity=1)
+        plate = job.plates.get()
+        PrintJobPlatePart.objects.create(plate=plate, part=left, copy_index=0)
+        PrintJobPlatePart.objects.create(plate=plate, part=right, copy_index=0)
+
+        self.assertEqual(sorted(plate.parts_summary()), ["Bracket (Left) ×1", "Bracket (Right) ×1"])
+        self.assertEqual(job.plate_assignment_warnings(), ["1× Bracket (Left) on no plate"])
+
+    def test_history_queries_return_each_row_once(self) -> None:
+        """Many plates, plate parts and attempts still yield one job / one part (no fan-out duplicates)."""
+        from core.tests.mixins import add_attempt
+
+        project = Project.objects.create(name="P")
+        part = Part.objects.create(project=project, name="R", quantity=1)
+        job = make_sliced_job("J", plates=3)
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=6)
+        for index, plate in enumerate(job.plates.all()):
+            for copy in (2 * index, 2 * index + 1):
+                PrintJobPlatePart.objects.create(plate=plate, part=part, copy_index=copy)
+            add_attempt(plate, None, "failed")
+            add_attempt(plate, None, "passed")
+
+        self.assertEqual(list(part.history_jobs()), [job])
+        self.assertEqual(list(project.history_blocking_parts()), [part])
+        self.assertEqual(project.deletion_summary()["print_history"], 1)
