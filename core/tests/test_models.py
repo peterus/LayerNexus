@@ -2,6 +2,7 @@
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError
+from django.db.models import Prefetch
 from django.test import TestCase, override_settings
 
 from core.models import (
@@ -19,7 +20,7 @@ from core.models import (
     ProjectDocument,
     ProjectHardware,
 )
-from core.tests.mixins import TestDataMixin
+from core.tests.mixins import TestDataMixin, add_attempt, complete_plate, make_completed_job, make_sliced_job
 
 
 class ProjectModelTests(TestDataMixin, TestCase):
@@ -39,9 +40,8 @@ class ProjectModelTests(TestDataMixin, TestCase):
         self.assertEqual(self.project.printed_parts_count, 0)
 
     def test_printed_parts_count_with_completed_jobs(self):
-        job = PrintJob.objects.create(status="completed", created_by=self.user)
+        job = make_completed_job(created_by=self.user)
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         self.assertEqual(self.project.printed_parts_count, 2)
 
     def test_printed_parts_count_ignores_non_completed(self):
@@ -54,16 +54,14 @@ class ProjectModelTests(TestDataMixin, TestCase):
         self.assertEqual(empty.progress_percent, 0)
 
     def test_progress_percent_partial(self):
-        job = PrintJob.objects.create(status="completed", created_by=self.user)
+        job = make_completed_job(created_by=self.user)
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         # 1 completed out of 3 total = 33%
         self.assertEqual(self.project.progress_percent, 33)
 
     def test_progress_percent_complete(self):
-        job = PrintJob.objects.create(status="completed", created_by=self.user)
+        job = make_completed_job(created_by=self.user)
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=3)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         self.assertEqual(self.project.progress_percent, 100)
 
     def test_total_filament_grams(self):
@@ -100,18 +98,15 @@ class PartModelTests(TestDataMixin, TestCase):
         self.assertEqual(self.part.printed_quantity, 0)
 
     def test_printed_quantity_with_completed(self):
-        job = PrintJob.objects.create(status="completed", created_by=self.user)
+        job = make_completed_job(created_by=self.user)
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         self.assertEqual(self.part.printed_quantity, 2)
 
     def test_printed_quantity_multiple_jobs(self):
-        job1 = PrintJob.objects.create(status="completed", created_by=self.user)
+        job1 = make_completed_job(created_by=self.user)
         PrintJobPart.objects.create(print_job=job1, part=self.part, quantity=1)
-        PrintJobPlate.objects.create(print_job=job1, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
-        job2 = PrintJob.objects.create(status="completed", created_by=self.user)
+        job2 = make_completed_job(created_by=self.user)
         PrintJobPart.objects.create(print_job=job2, part=self.part, quantity=1)
-        PrintJobPlate.objects.create(print_job=job2, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         self.assertEqual(self.part.printed_quantity, 2)
 
     def test_printed_quantity_multiple_completed_plates_counts_once(self):
@@ -121,11 +116,8 @@ class PartModelTests(TestDataMixin, TestCase):
         completed plates a job has, this part's job ``quantity`` is counted a
         single time (guards against a plate join fanning the rows out).
         """
-        job = PrintJob.objects.create(status="completed", created_by=self.user)
+        job = make_completed_job(plates=3, created_by=self.user)
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
-        PrintJobPlate.objects.create(print_job=job, plate_number=2, status=PrintJobPlate.STATUS_COMPLETED)
-        PrintJobPlate.objects.create(print_job=job, plate_number=3, status=PrintJobPlate.STATUS_COMPLETED)
         self.assertEqual(self.part.printed_quantity, 2)
 
     def test_printed_quantity_ignores_partially_completed_job(self):
@@ -135,32 +127,35 @@ class PartModelTests(TestDataMixin, TestCase):
         unprinted plate must not report its parts as printed (regression: project
         showed every part printed while plate 2 was still waiting).
         """
-        job = PrintJob.objects.create(status="printing", created_by=self.user)
+        job = make_sliced_job(plates=2, created_by=self.user)
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
-        plate2 = PrintJobPlate.objects.create(print_job=job, plate_number=2, status=PrintJobPlate.STATUS_WAITING)
+        plate1, plate2 = job.plates.order_by("plate_number")
+        complete_plate(plate1, self.printer)
+        waiting = add_attempt(plate2, self.printer, "waiting")
         self.assertEqual(self.part.printed_quantity, 0)
 
-        plate2.status = PrintJobPlate.STATUS_COMPLETED
-        plate2.save(update_fields=["status"])
+        waiting.delete()
+        complete_plate(plate2, self.printer)
         self.assertEqual(self.part.printed_quantity, 2)
 
     def test_printed_quantity_partial_job_prefetched_path(self):
         """The prefetched (no-query) path applies the same all-plates rule."""
-        job = PrintJob.objects.create(status="printing", created_by=self.user)
+        job = make_sliced_job(plates=2, created_by=self.user)
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
-        PrintJobPlate.objects.create(print_job=job, plate_number=2, status=PrintJobPlate.STATUS_WAITING)
-        part = Part.objects.prefetch_related("job_entries__print_job__plates").get(pk=self.part.pk)
+        plate1, plate2 = job.plates.order_by("plate_number")
+        complete_plate(plate1, self.printer)
+        add_attempt(plate2, self.printer, "waiting")
+        part = Part.objects.prefetch_related(
+            Prefetch("job_entries__print_job__plates", queryset=PrintJobPlate.objects.with_state())
+        ).get(pk=self.part.pk)
         with self.assertNumQueries(0):
             self.assertEqual(part.printed_quantity, 0)
 
     def test_printed_quantity_no_n_plus_1_without_prefetch(self):
         """Without a prefetch, printed_quantity is a single query (no per-entry N+1)."""
         for _i in range(5):
-            job = PrintJob.objects.create(status="completed", created_by=self.user)
+            job = make_completed_job(created_by=self.user)
             PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
-            PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         # Reload without any prefetch so the DB fallback path is exercised.
         part = Part.objects.get(pk=self.part.pk)
         with self.assertNumQueries(1):
@@ -235,14 +230,14 @@ class PrintJobModelTests(TestDataMixin, TestCase):
         self.assertEqual(job.plate_count, 2)
 
     def test_all_plates_completed(self):
-        job = PrintJob.objects.create(created_by=self.user)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
+        job = make_completed_job(created_by=self.user)
         self.assertTrue(job.all_plates_completed)
 
     def test_all_plates_completed_false_when_waiting(self):
-        job = PrintJob.objects.create(created_by=self.user)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
-        PrintJobPlate.objects.create(print_job=job, plate_number=2, status=PrintJobPlate.STATUS_WAITING)
+        job = make_sliced_job(plates=2, created_by=self.user)
+        plate1, plate2 = job.plates.order_by("plate_number")
+        complete_plate(plate1, self.printer)
+        add_attempt(plate2, self.printer, "waiting")
         self.assertFalse(job.all_plates_completed)
 
 

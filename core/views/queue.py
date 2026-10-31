@@ -26,7 +26,6 @@ from core.forms import PrintQueueForm, ScheduledStartForm
 from core.mixins import PrinterControlMixin, QueueDequeueMixin, QueueManageMixin
 from core.models import (
     PrinterProfile,
-    PrintJob,
     PrintJobPlate,
     PrintQueue,
     ScheduledQueueStart,
@@ -74,24 +73,14 @@ def _next_morning(hour: int = 6) -> datetime:
 def _queueable_plates() -> QuerySet[PrintJobPlate]:
     """Return plates that can be added to the print queue.
 
-    A plate is queueable while it is still waiting to be printed (or failed and
-    should be retried), has G-code, and has no open print attempt (resolved
-    attempts are history and do not block). The job may be ``sliced`` or already
-    ``printing`` — a multi-plate job switches to ``printing`` as soon as its
-    first plate starts, and its remaining plates must stay queueable.
+    See :meth:`PrintJobPlateQuerySet.queueable`: the job is sliced, the plate
+    has G-code and is neither completed nor queued (its state is ``not_queued``
+    or ``failed``).
 
     Returns:
         Queryset of queueable ``PrintJobPlate`` objects.
     """
-    return (
-        PrintJobPlate.objects.filter(
-            status__in=[PrintJobPlate.STATUS_WAITING, PrintJobPlate.STATUS_FAILED],
-            print_job__status__in=[PrintJob.STATUS_SLICED, PrintJob.STATUS_PRINTING],
-            gcode_file__isnull=False,
-        )
-        .exclude(gcode_file="")
-        .exclude(queue_entries__result="")
-    )
+    return PrintJobPlate.objects.queueable()
 
 
 class PrintQueueListView(LoginRequiredMixin, ListView):
@@ -184,18 +173,21 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
     template_name = "core/printqueue_form.html"
     success_url = reverse_lazy("core:printqueue_list")
 
+    def _queueable(self) -> list[PrintJobPlate]:
+        """Return the queueable plates, computed once per request."""
+        if not hasattr(self, "_queueable_cache"):
+            self._queueable_cache = list(_queueable_plates().select_related("print_job__machine_profile"))
+        return self._queueable_cache
+
     def get_form(self, form_class=None):
         form = super().get_form(form_class)
-        form.fields["plate"].queryset = _queueable_plates().select_related("print_job")
+        queueable_pks = [plate.pk for plate in self._queueable()]
+        form.fields["plate"].queryset = PrintJobPlate.objects.filter(pk__in=queueable_pks).select_related("print_job")
 
         # Pre-select plate from query parameter
         plate_pk = self.request.GET.get("plate")
-        if plate_pk:
-            try:
-                selected_plate = _queueable_plates().get(pk=plate_pk)
-                form.fields["plate"].initial = selected_plate.pk
-            except (PrintJobPlate.DoesNotExist, ValueError):
-                pass
+        if plate_pk and plate_pk.isdigit() and int(plate_pk) in queueable_pks:
+            form.fields["plate"].initial = int(plate_pk)
 
         # Deactivated printers get no new attempts
         form.fields["printer"].queryset = PrinterProfile.objects.active()
@@ -206,7 +198,7 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
         context = super().get_context_data(**kwargs)
 
         # Build a map: plate_pk -> [compatible printer PKs]
-        plates = _queueable_plates().select_related("print_job__machine_profile")
+        plates = self._queueable()
 
         printers = PrinterProfile.objects.active()
 
@@ -286,8 +278,6 @@ class PrintQueueDeleteView(QueueDequeueMixin, DeleteView):
                 )
                 if not deleted:
                     raise Http404("Queue entry is no longer waiting.")
-                if self.object.plate is not None:
-                    self.object.plate.refresh_stored_status()
             messages.success(self.request, "Removed from queue.")
             return HttpResponseRedirect(self.get_success_url())
 

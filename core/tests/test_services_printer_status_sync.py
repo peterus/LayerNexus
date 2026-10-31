@@ -29,7 +29,6 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         self.plate = PrintJobPlate.objects.create(
             print_job=self.job,
             plate_number=1,
-            status=PrintJobPlate.STATUS_PRINTING,
         )
         self.entry = PrintQueue.objects.create(
             plate=self.plate,

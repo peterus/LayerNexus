@@ -146,9 +146,18 @@ raw `request.user.is_staff` check.
 - **Print attempts:** every `PrintQueue` row is a print attempt kept as history. Store facts only
   (`started_at`, `completed_at`, `result` + `resolved_at`, `is_retry`); the state is derived
   (`PrintQueue.state`, querysets `.open()/.waiting()/.printing()/.awaiting_review()/.active()`).
-  Transitions only via model methods (`enqueue`, `mark_started`, `mark_finished`, `resolve`, `remove`);
-  `PrintJobPlate.refresh_stored_status()` is the only writer of the plate status. Printers with
-  attempts are `PROTECT`ed — deactivate them (`is_active`) instead of deleting.
+  Transitions only via model methods (`enqueue`, `mark_started`, `mark_finished`, `resolve`, `remove`).
+  Printers with attempts are `PROTECT`ed — deactivate them (`is_active`) instead of deleting.
+- **Derived plate / job status:** `PrintJob.status` stores only the slicing pipeline
+  (`draft → pending → slicing → sliced | failed`). The plate state (`PrintJobPlate.state`) and the
+  job's display status (`PrintJob.display_status`: ready / printing / in_progress / completed /
+  partially_failed …) are computed from the attempts — in lists use the annotations
+  `PrintJobPlate.objects.with_state()` / `PrintJob.objects.with_display_status()` (no N+1).
+  Once any attempt exists (`PrintJob.print_started`) a job's parts/machine profile are fixed and it
+  cannot be re-sliced or deleted; before that a contents change on a sliced job calls
+  `discard_slicing()` (back to draft). Parts in any print job are not deletable
+  (`PrintJobPart.part` is `PROTECT`; guards: `blocking_jobs()`, `has_print_history()`,
+  `Project.history_blocking_parts()`).
 - **Sub-project aggregation:** recurse with a quantity multiplier — see
   `Project._collect_parts_with_multiplier()` (and `_collect_hardware_with_multiplier`,
   `_collect_documents`) as the reference shape.

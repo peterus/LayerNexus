@@ -23,7 +23,7 @@ from core.services.operator_dialog import (
     next_job_dialog,
     review_dialog,
 )
-from core.tests.mixins import TestDataMixin, queue_state_fields
+from core.tests.mixins import TestDataMixin, complete_plate, queue_state_fields
 
 
 def _actions(dialog: OperatorDialog) -> list:
@@ -38,18 +38,16 @@ class _DialogTestBase(TestDataMixin, TestCase):
         self.printer.moonraker_url = "http://printer:7125"
         self.printer.operator_prompts_enabled = True
         self.printer.save()
-        self.job = PrintJob.objects.create(name="Bracket", status=PrintJob.STATUS_PRINTING, created_by=self.user)
+        self.job = PrintJob.objects.create(name="Bracket", status=PrintJob.STATUS_SLICED, created_by=self.user)
         PrintJobPart.objects.create(print_job=self.job, part=self.part, quantity=2)
         self.plate1 = PrintJobPlate.objects.create(
             print_job=self.job,
             plate_number=1,
-            status=PrintJobPlate.STATUS_PRINTING,
             gcode_file="gcode_jobs/p1.gcode",
         )
         self.plate2 = PrintJobPlate.objects.create(
             print_job=self.job,
             plate_number=2,
-            status=PrintJobPlate.STATUS_WAITING,
             gcode_file="gcode_jobs/p2.gcode",
             print_time_estimate=timedelta(hours=1, minutes=5),
         )
@@ -133,8 +131,7 @@ class DialogBuilderTests(_DialogTestBase):
 @patch("core.services.queue.get_printer_backend")
 class HandleActionTests(_DialogTestBase):
     def test_handle_review_pass_returns_next_job_dialog(self, mock_get_backend):
-        self.plate2.status = PrintJobPlate.STATUS_COMPLETED
-        self.plate2.save()
+        complete_plate(self.plate2, self.printer)
         other_plate = PrintJobPlate.objects.create(
             print_job=PrintJob.objects.create(name="Clip", status=PrintJob.STATUS_SLICED, created_by=self.user),
             plate_number=1,
@@ -150,8 +147,7 @@ class HandleActionTests(_DialogTestBase):
         mock_get_backend.assert_not_called()
         nxt.refresh_from_db()
         self.assertEqual(nxt.state, PrintQueue.STATE_WAITING)
-        self.plate1.refresh_from_db()
-        self.assertEqual(self.plate1.status, PrintJobPlate.STATUS_COMPLETED)
+        self.assertEqual(PrintJobPlate.objects.get(pk=self.plate1.pk).state, PrintJobPlate.STATE_COMPLETED)
 
     def test_handle_review_fail_requeues(self, mock_get_backend):
         entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW)
@@ -172,16 +168,18 @@ class HandleActionTests(_DialogTestBase):
     def test_handle_review_twice_already_handled(self, mock_get_backend):
         entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW)
         handle_action(self.printer, Review(entry.pk, True))
-        self.plate1.refresh_from_db()
-        completed_at = self.plate1.completed_at
+        completed_at = PrintJobPlate.objects.get(pk=self.plate1.pk).completed_at
+        self.assertIsNotNone(completed_at)
 
         dialog = handle_action(self.printer, Review(entry.pk, False))
 
         self.assertEqual(dialog.lines[0], "Already handled")
         self.assertEqual(_actions(dialog), [ShowMenu(), Dismiss()])
-        self.plate1.refresh_from_db()
-        self.assertEqual(self.plate1.status, PrintJobPlate.STATUS_COMPLETED)
-        self.assertEqual(self.plate1.completed_at, completed_at)
+        plate1 = PrintJobPlate.objects.get(pk=self.plate1.pk)
+        self.assertEqual(plate1.state, PrintJobPlate.STATE_COMPLETED)
+        self.assertEqual(plate1.completed_at, completed_at)
+        entry.refresh_from_db()
+        self.assertEqual(entry.result, PrintQueue.RESULT_PASSED)
 
     def test_handle_review_other_printer(self, mock_get_backend):
         entry = self._entry(self.plate1, PrintQueue.STATE_AWAITING_REVIEW)

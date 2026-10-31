@@ -46,7 +46,7 @@ class PrintQueueQuerySet(models.QuerySet):
 
     def active(self) -> PrintQueueQuerySet:
         """Return open attempts that keep their printer busy (printing or awaiting review)."""
-        return self.open().filter(Q(started_at__isnull=False) | Q(completed_at__isnull=False))
+        return self.filter(PrintQueue.active_q())
 
     def with_retry_count(self) -> PrintQueueQuerySet:
         """Annotate ``retry_count``: failed attempts of the plate since its last manual enqueue.
@@ -83,9 +83,10 @@ class PrintQueue(models.Model):
     * **awaiting_review** – no result, the printer reported the end.
     * **passed** / **failed** / **cancelled** – the attempt is resolved.
 
-    All transitions are methods on this model (``mark_started``,
-    ``mark_finished``, ``resolve``, ``remove``); they keep the plate's stored
-    status in sync via :meth:`PrintJobPlate.refresh_stored_status`.
+    All transitions are methods on this model (``enqueue``, ``mark_started``,
+    ``mark_finished``, ``resolve``, ``remove``).  The plate state and the job's
+    display status are derived from these rows (``PrintJobPlate.state``,
+    ``PrintJob.display_status``); nothing else is stored.
     """
 
     # Attempt result (operator verdict) -----------------------------------
@@ -280,6 +281,11 @@ class PrintQueue(models.Model):
         return self.state == self.STATE_AWAITING_REVIEW
 
     @classmethod
+    def active_q(cls) -> Q:
+        """Return a filter for open attempts that keep their printer busy (printing or awaiting review)."""
+        return Q(result="") & (Q(started_at__isnull=False) | Q(completed_at__isnull=False))
+
+    @classmethod
     def history_q(cls) -> Q:
         """Return a filter for attempts that are print history (started or resolved)."""
         return ~Q(result="") | Q(started_at__isnull=False) | Q(completed_at__isnull=False)
@@ -311,7 +317,7 @@ class PrintQueue(models.Model):
     @property
     def is_printer_busy(self) -> bool:
         """Return True if this entry's printer has an active or unreviewed job, or a start in progress."""
-        active = Q(result="") & (Q(started_at__isnull=False) | Q(completed_at__isnull=False)) & ~Q(pk=self.pk)
+        active = self.active_q() & ~Q(pk=self.pk)
         return PrintQueue.objects.filter(active | self.active_start_claim_q(), printer=self.printer).exists()
 
     # ── Transitions ─────────────────────────────────────────────────────
@@ -320,28 +326,25 @@ class PrintQueue(models.Model):
         """Record that the printer accepted the start of this attempt.
 
         Clears the start claim and the live data of a previous attempt and
-        refreshes the stored plate / job status.
+        stores the remote file name on the plate.
 
         Args:
             remote_filename: The G-code file name on the printer (stored on the plate).
             when: Start time (defaults to now).
         """
         when = when or timezone.now()
-        # Not one transaction on purpose: the printer is already printing, so
-        # the attempt's start must be recorded even if the plate/job refresh
-        # below fails (otherwise the entry could be started twice).
+        # Two separate writes on purpose: the printer is already printing, so
+        # the attempt's start must be recorded even if the plate update below
+        # fails (otherwise the entry could be started twice).
         self.started_at = when
         self.start_claimed_at = None
         self.progress = None
         self.status_updated_at = None
         self.save(update_fields=["started_at", "start_claimed_at", "progress", "status_updated_at"])
         plate = self.plate
-        if plate is not None:
-            with transaction.atomic():
-                if remote_filename:
-                    plate.remote_job_id = remote_filename
-                    plate.save(update_fields=["remote_job_id"])
-                plate.refresh_stored_status()
+        if plate is not None and remote_filename:
+            plate.remote_job_id = remote_filename
+            plate.save(update_fields=["remote_job_id"])
 
     def mark_finished(self, *, when: datetime | None = None, error: str | None = None) -> bool:
         """Record that the printer finished (or stopped) this attempt; it now awaits review.
@@ -383,7 +386,6 @@ class PrintQueue(models.Model):
         with transaction.atomic():
             max_pos = cls.objects.open().filter(printer=printer).aggregate(m=Max("position"))["m"] or 0
             entry = cls.objects.create(plate=plate, printer=printer, priority=priority, position=max_pos + 1)
-            plate.refresh_stored_status()
         return entry
 
     def resolve(self, passed: bool) -> str:
@@ -434,8 +436,6 @@ class PrintQueue(models.Model):
                     outcome = "requeued"
                 else:
                     outcome = "discarded"
-            if plate is not None:
-                plate.refresh_stored_status()
         return outcome
 
     def remove(self) -> None:
@@ -445,16 +445,12 @@ class PrintQueue(models.Model):
         attempt is kept as history with ``result=cancelled``; it never counts
         as a failed attempt and frees the plate for a new attempt.
         """
-        with transaction.atomic():
-            plate = self.plate
-            if self.started_at is None and self.completed_at is None:
-                self.delete()
-            else:
-                self.result = self.RESULT_CANCELLED
-                self.resolved_at = timezone.now()
-                self.save(update_fields=["result", "resolved_at"])
-            if plate is not None:
-                plate.refresh_stored_status()
+        if self.started_at is None and self.completed_at is None:
+            self.delete()
+        else:
+            self.result = self.RESULT_CANCELLED
+            self.resolved_at = timezone.now()
+            self.save(update_fields=["result", "resolved_at"])
 
 
 class ScheduledQueueStart(models.Model):

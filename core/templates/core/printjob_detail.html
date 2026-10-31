@@ -15,7 +15,7 @@
   <div>
     <h1 class="h3 mb-1">{{ job }}</h1>
     <p class="text-body-secondary mb-0">
-      {% include "core/includes/_job_status_badge.html" with status=job.status display=job.get_status_display %}
+      {% include "core/includes/_job_status_badge.html" with status=job.display_status display=job.get_display_status_display %}
       {% if job.machine_profile %}
       · Machine: <a href="{% url 'core:orcamachineprofile_detail' job.machine_profile.pk %}" class="text-decoration-none">{{ job.machine_profile.name }}</a>
       {% endif %}
@@ -25,7 +25,7 @@
     </p>
   </div>
   <div class="d-flex gap-2">
-    {% if job.status == 'draft' and perms.core.change_printjob %}
+    {% if perms.core.change_printjob %}
     <a href="{% url 'core:printjob_update' job.pk %}" class="btn btn-outline-secondary"><i class="bi bi-pencil me-1"></i>Edit</a>
     {% endif %}
     {% if perms.core.delete_printjob %}
@@ -65,7 +65,7 @@
                 <th>Part</th>
                 <th>Project</th>
                 <th class="text-center">Quantity</th>
-                {% if job.status == 'draft' %}<th>Actions</th>{% endif %}
+                {% if can_change_contents %}<th>Actions</th>{% endif %}
               </tr>
             </thead>
             <tbody>
@@ -74,12 +74,12 @@
                 <td><a href="{% url 'core:part_detail' jp.part.pk %}" class="text-decoration-none fw-medium">{{ jp.part.name }}</a></td>
                 <td><a href="{% url 'core:project_detail' jp.part.project.pk %}" class="text-decoration-none">{{ jp.part.project.path_label }}</a></td>
                 <td class="text-center">{{ jp.quantity }}</td>
-                {% if job.status == 'draft' %}
+                {% if can_change_contents %}
                 <td>
                   {% if perms.core.change_printjob %}
                   <form method="post" action="{% url 'core:printjob_remove_part' job_pk=job.pk job_part_pk=jp.pk %}" class="d-inline">
                     {% csrf_token %}
-                    <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove" onclick="return confirm('Remove {{ jp.part.name }} from this job?')"><i class="bi bi-x-lg"></i></button>
+                    <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove" onclick="return confirm('Remove {{ jp.part.name|escapejs }} from this job?{% if job.status != 'draft' %} The plates will be discarded and the job goes back to draft.{% endif %}')"><i class="bi bi-x-lg"></i></button>
                   </form>
                   {% endif %}
                 </td>
@@ -105,7 +105,7 @@
         <div class="row g-3">
           {% for plate in plates %}
           <div class="col-6">
-            <div class="card h-100 border{% if plate.status == 'completed' %}-success{% elif plate.status == 'failed' %}-danger{% elif plate.status == 'printing' %}-primary{% endif %}">
+            <div class="card h-100 border{% if plate.state == 'completed' %}-success{% elif plate.state == 'failed' %}-danger{% elif plate.state == 'printing' %}-primary{% elif plate.state == 'awaiting_review' %}-warning{% endif %}" data-plate-state="{{ plate.state }}">
               {% if plate.gcode_file %}
               <div class="card-img-top position-relative" style="height: 320px; background: var(--bs-tertiary-bg);">
                 <canvas class="gcode-preview-canvas w-100 h-100" data-gcode-url="{{ plate.gcode_file.url }}"{% if bed_dimensions %} data-bed-x="{{ bed_dimensions.0|floatformat:"-2" }}" data-bed-y="{{ bed_dimensions.1|floatformat:"-2" }}" data-bed-z="{{ bed_dimensions.2|floatformat:"-2" }}"{% endif %} style="display:block;"></canvas>
@@ -122,8 +122,11 @@
               <div class="card-body p-2">
                 <div class="d-flex justify-content-between align-items-center mb-1">
                   <strong>Plate {{ plate.plate_number }}</strong>
-                  {% include "core/includes/_job_status_badge.html" with status=plate.status display=plate.get_status_display %}
+                  {% include "core/includes/_job_status_badge.html" with status=plate.state display=plate.get_state_display %}
                 </div>
+                {% if plate.queue_label %}
+                <div class="small text-body-secondary mb-1 plate-queue-label"><i class="bi bi-printer me-1"></i>{{ plate.queue_label }}</div>
+                {% endif %}
                 <div class="d-flex justify-content-between text-body-secondary">
                   <small>
                     {% if plate.print_time_estimate %}<i class="bi bi-clock me-1"></i>{{ plate.print_time_estimate|duration_format }}{% endif %}
@@ -137,10 +140,28 @@
                 {% if plate.gcode_file %}
                 <a href="{{ plate.gcode_file.url }}" class="btn btn-sm btn-outline-secondary flex-fill" title="Download G-code"><i class="bi bi-download me-1"></i>G-code</a>
                 {% endif %}
-                {% if plate.gcode_file and perms.core.can_manage_print_queue %}{% if plate.status == 'waiting' or plate.status == 'failed' %}
-                <a href="{% url 'core:printqueue_create' %}?plate={{ plate.pk }}" class="btn btn-sm btn-outline-success flex-fill" title="Add to Queue"><i class="bi bi-list-ol me-1"></i>Queue</a>
-                {% endif %}{% endif %}
+                {% if plate.is_queueable and perms.core.can_manage_print_queue %}
+                <a href="{% url 'core:printqueue_create' %}?plate={{ plate.pk }}" class="btn btn-sm btn-outline-success flex-fill plate-queue-button" title="Add to Queue"><i class="bi bi-list-ol me-1"></i>Queue</a>
+                {% endif %}
               </div>
+              {% if plate.resolved_attempts %}
+              <div class="card-footer p-2">
+                <div class="small fw-medium mb-1"><i class="bi bi-clock-history me-1"></i>Print history</div>
+                <table class="table table-sm small mb-0 plate-attempt-history">
+                  <thead><tr><th>Printer</th><th>Started</th><th>Ended</th><th>Result</th></tr></thead>
+                  <tbody>
+                    {% for attempt in plate.resolved_attempts %}
+                    <tr>
+                      <td>{{ attempt.printer.name|default:"—" }}</td>
+                      <td>{% if attempt.started_at %}{{ attempt.started_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}</td>
+                      <td>{% if attempt.completed_at %}{{ attempt.completed_at|date:"Y-m-d H:i" }}{% elif attempt.resolved_at %}{{ attempt.resolved_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}</td>
+                      <td>{% include "core/includes/_job_status_badge.html" with status=attempt.result display=attempt.get_state_display %}</td>
+                    </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              {% endif %}
             </div>
           </div>
           {% endfor %}
@@ -158,7 +179,9 @@
       </div>
       <div class="card-body">
         <dl class="row mb-0">
-          <dt class="col-sm-5">Status</dt>
+          <dt class="col-sm-5">Print Status</dt>
+          <dd class="col-sm-7">{{ job.get_display_status_display }}</dd>
+          <dt class="col-sm-5">Slicing Status</dt>
           <dd class="col-sm-7">{{ job.get_status_display }}</dd>
           <dt class="col-sm-5">Machine</dt>
           <dd class="col-sm-7">
@@ -194,13 +217,13 @@
           <dd class="col-sm-7">{{ job.plate_count }}</dd>
           <dt class="col-sm-5">Created</dt>
           <dd class="col-sm-7">{{ job.created_at|timesince }} ago</dd>
-          {% if job.started_at %}
+          {% if job_started_at %}
           <dt class="col-sm-5">Started</dt>
-          <dd class="col-sm-7">{{ job.started_at|timesince }} ago</dd>
+          <dd class="col-sm-7">{{ job_started_at|timesince }} ago</dd>
           {% endif %}
-          {% if job.completed_at %}
+          {% if job_completed_at %}
           <dt class="col-sm-5">Completed</dt>
-          <dd class="col-sm-7">{{ job.completed_at|timesince }} ago</dd>
+          <dd class="col-sm-7">{{ job_completed_at|timesince }} ago</dd>
           {% endif %}
         </dl>
       </div>
@@ -241,8 +264,8 @@
         </form>
         {% endif %}
 
-        {% if job.status == 'sliced' and perms.core.can_manage_print_queue %}
-        <a href="{% url 'core:printqueue_create' %}?plate={{ plates.first.pk }}" class="btn btn-success w-100">
+        {% if first_queueable_plate and perms.core.can_manage_print_queue %}
+        <a href="{% url 'core:printqueue_create' %}?plate={{ first_queueable_plate.pk }}" class="btn btn-success w-100">
           <i class="bi bi-list-ol me-1"></i>Add to Print Queue
         </a>
         {% endif %}

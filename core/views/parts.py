@@ -8,6 +8,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.db import transaction
+from django.db.models import Count, ProtectedError
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
@@ -118,14 +119,13 @@ class PartDetailView(LoginRequiredMixin, DetailView):
             instantiation=True,
         )
 
-        # Draft jobs the user can add this part to — those whose pinned preset is the
-        # part's effective (bottom-up resolved) preset, and whose filament matches.
+        # Jobs the user can add this part to (not printing yet, not slicing) — those whose
+        # pinned preset is the part's effective (bottom-up resolved) preset, and whose
+        # filament matches.  Adding to a sliced job puts it back to draft.
         allowed_preset_ids = {part.effective_print_preset_id} - {None}
         effective_filament_id = part.spoolman_filament_id
 
-        draft_jobs = PrintJob.objects.filter(
-            status=PrintJob.STATUS_DRAFT,
-        ).prefetch_related("job_parts__part")
+        draft_jobs = PrintJob.objects.contents_editable().prefetch_related("job_parts__part")
 
         compatible_jobs = []
         for job in draft_jobs:
@@ -144,6 +144,8 @@ class PartDetailView(LoginRequiredMixin, DetailView):
                 compatible_jobs.append(job)
 
         context["draft_jobs"] = compatible_jobs
+        # One row per job (PrintJobPart is unique per job+part); plate count as an annotation, no N+1.
+        context["part_jobs"] = part.print_jobs.with_display_status().annotate(n_plates=Count("plates"))
 
         # Spoolman filament name lookup
         spoolman_filament_name = ""
@@ -265,38 +267,45 @@ class PartUpdateView(_SpoolmanFilamentMixin, ProjectManageMixin, UpdateView):
 class PartDeleteView(ProjectManageMixin, DeleteView):
     """Delete a part.
 
-    Its print history (``PrintJobPart`` rows) goes with it; finished jobs are kept.
-    The delete is refused while an unfinished print job contains the part; the
-    check runs again inside the delete transaction.
+    Refused while an unfinished print job contains the part, and while the part
+    has print history (it is in a job with print attempts) — the history must be
+    kept.  The checks run again inside the delete transaction.
     """
 
     model = Part
     template_name = "core/part_confirm_delete.html"
 
     def get_context_data(self, **kwargs) -> dict:
-        """Add the part's print history count and the jobs that block the delete."""
+        """Add the jobs with the part's print history and the unfinished jobs that block the delete."""
         context = super().get_context_data(**kwargs)
-        context["print_history"] = self.object.job_entries.count()
+        context["history_jobs"] = list(self.object.history_jobs().order_by("-created_at"))
         context["blocking_jobs"] = list(self.object.blocking_jobs().order_by("-created_at"))
         return context
 
     def form_valid(self, form: django_forms.Form) -> HttpResponse:
-        """Delete the part unless an unfinished print job still uses it.
+        """Delete the part unless print history or an unfinished print job still needs it.
 
         Returns:
             Redirect to the part's project, or back to the confirmation page when
             the delete is blocked.
         """
         with transaction.atomic():
+            if self.object.has_print_history():
+                messages.error(self.request, "This part cannot be deleted: it has print history, which must be kept.")
+                return redirect("core:part_delete", pk=self.object.pk)
             if self.object.blocking_jobs().exists():
                 messages.error(
                     self.request,
                     "This part cannot be deleted while unfinished print jobs contain it. "
-                    "Finish, cancel or remove those jobs first.",
+                    "Finish or remove those jobs first.",
                 )
                 return redirect("core:part_delete", pk=self.object.pk)
             project_id = self.object.project_id
-            self.object.delete()
+            try:
+                self.object.delete()
+            except ProtectedError:
+                messages.error(self.request, "This part cannot be deleted: print jobs still contain it.")
+                return redirect("core:part_delete", pk=self.object.pk)
         messages.success(self.request, "Part deleted.")
         return redirect("core:project_detail", pk=project_id)
 

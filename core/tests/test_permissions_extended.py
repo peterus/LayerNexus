@@ -39,7 +39,6 @@ class PrinterControlMixinTests(_RBACTestBase):
         self.plate = PrintJobPlate.objects.create(
             print_job=self.job,
             plate_number=1,
-            status=PrintJobPlate.STATUS_WAITING,
         )
         self.queue_entry = PrintQueue.objects.create(
             plate=self.plate,

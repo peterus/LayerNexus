@@ -7,7 +7,7 @@ from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import QuerySet
+from django.db.models import ProtectedError, QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
@@ -27,8 +27,8 @@ from core.models import (
     HardwareShoppingItem,
     OrcaPrintPreset,
     Part,
+    PrinterProfile,
     PrintJob,
-    PrintJobPart,
     Project,
     SpoolmanFilamentMapping,
 )
@@ -99,9 +99,7 @@ class ProjectDetailView(LoginRequiredMixin, DetailView):
         # job contains a part of this subtree.
         subtree_ids = project.subtree_ids()
         has_active_job_parts: bool = (
-            PrintJobPart.objects.filter(part__project_id__in=subtree_ids)
-            .exclude(print_job__status__in=PrintJob.TERMINAL_STATUSES)
-            .exists()
+            PrintJob.objects.filter(job_parts__part__project_id__in=subtree_ids).unfinished().exists()
         )
         context["build_progress_expanded"] = build_progress["printed"] > 0 or has_active_job_parts
 
@@ -262,37 +260,51 @@ class ProjectDeleteView(ProjectManageMixin, DeleteView):
 
     Sub-projects, parts, documents and hardware assignments go with it (CASCADE).
     The delete is refused while any unfinished print job contains a part of the
-    subtree; the check runs again inside the delete transaction.
+    subtree, and while a part of the subtree has print history (it is in a job
+    with print attempts) — the history must be kept.  The checks run again
+    inside the delete transaction.
     """
 
     model = Project
     template_name = "core/project_confirm_delete.html"
 
     def get_context_data(self, **kwargs) -> dict:
-        """Add the deletion counts and the jobs that block the delete."""
+        """Add the deletion counts, the blocking jobs and the parts with print history."""
         context = super().get_context_data(**kwargs)
         ids = self.object.subtree_ids()
         context["summary"] = self.object.deletion_summary(ids)
         context["blocking_jobs"] = list(self.object.blocking_jobs(ids).order_by("-created_at"))
+        context["history_parts"] = list(self.object.history_blocking_parts(ids).order_by("name"))
         return context
 
     def form_valid(self, form: django_forms.Form) -> HttpResponse:
-        """Delete the subtree unless an unfinished print job still uses it.
+        """Delete the subtree unless an unfinished print job or print history still needs it.
 
         Returns:
             Redirect to the parent project (or the project list for a root), or
             back to the confirmation page when the delete is blocked.
         """
         with transaction.atomic():
-            if self.object.blocking_jobs().exists():
+            ids = self.object.subtree_ids()
+            if self.object.history_blocking_parts(ids).exists():
+                messages.error(
+                    self.request,
+                    "This project cannot be deleted: parts of it have print history, which must be kept.",
+                )
+                return redirect("core:project_delete", pk=self.object.pk)
+            if self.object.blocking_jobs(ids).exists():
                 messages.error(
                     self.request,
                     "This project cannot be deleted while unfinished print jobs contain its parts. "
-                    "Finish, cancel or remove those jobs first.",
+                    "Finish or remove those jobs first.",
                 )
                 return redirect("core:project_delete", pk=self.object.pk)
             parent_id = self.object.parent_id
-            self.object.delete()
+            try:
+                self.object.delete()
+            except ProtectedError:
+                messages.error(self.request, "This project cannot be deleted: print jobs still contain its parts.")
+                return redirect("core:project_delete", pk=self.object.pk)
         messages.success(self.request, "Project deleted.")
         if parent_id is not None:
             return redirect("core:project_detail", pk=parent_id)
@@ -320,10 +332,14 @@ class ProjectCostView(LoginRequiredMixin, DetailView):
             part_costs = {"part": part, "quantity": qty, "cost": None}
             if part.filament_used_grams and part.estimated_print_time:
                 hours = part.estimated_print_time.total_seconds() / 3600
-                # Try to find a cost profile from recent print jobs
-                recent_job = part.print_jobs.filter(printer__isnull=False).first()
-                if recent_job and hasattr(recent_job.printer, "cost_profile"):
-                    cp = recent_job.printer.cost_profile
+                # Try to find a cost profile from the printer of the part's latest print attempt
+                printer = (
+                    PrinterProfile.objects.filter(queue__plate__print_job__job_parts__part=part)
+                    .order_by("-queue__pk")
+                    .first()
+                )
+                if printer is not None and hasattr(printer, "cost_profile"):
+                    cp = printer.cost_profile
                     part_costs["cost"] = cp.calculate_print_cost(
                         hours * qty,
                         part.filament_used_grams * qty,

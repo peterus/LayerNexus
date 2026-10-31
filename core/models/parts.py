@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
-from django.db.models import CheckConstraint, Q, QuerySet, Sum, prefetch_related_objects
+from django.db.models import CheckConstraint, Exists, OuterRef, Q, QuerySet, Sum, prefetch_related_objects
 
 from core.models.file_copy import CopiedFiles, duplicate_field_file
 
@@ -20,13 +20,16 @@ def _job_fully_printed(job: PrintJob) -> bool:
     """Return whether every plate of a job (from the prefetch cache) is completed.
 
     Args:
-        job: Print job whose ``plates`` are already prefetched.
+        job: Print job whose ``plates`` are already prefetched (with their
+            derived state, see :meth:`Project.aggregate_prefetch_lookups`).
 
     Returns:
         ``True`` if the job has at least one plate and all of them are completed.
     """
+    from core.models.printing import PrintJobPlate
+
     plates = job.plates.all()
-    return bool(plates) and all(plate.status == "completed" for plate in plates)
+    return bool(plates) and all(plate.state == PrintJobPlate.STATE_COMPLETED for plate in plates)
 
 
 class Part(models.Model):
@@ -162,12 +165,27 @@ class Part(models.Model):
         :meth:`Project.blocking_jobs`).
 
         Returns:
-            Distinct queryset of :class:`~core.models.printing.PrintJob` rows whose
-            status is not in :attr:`PrintJob.TERMINAL_STATUSES`.
+            Distinct queryset of :class:`~core.models.printing.PrintJob` rows that
+            are not finished (display status not in
+            :attr:`PrintJob.FINISHED_DISPLAY_STATUSES`).
         """
         from core.models.printing import PrintJob
 
-        return PrintJob.objects.filter(job_parts__part=self).exclude(status__in=PrintJob.TERMINAL_STATUSES).distinct()
+        # ``pk__in`` instead of a join: no row fan-out, so the display-status subqueries run once per job.
+        return PrintJob.objects.filter(pk__in=self.job_entries.values("print_job_id")).unfinished()
+
+    def history_jobs(self) -> QuerySet[PrintJob]:
+        """Return the print jobs with print attempts that contain this part (its print history)."""
+        from core.models.printing import PrintJob
+
+        return PrintJob.objects.filter(job_parts__part=self, plates__queue_entries__isnull=False).distinct()
+
+    def has_print_history(self) -> bool:
+        """Return True if the part is in a print job that has print attempts.
+
+        Such a part is not deletable — its print history must be kept.
+        """
+        return self.history_jobs().exists()
 
     def is_estimable(self) -> bool:
         """Return whether this part has an STL file and a resolvable print preset."""
@@ -350,7 +368,7 @@ class Part(models.Model):
         """Number of this part already printed, summed over completed print jobs.
 
         Semantics: a print job counts as *printed* for this part only once
-        **all** of its plates are ``completed`` (which part sits on which plate
+        **all** of its plates are completed — have a passed print attempt (which part sits on which plate
         is unknown, so a partially printed multi-plate job counts as nothing).
         Each qualifying job contributes this part's job ``quantity`` exactly
         **once**, no matter how many plates it has.
@@ -406,17 +424,20 @@ class Part(models.Model):
     def _fully_printed_entry_pks(self) -> QuerySet:
         """Return PKs of this part's job entries whose job has all plates completed.
 
-        Evaluated lazily as an ``IN`` subquery by the callers, so the full aggregate
-        still costs a single query.
+        A plate is completed once it has a passed print attempt.  Evaluated lazily
+        as an ``IN`` subquery by the callers, so the full aggregate still costs a
+        single query.
 
         Returns:
             Distinct ``values_list`` queryset of qualifying ``PrintJobPart`` PKs.
         """
         from core.models.printing import PrintJobPlate
+        from core.models.queue import PrintQueue
 
-        unfinished_job_ids = PrintJobPlate.objects.exclude(status=PrintJobPlate.STATUS_COMPLETED).values("print_job_id")
+        passed = PrintQueue.objects.filter(plate=OuterRef("pk"), result=PrintQueue.RESULT_PASSED)
+        unfinished_job_ids = PrintJobPlate.objects.filter(~Exists(passed)).values("print_job_id")
         return (
-            self.job_entries.filter(print_job__plates__status=PrintJobPlate.STATUS_COMPLETED)
+            self.job_entries.filter(print_job__plates__isnull=False)
             .exclude(print_job_id__in=unfinished_job_ids)
             .values_list("pk", flat=True)
             .distinct()

@@ -41,14 +41,13 @@ from core.models import (
     OrcaPrintPreset,
     Part,
     PrinterProfile,
-    PrintJob,
     PrintJobPart,
-    PrintJobPlate,
     PrintTimeEstimate,
     Project,
     ProjectDocument,
     ProjectHardware,
 )
+from core.tests.mixins import make_completed_job
 
 MEDIA_ROOT = tempfile.mkdtemp(prefix="layernexus-deepcopy-")
 
@@ -194,9 +193,8 @@ class DeepCopyTests(TestCase):
         self.assertEqual(HardwarePart.objects.count(), 1)
 
     def test_deep_copy_does_not_copy_history(self) -> None:
-        job = PrintJob.objects.create(name="done", status=PrintJob.STATUS_COMPLETED)
+        job = make_completed_job(name="done")
         PrintJobPart.objects.create(print_job=job, part=self.part_r, quantity=4)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         FileVersion.objects.create(part=self.part_r, file=SimpleUploadedFile("v1.stl", b"v1"), file_type="stl")
         HardwareShoppingItem.objects.create(
             project=self.root, hardware_part=self.hardware, status=HardwareShoppingItem.STATUS_ORDERED, quantity=30

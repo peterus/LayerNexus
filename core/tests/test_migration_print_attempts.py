@@ -98,9 +98,7 @@ class PrintAttemptBackfillTests(TransactionTestCase):
         self.assertEqual([a.result for a in attempts], ["failed"] * 3)
         self.assertEqual([a.is_retry for a in attempts], [False, True, True])
         self.assertEqual(current.failed_attempts_since_manual_enqueue(), 3)
-        current.refresh_stored_status()
-        current.refresh_from_db()
-        self.assertEqual(current.status, "failed")
+        self.assertEqual(current.state, CurrentPlate.STATE_FAILED)
 
     def test_backfill_translates_open_statuses(self) -> None:
         job = self._job(["waiting", "printing", "printing"], printer=self.printer)
@@ -204,7 +202,12 @@ class PrintAttemptBackfillTests(TransactionTestCase):
         from core.models import Part as CurrentPart
         from core.models import PrintJobPlate as CurrentPlate
 
-        self.assertEqual(dict(CurrentPlate.objects.values_list("pk", "status")), plate_statuses)
+        # The stored status is gone (0037); the derived state matches it.
+        derived = {"completed": "completed", "waiting": "not_queued"}
+        self.assertEqual(
+            {plate.pk: plate.state for plate in CurrentPlate.objects.all()},
+            {pk: derived[status] for pk, status in plate_statuses.items()},
+        )
         self.assertEqual(CurrentPart.objects.get(pk=part_full.pk).printed_quantity, 2)
         self.assertEqual(CurrentPart.objects.get(pk=part_partial.pk).printed_quantity, 0)
 

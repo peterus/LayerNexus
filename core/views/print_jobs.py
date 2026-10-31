@@ -9,8 +9,9 @@ from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db import models, transaction
-from django.db.models import Q, QuerySet
+from django.core.exceptions import PermissionDenied
+from django.db import DatabaseError, models, transaction
+from django.db.models import Prefetch, Q, QuerySet
 from django.forms import Form
 from django.http import HttpRequest, HttpResponse, JsonResponse, QueryDict
 from django.shortcuts import get_object_or_404, redirect
@@ -26,10 +27,13 @@ from core.models import (
     PrinterProfile,
     PrintJob,
     PrintJobPart,
+    PrintJobPlate,
+    PrintQueue,
     Project,
     SpoolmanFilamentMapping,
 )
 from core.services.filament_display import filament_badges, filament_label, mapping_lookup
+from core.services.queue import QUEUE_EXECUTION_ORDER
 from core.services.slicing_worker import _start_orcaslicer_worker
 
 logger = logging.getLogger(__name__)
@@ -63,7 +67,9 @@ class PrintJobListView(LoginRequiredMixin, ListView):
     """List print jobs with server-side filtering and pagination.
 
     Supported GET params: ``q`` (job or part name) plus the repeatable
-    multi-select params ``status``, ``printer`` (pk), ``project`` (pk of a
+    multi-select params ``status`` (derived display status, see
+    :attr:`PrintJob.display_status`), ``printer`` (pk; jobs with a print
+    attempt on that printer), ``project`` (pk of a
     top-level project; a job matches when any of its parts lies in that project's
     subtree) and ``filament`` (Spoolman filament id, or ``none``
     for jobs with a part that has no filament assigned).  Nothing selected means no filter; invalid
@@ -152,7 +158,7 @@ class PrintJobListView(LoginRequiredMixin, ListView):
 
     def _sanitize(self, params: QueryDict) -> dict[str, str | list[str]]:
         """Sanitize raw filter params (a QueryDict) into validated values."""
-        valid_status = dict(PrintJob.STATUS_CHOICES)
+        valid_status = dict(PrintJob.DISPLAY_CHOICES)
         return {
             "q": params.get("q", "").strip(),
             "status": self._unique(v.strip() for v in params.getlist("status") if v.strip() in valid_status),
@@ -173,31 +179,36 @@ class PrintJobListView(LoginRequiredMixin, ListView):
     def get_queryset(self) -> QuerySet:
         """Return the filtered, newest-first queryset."""
         filters = self._filters()
-        queryset = PrintJob.objects.select_related("machine_profile", "printer").prefetch_related(
-            "job_parts__part", "plates"
+        queryset = (
+            PrintJob.objects.with_display_status()
+            .select_related("machine_profile")
+            .prefetch_related("job_parts__part", "plates")
         )
+        # Join filters go through ``pk__in`` subqueries: no row fan-out, so no ``distinct()``
+        # (which would make the database compute the display-status subqueries for every row).
         if filters["q"]:
             queryset = queryset.filter(
-                Q(name__icontains=filters["q"]) | Q(job_parts__part__name__icontains=filters["q"])
+                Q(name__icontains=filters["q"])
+                | Q(pk__in=PrintJobPart.objects.filter(part__name__icontains=filters["q"]).values("print_job_id"))
             )
         if filters["status"]:
-            queryset = queryset.filter(status__in=filters["status"])
+            queryset = queryset.filter(annotated_display_status__in=filters["status"])
         if filters["printer"]:
-            queryset = queryset.filter(printer_id__in=[int(v) for v in filters["printer"]])
+            attempts = PrintQueue.objects.filter(printer_id__in=[int(v) for v in filters["printer"]])
+            queryset = queryset.filter(pk__in=attempts.values("plate__print_job_id"))
         if filters["project"]:
             project_ids: set[int] = set()
             for root in Project.objects.filter(pk__in=[int(v) for v in filters["project"]]):
                 project_ids |= root.subtree_ids()
-            queryset = queryset.filter(job_parts__part__project_id__in=project_ids)
-        if filters["filament"]:
-            condition = Q(
-                job_parts__part__spoolman_filament_id__in=[int(v) for v in filters["filament"] if v != self.no_filament]
+            queryset = queryset.filter(
+                pk__in=PrintJobPart.objects.filter(part__project_id__in=project_ids).values("print_job_id")
             )
+        if filters["filament"]:
+            condition = Q(part__spoolman_filament_id__in=[int(v) for v in filters["filament"] if v != self.no_filament])
             if self.no_filament in filters["filament"]:
-                # ``job_parts__isnull=False`` keeps part-less jobs out (else the OR matches their NULL outer join).
-                condition |= Q(job_parts__isnull=False, job_parts__part__spoolman_filament_id__isnull=True)
-            queryset = queryset.filter(condition)
-        return queryset.distinct().order_by("-created_at", "-pk")
+                condition |= Q(part__spoolman_filament_id__isnull=True)
+            queryset = queryset.filter(pk__in=PrintJobPart.objects.filter(condition).values("print_job_id"))
+        return queryset.order_by("-created_at", "-pk")
 
     def _filament_options(self) -> list[dict[str, str]]:
         """Return the filament filter options: filaments used by any job, plus ``none`` if some part has none."""
@@ -261,7 +272,7 @@ class PrintJobListView(LoginRequiredMixin, ListView):
         context = super().get_context_data(**kwargs)
         filters = self._filters()
         context.update(filters)
-        context["status_choices"] = PrintJob.STATUS_CHOICES
+        context["status_choices"] = PrintJob.DISPLAY_CHOICES
         context["printers"] = PrinterProfile.objects.order_by("name")
         context["projects"] = Project.objects.filter(parent__isnull=True).order_by("name")
         context["status_summary"] = self._summary(filters["status"], "All statuses")
@@ -272,9 +283,12 @@ class PrintJobListView(LoginRequiredMixin, ListView):
         self._attach_filament_badges(context["print_jobs"])
         context["filters_active"] = any(filters.values())
         context["filter_querystring"] = self._querystring(filters)
-        shown = filters["status"] or [value for value, _label in PrintJob.STATUS_CHOICES]
-        hide_completed = [s for s in shown if s != PrintJob.STATUS_COMPLETED]
-        context["show_hide_completed"] = PrintJob.STATUS_COMPLETED in shown and bool(hide_completed)
+        # "Hide finished": drop the finished display statuses (completed, partially failed).
+        shown = filters["status"] or [value for value, _label in PrintJob.DISPLAY_CHOICES]
+        hide_completed = [s for s in shown if s not in PrintJob.FINISHED_DISPLAY_STATUSES]
+        context["show_hide_completed"] = any(s in PrintJob.FINISHED_DISPLAY_STATUSES for s in shown) and bool(
+            hide_completed
+        )
         context["hide_completed_querystring"] = self._querystring({**filters, "status": hide_completed})
         return context
 
@@ -321,8 +335,9 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
     context_object_name = "job"
 
     def get_queryset(self):
-        return PrintJob.objects.select_related("machine_profile", "printer__orca_machine_profile").prefetch_related(
-            "job_parts__part__project", "plates"
+        return PrintJob.objects.select_related("machine_profile").prefetch_related(
+            "job_parts__part__project",
+            Prefetch("plates", queryset=PrintJobPlate.objects.prefetch_related("queue_entries__printer")),
         )
 
     def get_context_data(self, **kwargs):
@@ -330,14 +345,23 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
         job = self.object
         # Cover the ancestor chain so ``path_label`` renders without a query per row.
         context["job_parts"] = job.job_parts.select_related("part__project__parent__parent__parent")
-        context["plates"] = job.plates.all()
+        plates = list(job.plates.all())
+        self._attach_queue_labels(plates)
+        context["plates"] = plates
+        context["first_queueable_plate"] = next((plate for plate in plates if plate.is_queueable), None)
         context["bed_dimensions"] = job.bed_dimensions
+        context["job_started_at"] = job.started_at
+        context["job_completed_at"] = job.completed_at
         has_parts = job.job_parts.exists()
         parts_valid = has_parts and all(jp.part.stl_file for jp in job.job_parts.select_related("part"))
         has_machine = job.machine_profile is not None
+        context["can_change_contents"] = job.can_change_contents
         context["can_slice"] = job.status == PrintJob.STATUS_DRAFT and has_machine and parts_valid
         context["can_reslice"] = (
-            job.status in (PrintJob.STATUS_SLICED, PrintJob.STATUS_FAILED) and has_machine and parts_valid
+            job.status in (PrintJob.STATUS_SLICED, PrintJob.STATUS_FAILED)
+            and job.can_reslice
+            and has_machine
+            and parts_valid
         )
         context["missing_machine_profile"] = job.status == PrintJob.STATUS_DRAFT and not has_machine
 
@@ -363,9 +387,46 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
 
         return context
 
+    @staticmethod
+    def _attach_queue_labels(plates: list[PrintJobPlate]) -> None:
+        """Set ``queue_label`` on each plate with an open attempt (Topic 31).
+
+        "Queued · <printer>, position N" for a waiting attempt (N = its 1-based
+        place in the printer's execution order), otherwise "<state> · <printer>".
+        The positions of all affected printers come from one query.
+        """
+        waiting = {plate.pk: plate.open_attempt for plate in plates if plate.state == PrintJobPlate.STATE_WAITING}
+        printer_ids = {attempt.printer_id for attempt in waiting.values() if attempt.printer_id is not None}
+        rank: dict[int, int] = {}
+        per_printer: dict[int, int] = defaultdict(int)
+        for pk, printer_id in (
+            PrintQueue.objects.waiting()
+            .filter(printer_id__in=printer_ids)
+            .order_by("printer_id", *QUEUE_EXECUTION_ORDER)
+            .values_list("pk", "printer_id")
+        ):
+            per_printer[printer_id] += 1
+            rank[pk] = per_printer[printer_id]
+        for plate in plates:
+            attempt = plate.open_attempt
+            if attempt is None:
+                plate.queue_label = ""
+                continue
+            printer = attempt.printer.name if attempt.printer is not None else "unknown printer"
+            if plate.state == PrintJobPlate.STATE_WAITING and attempt.pk in rank:
+                plate.queue_label = f"{plate.get_state_display()} · {printer}, position {rank[attempt.pk]}"
+            else:
+                plate.queue_label = f"{plate.get_state_display()} · {printer}"
+
 
 class PrintJobUpdateView(RoleRequiredMixin, UpdateView):
-    """Update an existing print job (only in draft status)."""
+    """Update an existing print job.
+
+    Name and notes are always editable.  The machine profile (which decides
+    the slicing) only while :attr:`PrintJob.can_change_contents` — no print
+    attempt yet and not slicing; changing it on a sliced job discards the
+    plates and puts the job back to draft.
+    """
 
     permission_required = "core.change_printjob"
 
@@ -379,11 +440,41 @@ class PrintJobUpdateView(RoleRequiredMixin, UpdateView):
             state=OrcaMachineProfile.STATE_RESOLVED,
             instantiation=True,
         )
+        if not self.object.can_change_contents:
+            # Disabled fields ignore posted values: the profile stays as it is.
+            form.fields["machine_profile"].disabled = True
+            form.fields["machine_profile"].help_text = "Fixed once the job has print attempts (or while it is slicing)."
         return form
 
     def form_valid(self, form):
+        """Save; a changed machine profile on a sliced job discards its plates (back to draft)."""
+        job = self.object
+        if "machine_profile" not in form.changed_data:
+            # Only name / notes: write just those columns, so a concurrent slicing
+            # worker's status and stats are neither overwritten nor stale.
+            self.object = form.save(commit=False)
+            try:
+                self.object.save(update_fields=[*form.changed_data, "updated_at"])
+            except DatabaseError:
+                # update_fields affected no row: the job was deleted meanwhile.
+                messages.error(self.request, "This print job no longer exists.")
+                return redirect("core:printjob_list")
+            messages.success(self.request, "Print job updated.")
+            return redirect(self.get_success_url())
+        try:
+            with transaction.atomic():
+                # Decide on the current row (locked), not on the job loaded with the request.
+                current = job.lock_for_contents_change()
+                self.object = form.save(commit=False)
+                self.object.save(update_fields=[*form.changed_data, "updated_at"])
+                if current.status != PrintJob.STATUS_DRAFT:
+                    job.discard_slicing()
+                    messages.info(self.request, "Machine profile changed: plates discarded, the job is a draft again.")
+        except ValueError:
+            messages.error(self.request, "The machine profile can no longer be changed (print started or slicing).")
+            return redirect("core:printjob_detail", pk=job.pk)
         messages.success(self.request, "Print job updated.")
-        return super().form_valid(form)
+        return redirect(self.get_success_url())
 
     def get_success_url(self):
         return reverse("core:printjob_detail", kwargs={"pk": self.object.pk})
@@ -392,9 +483,9 @@ class PrintJobUpdateView(RoleRequiredMixin, UpdateView):
 class PrintJobDeleteView(RoleRequiredMixin, DeleteView):
     """Delete a print job.
 
-    Related plates and never-started queue entries are deleted via CASCADE.
-    A job with print history (a started or resolved attempt) is not
-    deletable — the history must be kept.
+    Only while :attr:`PrintJob.can_delete`: a job with any print attempt is not
+    deletable — its history must be kept.  A waiting, never started attempt
+    must be removed from the queue first (it is deleted then).
     """
 
     permission_required = "core.delete_printjob"
@@ -403,32 +494,41 @@ class PrintJobDeleteView(RoleRequiredMixin, DeleteView):
     template_name = "core/printjob_confirm_delete.html"
     success_url = reverse_lazy("core:printjob_list")
 
+    def get_queryset(self) -> QuerySet[PrintJob]:
+        """Annotate the display status, so the confirmation page needs no query per plate."""
+        return PrintJob.objects.with_display_status()
+
     def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
-        """Add whether the job has print history (deletion refused)."""
+        """Add whether the job has print attempts (deletion refused)."""
         context = super().get_context_data(**kwargs)
-        context["has_print_history"] = self.object.has_print_history()
+        context["has_print_history"] = not self.object.can_delete
         return context
 
     def form_valid(self, form: Form) -> HttpResponse:
-        """Delete the job unless it has print history (re-checked in the delete transaction)."""
+        """Delete the job unless it has print attempts (re-checked in the delete transaction)."""
         job = self.object
         with transaction.atomic():
-            if job.has_print_history():
-                messages.error(self.request, f"Cannot delete print job '{job}': it has print history.")
+            # Live check (not the annotation loaded with the page): an attempt may have appeared since.
+            if PrintQueue.objects.filter(plate__print_job=job).exists():
+                messages.error(
+                    self.request,
+                    f"Cannot delete print job '{job}': it has print attempts. "
+                    "Remove waiting attempts from the queue first; print history is kept.",
+                )
                 return redirect("core:printjob_detail", pk=job.pk)
             response = super().form_valid(form)
-        messages.success(
-            self.request,
-            f"Print job '{job}' deleted (including plates and queue entries).",
-        )
+        messages.success(self.request, f"Print job '{job}' deleted (including plates).")
         return response
 
 
 class AddPartToJobView(RoleRequiredMixin, View):
-    """Add a part to an existing draft job or create a new one.
+    """Add a part to an existing job (not printing yet) or create a new draft job.
+
+    Adding to a sliced (or slicing-failed) job discards its plates; the job is a
+    draft again and the user starts the next slice.
 
     POST parameters:
-        - job: PK of existing draft job, or empty for new job.
+        - job: PK of an existing job whose contents may change, or empty for a new job.
         - quantity: Number of copies to add.
     """
 
@@ -449,6 +549,10 @@ class AddPartToJobView(RoleRequiredMixin, View):
 
         job = form.cleaned_data.get("job")
         quantity = form.cleaned_data["quantity"]
+
+        if job is not None and not request.user.has_perm("core.change_printjob"):
+            # Changing an existing job may discard its slicing result — same permission as editing it.
+            raise PermissionDenied("Changing an existing print job requires the change_printjob permission.")
 
         # The job is pinned to the part's bottom-up resolved preset.
         incoming_preset_id = part.effective_print_preset_id
@@ -472,14 +576,20 @@ class AddPartToJobView(RoleRequiredMixin, View):
             )
             messages.info(request, f"New draft job '{job}' created.")
 
-        if job.status != PrintJob.STATUS_DRAFT:
-            messages.error(request, "Can only add parts to draft jobs.")
+        if not job.can_change_contents:
+            messages.error(
+                request, "Parts can only be added to jobs that have not started printing (and are not slicing)."
+            )
             return redirect("core:part_detail", pk=part.pk)
 
         # Do the compatibility check, the empty-draft pin, and the part insert in one
         # transaction so concurrent adds can't interleave ("one preset per job").
+        discarded = False
         try:
             with transaction.atomic():
+                if job.lock_for_contents_change().status != PrintJob.STATUS_DRAFT:
+                    job.discard_slicing()
+                    discarded = True
                 existing_parts = list(job.job_parts.select_related("part").all())
                 if existing_parts:
                     # Compare the resolved incoming preset against the job's pinned preset,
@@ -515,6 +625,11 @@ class AddPartToJobView(RoleRequiredMixin, View):
                 if not created:
                     job_part.quantity += quantity
                     job_part.save(update_fields=["quantity"])
+        except ValueError:
+            messages.error(
+                request, "Parts can only be added to jobs that have not started printing (and are not slicing)."
+            )
+            return redirect("core:part_detail", pk=part.pk)
         except _IncompatiblePartError:
             messages.error(
                 request,
@@ -524,6 +639,10 @@ class AddPartToJobView(RoleRequiredMixin, View):
             )
             return redirect("core:part_detail", pk=part.pk)
 
+        if discarded:
+            messages.info(
+                request, f"Plates of '{job}' discarded: the job is a draft again — slice it once it is complete."
+            )
         if created:
             messages.success(request, f"Added {quantity}× '{part.name}' to '{job}'.")
         else:
@@ -533,20 +652,36 @@ class AddPartToJobView(RoleRequiredMixin, View):
 
 
 class RemovePartFromJobView(RoleRequiredMixin, View):
-    """Remove a part from a draft print job."""
+    """Remove a part from a print job that has not started printing.
+
+    Removing it from a sliced (or slicing-failed) job discards the plates; the
+    job is a draft again.
+    """
 
     permission_required = "core.change_printjob"
 
     def post(self, request: HttpRequest, job_pk: int, job_part_pk: int) -> HttpResponse:
         """Remove a PrintJobPart entry."""
         job = get_object_or_404(PrintJob, pk=job_pk)
-        if job.status != PrintJob.STATUS_DRAFT:
-            messages.error(request, "Can only remove parts from draft jobs.")
+        refused = "Parts can only be removed from jobs that have not started printing (and are not slicing)."
+        if not job.can_change_contents:
+            messages.error(request, refused)
             return redirect("core:printjob_detail", pk=job.pk)
 
         job_part = get_object_or_404(PrintJobPart, pk=job_part_pk, print_job=job)
         part_name = job_part.part.name
-        job_part.delete()
+        discarded = False
+        try:
+            with transaction.atomic():
+                if job.lock_for_contents_change().status != PrintJob.STATUS_DRAFT:
+                    job.discard_slicing()
+                    discarded = True
+                job_part.delete()
+        except ValueError:
+            messages.error(request, refused)
+            return redirect("core:printjob_detail", pk=job.pk)
+        if discarded:
+            messages.info(request, "Plates discarded: the job is a draft again — slice it once it is complete.")
         messages.success(request, f"Removed '{part_name}' from job.")
         return redirect("core:printjob_detail", pk=job.pk)
 
@@ -709,9 +844,9 @@ class PrintJobSliceView(RoleRequiredMixin, View):
 
         with transaction.atomic():
             # Checked together with the plate delete: re-slicing deletes all
-            # plates, which must never take print history (or a starting print) along.
-            if job.has_print_history():
-                messages.error(request, "This job has print history and cannot be re-sliced.")
+            # plates, which must never take print attempts (history) along.
+            if not job.can_reslice:
+                messages.error(request, "This job has print attempts and cannot be re-sliced.")
                 return redirect("core:printjob_detail", pk=pk)
 
             # Queue for slicing via the unified OrcaSlicer worker
@@ -746,7 +881,10 @@ class SliceJobStatusView(LoginRequiredMixin, View):
             JsonResponse with status, error, and completion metadata.
         """
         job = get_object_or_404(PrintJob, pk=pk)
-        plates = list(job.plates.values("plate_number", "status", "filament_used_grams"))
+        plates = [
+            {"plate_number": plate.plate_number, "state": plate.state, "filament_used_grams": plate.filament_used_grams}
+            for plate in job.plates.with_state()
+        ]
         data = {
             "status": job.status,
             "error": job.slicing_error,

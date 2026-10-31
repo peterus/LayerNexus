@@ -1,4 +1,4 @@
-"""Tests for deleting a project subtree and the unfinished-job guard."""
+"""Tests for deleting a project subtree and the print-job guards (unfinished jobs, print history)."""
 
 from django.contrib.auth.models import Group, User
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -9,15 +9,12 @@ from core.models import (
     HardwarePart,
     Part,
     PrintJob,
-    PrintJobPart,
-    PrintJobPlate,
     Project,
     ProjectDocument,
     ProjectHardware,
 )
 from core.tests.mixins import _RBACTestBase
-
-UNFINISHED = ["draft", "pending", "slicing", "sliced", "uploading", "uploaded", "printing"]
+from core.tests.test_delete_guards import UNFINISHED, job_in_display_status
 
 
 class ProjectSubtreeDeleteTests(TestCase):
@@ -45,11 +42,8 @@ class ProjectSubtreeDeleteTests(TestCase):
     def _url(self, project: Project | None = None) -> str:
         return reverse("core:project_delete", args=[(project or self.root).pk])
 
-    def _job(self, status: str, *parts: Part) -> PrintJob:
-        job = PrintJob.objects.create(name=f"job-{status}", status=status)
-        for part in parts:
-            PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
-        return job
+    def _job(self, display_status: str, *parts: Part) -> PrintJob:
+        return job_in_display_status(display_status, *parts)
 
     def test_confirm_page_shows_counts(self) -> None:
         resp = self.client.get(self._url())
@@ -61,11 +55,18 @@ class ProjectSubtreeDeleteTests(TestCase):
         self.assertContains(resp, "3 sub-projects")
         self.assertNotContains(resp, "print history")
 
-    def test_confirm_page_warns_about_print_history(self) -> None:
-        self._job(PrintJob.STATUS_COMPLETED, self.part_deep)
+    def test_confirm_page_lists_parts_with_print_history_and_hides_submit(self) -> None:
+        """Print history now blocks the delete (was: a warning that the history goes too)."""
+        self._job(PrintJob.DISPLAY_COMPLETED, self.part_deep, self.part_sub)
+        self._job(PrintJob.DISPLAY_PARTIALLY_FAILED, self.part_deep)
+        self._job(PrintJob.DISPLAY_COMPLETED, self.sibling_part)
         resp = self.client.get(self._url())
-        self.assertEqual(resp.context["summary"]["print_history"], 1)
+        self.assertEqual(resp.context["summary"]["print_history"], 2)
+        self.assertEqual(resp.context["history_parts"], [self.part_deep, self.part_sub])
+        self.assertEqual(resp.context["blocking_jobs"], [])
         self.assertContains(resp, "print history")
+        self.assertContains(resp, reverse("core:part_detail", args=[self.part_deep.pk]))
+        self.assertNotContains(resp, "btn btn-danger")
 
     def test_delete_cascades_subtree(self) -> None:
         resp = self.client.post(self._url())
@@ -89,43 +90,45 @@ class ProjectSubtreeDeleteTests(TestCase):
                 self.assertContains(resp, "cannot be deleted")
                 job.delete()
 
-    def test_terminal_statuses_do_not_block(self) -> None:
-        for status in PrintJob.TERMINAL_STATUSES:
+    def test_finished_jobs_block_delete_as_print_history(self) -> None:
+        """Finished jobs are print history and block (was: terminal jobs did not block, history dropped)."""
+        for status in PrintJob.FINISHED_DISPLAY_STATUSES:
             with self.subTest(status=status):
                 root = Project.objects.create(name=f"R-{status}", created_by=self.user)
                 part = Part.objects.create(name=f"p-{status}", project=root)
                 job = self._job(status, part)
-                PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
-                resp = self.client.post(self._url(root))
-                self.assertRedirects(resp, reverse("core:project_list"))
-                self.assertFalse(Project.objects.filter(pk=root.pk).exists())
-                self.assertTrue(PrintJob.objects.filter(pk=job.pk).exists())
-                self.assertTrue(job.plates.exists())
-                self.assertFalse(job.job_parts.exists())
+                resp = self.client.post(self._url(root), follow=True)
+                self.assertRedirects(resp, self._url(root))
+                self.assertContains(resp, "parts of it have print history")
+                self.assertTrue(Project.objects.filter(pk=root.pk).exists())
+                self.assertTrue(job.job_parts.filter(part=part).exists())
 
     def test_mixed_job_with_outside_part_still_blocks(self) -> None:
-        self._job(PrintJob.STATUS_SLICED, self.sibling_part, self.part_sub)
+        self._job(PrintJob.DISPLAY_READY, self.sibling_part, self.part_sub)
         self.client.post(self._url())
         self.assertTrue(Project.objects.filter(pk=self.root.pk).exists())
 
     def test_post_rechecks_block(self) -> None:
         resp = self.client.get(self._url())
         self.assertEqual(resp.context["blocking_jobs"], [])
-        self._job(PrintJob.STATUS_DRAFT, self.part_root)
+        self._job(PrintJob.DISPLAY_DRAFT, self.part_root)
         self.client.post(self._url())
         self.assertTrue(Project.objects.filter(pk=self.root.pk).exists())
 
     def test_confirm_page_lists_blocking_job_links_and_hides_submit(self) -> None:
-        job = self._job(PrintJob.STATUS_PRINTING, self.part_deep)
+        job = self._job(PrintJob.DISPLAY_READY, self.part_deep)
         resp = self.client.get(self._url())
         self.assertEqual(resp.context["blocking_jobs"], [job])
+        self.assertEqual(resp.context["history_parts"], [])
         self.assertContains(resp, reverse("core:printjob_detail", args=[job.pk]))
         self.assertNotContains(resp, "btn btn-danger")
 
     def test_job_outside_subtree_does_not_block(self) -> None:
-        self._job(PrintJob.STATUS_PRINTING, self.sibling_part)
+        self._job(PrintJob.DISPLAY_PRINTING, self.sibling_part)
+        self._job(PrintJob.DISPLAY_COMPLETED, self.sibling_part)
         resp = self.client.get(self._url())
         self.assertEqual(resp.context["blocking_jobs"], [])
+        self.assertEqual(resp.context["history_parts"], [])
         self.assertContains(resp, "btn btn-danger")
 
     def test_redirects_to_parent_after_sub_delete(self) -> None:

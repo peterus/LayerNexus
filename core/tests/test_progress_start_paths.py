@@ -21,7 +21,7 @@ from core.models import PrinterProfile, PrintJob, PrintJobPlate, PrintQueue, Sch
 from core.services.moonraker_ws import snapshot_event
 from core.services.operator_dialog import StartNext, handle_action
 from core.services.scheduled_start import run_due_scheduled_starts
-from core.tests.mixins import queue_state_fields
+from core.tests.mixins import complete_plate, queue_state_fields
 
 
 @patch("core.services.queue.get_printer_backend")
@@ -34,12 +34,8 @@ class ProgressStartPathTests(TestCase):
         self.client.login(username="operator", password="testpass123")
         self.printer = PrinterProfile.objects.create(name="P1", moonraker_url="http://p1:7125", created_by=self.user)
         self.job = PrintJob.objects.create(name="Bracket", status=PrintJob.STATUS_SLICED, created_by=self.user)
-        self.plate1 = PrintJobPlate.objects.create(
-            print_job=self.job, plate_number=1, status=PrintJobPlate.STATUS_WAITING, gcode_file="gcode_jobs/p1.gcode"
-        )
-        self.plate2 = PrintJobPlate.objects.create(
-            print_job=self.job, plate_number=2, status=PrintJobPlate.STATUS_WAITING, gcode_file="gcode_jobs/p2.gcode"
-        )
+        self.plate1 = PrintJobPlate.objects.create(print_job=self.job, plate_number=1, gcode_file="gcode_jobs/p1.gcode")
+        self.plate2 = PrintJobPlate.objects.create(print_job=self.job, plate_number=2, gcode_file="gcode_jobs/p2.gcode")
 
     def _entry(self, plate: PrintJobPlate, **kwargs: Any) -> PrintQueue:
         return PrintQueue.objects.create(plate=plate, printer=self.printer, **queue_state_fields("waiting"), **kwargs)
@@ -102,11 +98,8 @@ class ProgressStartPathTests(TestCase):
         self._assert_progress_and_completion(entry)
 
     def test_remaining_plate_of_printing_job(self, mock_backend: MagicMock) -> None:
-        self.job.status = PrintJob.STATUS_PRINTING
-        self.job.started_at = timezone.now() - timedelta(hours=3)
-        self.job.save()
-        self.plate1.status = PrintJobPlate.STATUS_COMPLETED
-        self.plate1.save()
+        # Plate 1 was printed (and passed) earlier on the same printer.
+        complete_plate(self.plate1, self.printer, when=timezone.now() - timedelta(hours=3))
         entry = self._entry(self.plate2)
 
         self.client.post(reverse("core:run_queue", args=[self.printer.pk]))

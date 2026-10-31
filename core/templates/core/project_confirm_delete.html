@@ -26,16 +26,19 @@
           <li>{{ summary.documents }} document{{ summary.documents|pluralize }}</li>
           <li>{{ summary.hardware }} hardware assignment{{ summary.hardware|pluralize }}</li>
         </ul>
-        {% if summary.print_history %}
-        <div class="alert alert-warning">
-          <i class="bi bi-clock-history me-1"></i>
-          {{ summary.print_history }} print history entr{{ summary.print_history|pluralize:"y,ies" }} of these parts will be deleted too.
-          Finished print jobs themselves are kept.
+        {% if history_parts %}
+        <div class="alert alert-danger" id="print-history-block">
+          <p class="mb-2"><i class="bi bi-clock-history me-1"></i>This project cannot be deleted: {{ summary.print_history }} of its part{{ summary.print_history|pluralize }} ha{{ summary.print_history|pluralize:"s,ve" }} print history, which must be kept:</p>
+          <ul class="mb-0">
+            {% for part in history_parts %}
+            <li><a href="{% url 'core:part_detail' part.pk %}">{{ part.name }}</a></li>
+            {% endfor %}
+          </ul>
         </div>
         {% endif %}
         {% if blocking_jobs %}
         <div class="alert alert-danger">
-          <p class="mb-2"><i class="bi bi-slash-circle me-1"></i>This project cannot be deleted while these unfinished print jobs contain its parts. Finish, cancel or remove them first:</p>
+          <p class="mb-2"><i class="bi bi-slash-circle me-1"></i>This project cannot be deleted while these unfinished print jobs contain its parts. Finish or remove them first:</p>
           <ul class="mb-0">
             {% for job in blocking_jobs %}
             <li><a href="{% url 'core:printjob_detail' job.pk %}">{{ job }}</a></li>
@@ -47,7 +50,7 @@
         <form method="post">
           {% csrf_token %}
           <div class="d-flex gap-2">
-            {% if not blocking_jobs %}
+            {% if not blocking_jobs and not history_parts %}
             <button type="submit" class="btn btn-danger"><i class="bi bi-trash me-1"></i>Delete Project</button>
             {% endif %}
             <a href="{% url 'core:project_detail' project.pk %}" class="btn btn-outline-secondary">Cancel</a>

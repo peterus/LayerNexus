@@ -227,7 +227,7 @@ def review_queue_entry(entry_pk: int, passed: bool, *, printer_pk: int | None = 
             outcome=outcome,
             plate_label=plate_label,
             plate_number=plate.plate_number,
-            plates_completed=job.plates.filter(status=PrintJobPlate.STATUS_COMPLETED).count(),
+            plates_completed=job.plates.with_state().filter(annotated_state=PrintJobPlate.STATE_COMPLETED).count(),
             plate_count=job.plate_count,
             retry_count=plate.failed_attempts_since_manual_enqueue(),
             max_retries=entry.max_retries,
