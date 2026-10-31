@@ -252,7 +252,7 @@ class PlateStateDisplayTests(_PlateStateBase):
         self.assertContains(response, "plate-attempt-history", count=1)
         self.assertContains(response, start.strftime("%Y-%m-%d"))
         self.assertContains(response, "Other Printer")
-        self.assertContains(response, "Passed")
+        self.assertContains(response, '<span class="badge bg-success">Passed</span>', html=True)
         self.assertContains(response, "Failed")
 
     def test_detail_query_count_independent_of_attempts(self):

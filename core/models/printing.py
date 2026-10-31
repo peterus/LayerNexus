@@ -65,21 +65,27 @@ class PrintJobQuerySet(models.QuerySet):
             job_has_attempts=Exists(attempts),
             job_has_active_attempt=Exists(attempts.filter(PrintQueue.active_q())),
             job_plate_count=_count_subquery(plates, "print_job"),
+            # Completed = has a passed attempt: a cheap EXISTS instead of the full plate-state CASE.
             job_completed_plates=_count_subquery(
-                plate_states.filter(annotated_state=PrintJobPlate.STATE_COMPLETED), "print_job"
+                plates.filter(Exists(PrintQueue.objects.filter(plate=OuterRef("pk"), result=PrintQueue.RESULT_PASSED))),
+                "print_job",
             ),
             job_failed_plates=_count_subquery(
                 plate_states.filter(annotated_state=PrintJobPlate.STATE_FAILED), "print_job"
             ),
         )
-        no_attempts = Q(job_has_attempts=False)
+        # Nested: the slicing branch is decided once instead of repeating EXISTS in every When.
+        slicing_display = Case(
+            When(status=PrintJob.STATUS_FAILED, then=Value(PrintJob.DISPLAY_SLICING_FAILED)),
+            When(status=PrintJob.STATUS_SLICED, then=Value(PrintJob.DISPLAY_READY)),
+            When(status=PrintJob.STATUS_PENDING, then=Value(PrintJob.DISPLAY_PENDING)),
+            When(status=PrintJob.STATUS_SLICING, then=Value(PrintJob.DISPLAY_SLICING)),
+            default=Value(PrintJob.DISPLAY_DRAFT),
+            output_field=CharField(),
+        )
         return queryset.annotate(
             annotated_display_status=Case(
-                When(no_attempts & Q(status=PrintJob.STATUS_FAILED), then=Value(PrintJob.DISPLAY_SLICING_FAILED)),
-                When(no_attempts & Q(status=PrintJob.STATUS_SLICED), then=Value(PrintJob.DISPLAY_READY)),
-                When(no_attempts & Q(status=PrintJob.STATUS_PENDING), then=Value(PrintJob.DISPLAY_PENDING)),
-                When(no_attempts & Q(status=PrintJob.STATUS_SLICING), then=Value(PrintJob.DISPLAY_SLICING)),
-                When(no_attempts, then=Value(PrintJob.DISPLAY_DRAFT)),
+                When(job_has_attempts=False, then=slicing_display),
                 When(job_has_active_attempt=True, then=Value(PrintJob.DISPLAY_PRINTING)),
                 When(
                     Q(job_plate_count__gt=0, job_completed_plates=F("job_plate_count")),
