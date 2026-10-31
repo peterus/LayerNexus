@@ -319,6 +319,40 @@ class JobDetailPlateWarningTests(TestDataMixin, TestCase):
         self.assertNotContains(response, "plate-assignment-warning")
 
 
+class JobDetailPlatePartsQueryCountTests(TestDataMixin, TestCase):
+    """The job detail page shows the parts per plate without an N+1."""
+
+    def _count_queries(self, job: PrintJob) -> int:
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            response = self.client.get(reverse("core:printjob_detail", args=[job.pk]))
+        self.assertEqual(response.status_code, 200)
+        return len(ctx.captured_queries)
+
+    def test_detail_query_count_independent_of_plate_parts(self) -> None:
+        """More plates, parts and copies do not add queries; the per-plate list is rendered."""
+        self.client.login(username="testuser", password="testpass123")
+        small = make_sliced_job("Small", plates=1)
+        PrintJobPart.objects.create(print_job=small, part=self.part, quantity=1)
+        PrintJobPlatePart.objects.create(plate=small.plates.get(), part=self.part, copy_index=0)
+
+        large = make_sliced_job("Large", plates=3)
+        extra = Part.objects.create(name="Extra Part", project=self.project, quantity=1)
+        PrintJobPart.objects.create(print_job=large, part=self.part, quantity=6)
+        PrintJobPart.objects.create(print_job=large, part=extra, quantity=3)
+        for index, plate in enumerate(large.plates.all()):
+            for copy in (2 * index, 2 * index + 1):
+                PrintJobPlatePart.objects.create(plate=plate, part=self.part, copy_index=copy)
+            PrintJobPlatePart.objects.create(plate=plate, part=extra, copy_index=index)
+
+        self.assertEqual(self._count_queries(large), self._count_queries(small))
+        response = self.client.get(reverse("core:printjob_detail", args=[large.pk]))
+        self.assertContains(response, "Test Part ×2", count=3)
+        self.assertContains(response, "Extra Part ×1", count=3)
+
+
 class PlatePartHistoryGuardTests(TestCase):
     """Parts on plates with attempts are print history (not deletable)."""
 
