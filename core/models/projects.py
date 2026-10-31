@@ -243,10 +243,6 @@ class Project(models.Model):
             current = current.parent
         return None
 
-    #: Relation chain that carries everything the aggregate properties need for one node
-    #: (its parts and each part's completed-plate job info).
-    _AGGREGATE_PART_LEAF = "parts__job_entries__print_job__plates"
-
     @classmethod
     def aggregate_prefetch_lookups(cls, depth: int = 3) -> list[str | Prefetch]:
         """Prefetch lookups that keep the tree aggregate properties query-flat.
@@ -256,9 +252,9 @@ class Project(models.Model):
         and ``total_filament_grams`` traverse the project tree entirely from
         cache instead of issuing a query per node/part.
 
-        Covers, up to ``depth`` levels of ``subprojects`` nesting, the part leaf
-        (``parts__job_entries__print_job__plates``, the plates annotated with
-        their derived state) and the ``subprojects`` relation.
+        Covers, up to ``depth`` levels of ``subprojects`` nesting, the parts with
+        everything :attr:`Part.printed_quantity` counts (see
+        :meth:`Part.printed_quantity_prefetch_lookups`) and the ``subprojects`` relation.
         Levels below ``depth`` degrade gracefully to lazy queries.
 
         Args:
@@ -267,12 +263,10 @@ class Project(models.Model):
         Returns:
             List of ``prefetch_related`` lookups (strings and ``Prefetch`` objects).
         """
-        from core.models.printing import PrintJobPlate
-
         lookups: list[str | Prefetch] = []
         prefix = ""
         for _ in range(depth + 1):
-            lookups.append(Prefetch(f"{prefix}{cls._AGGREGATE_PART_LEAF}", queryset=PrintJobPlate.objects.with_state()))
+            lookups.extend(Part.printed_quantity_prefetch_lookups(f"{prefix}parts__"))
             lookups.append(f"{prefix}subprojects")
             prefix += "subprojects__"
         return lookups
@@ -336,9 +330,9 @@ class Project(models.Model):
     def history_blocking_parts(self, ids: set[int] | None = None) -> QuerySet[Part]:
         """Return the parts of this project's subtree that have print history.
 
-        A part has print history once it is in a print job with print attempts or
-        lies on a plate with attempts (see :meth:`Part.has_print_history`); the
-        project cannot be deleted then.
+        A part has print history once it is in a print job with print attempts,
+        lies on a plate with attempts or has manual printed-part records (see
+        :meth:`Part.has_print_history`); the project cannot be deleted then.
 
         Args:
             ids: Precomputed :meth:`subtree_ids`, to avoid walking the tree again.
@@ -346,6 +340,7 @@ class Project(models.Model):
         Returns:
             Queryset of the subtree's parts with print history (no duplicates).
         """
+        from core.models.parts import PrintedPartRecord
         from core.models.printing import PrintJobPlatePart
         from core.models.queue import PrintQueue
 
@@ -356,8 +351,9 @@ class Project(models.Model):
         on_attempted_plate = Exists(
             PrintJobPlatePart.objects.filter(part=OuterRef("pk"), plate__queue_entries__isnull=False)
         )
+        has_records = Exists(PrintedPartRecord.objects.filter(part=OuterRef("pk")))
         return Part.objects.filter(
-            in_attempted_job | on_attempted_plate,
+            in_attempted_job | on_attempted_plate | has_records,
             project_id__in=self.subtree_ids() if ids is None else ids,
         )
 

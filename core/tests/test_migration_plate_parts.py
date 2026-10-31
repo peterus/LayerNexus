@@ -381,17 +381,22 @@ class PlatePartsBackfillTests(TransactionTestCase):
         # Partially printed jobs now count their passed plates (more correct, never lower).
         self.assertGreater(sum(plate_rule.values()), sum(legacy.values()))
 
-    def test_current_printed_quantity_unchanged(self) -> None:
-        """PR-D does not change ``Part.printed_quantity`` (that is PR-E)."""
+    def test_current_printed_quantity_follows_plate_rule(self) -> None:
+        """After all migrations, ``Part.printed_quantity`` (PR-E) counts by the plate rule, never below legacy."""
         self._build_prod_like_data()
         legacy = self._legacy_printed()
 
         self._migrate(BACKFILL)
+        plate_rule = self._plate_rule_printed()
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        self._migrate(executor.loader.graph.leaf_nodes())
 
         from core.models import Part
 
         for part in Part.objects.all():
-            self.assertEqual(part.printed_quantity, legacy.get(part.pk, 0), part.name)
+            self.assertEqual(part.printed_quantity, plate_rule.get(part.pk, 0), part.name)
+            self.assertGreaterEqual(part.printed_quantity, legacy.get(part.pk, 0), part.name)
 
     def test_backfill_is_idempotent(self) -> None:
         """Running the backfill again creates no duplicates and keeps the flags."""
