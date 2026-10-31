@@ -15,8 +15,12 @@ from django.conf import settings
 from core.models import (
     Part,
     PrintJob,
+    PrintJobPart,
+    PrintJobPlate,
+    PrintJobPlatePart,
     SpoolmanFilamentMapping,
 )
+from core.services.gcode_objects import PlateCopyShare, assign_plate_objects, parse_gcode_object_ids
 from core.services.orcaslicer import OrcaSlicerAPIClient, OrcaSlicerError
 from core.services.slicing import _build_slicer_kwargs, _find_compatible_machine
 from core.services.threemf import ThreeMFError, create_3mf_bundle
@@ -340,7 +344,7 @@ def _estimate_part_in_background(part_pk: int) -> None:
             threemf_content = FSPath(part.stl_file.path).read_bytes()
         else:
             stl_path = FSPath(part.stl_file.path)
-            threemf_content = create_3mf_bundle([(stl_path, 1)])
+            threemf_content, _objects = create_3mf_bundle([(stl_path, 1)])
 
         slice_kwargs = _build_slicer_kwargs(
             machine_profile=machine_profile,
@@ -387,6 +391,36 @@ def _estimate_part_in_background(part_pk: int) -> None:
         logger.exception("estimate_part(%s): unexpected error", part_pk)
 
 
+def _record_plate_parts(
+    plates: dict[int, PrintJobPlate],
+    plate_shares: dict[int, list[PlateCopyShare]] | None,
+    job_parts: list[PrintJobPart],
+) -> None:
+    """Store which part copies lie on which plate.
+
+    Args:
+        plates: Plate number → the saved plate.
+        plate_shares: Result of :func:`assign_plate_objects` (``None`` = unknown, nothing stored).
+        job_parts: The job parts in bundle order (``part_index`` indexes this list).
+    """
+    if not plate_shares:
+        return
+    PrintJobPlatePart.objects.bulk_create(
+        [
+            PrintJobPlatePart(
+                plate=plates[plate_number],
+                part_id=job_parts[share.part_index].part_id,
+                copy_index=share.copy_index,
+                meshes_on_plate=share.meshes_on_plate,
+                mesh_count=share.mesh_count,
+            )
+            for plate_number, shares in plate_shares.items()
+            if plate_number in plates
+            for share in shares
+        ]
+    )
+
+
 def _slice_job_in_background(job_pk: int) -> None:
     """Slice a PrintJob via OrcaSlicer API.
 
@@ -407,15 +441,16 @@ def _slice_job_in_background(job_pk: int) -> None:
         # Status already set to SLICING by the worker loop (atomic claim)
         job = PrintJob.objects.prefetch_related("job_parts__part").get(pk=job_pk)
 
-        job_parts = job.job_parts.select_related("part__print_preset")
+        # Deterministic bundle order: the plate parts map object IDs back by position.
+        job_parts = list(job.job_parts.select_related("part__print_preset").order_by("pk"))
 
         # Build 3MF bundle from job parts
         stl_list = [(jp.part.stl_file.path, jp.quantity) for jp in job_parts]
-        threemf_content = create_3mf_bundle(stl_list)
+        threemf_content, bundle_objects = create_3mf_bundle(stl_list)
 
         # Resolve profiles
         machine_profile = job.machine_profile
-        first_part = job_parts.first().part
+        first_part = job_parts[0].part
         filament_profile = None
         if first_part.spoolman_filament_id:
             mapping = (
@@ -449,6 +484,12 @@ def _slice_job_in_background(job_pk: int) -> None:
         gcode_dir = media_root / "gcode_jobs"
         gcode_dir.mkdir(parents=True, exist_ok=True)
 
+        plate_shares = assign_plate_objects(
+            bundle_objects,
+            {plate.plate_number: parse_gcode_object_ids(plate.gcode_content) for plate in result.plates},
+        )
+        plates: dict[int, PrintJobPlate] = {}
+
         for plate_result in result.plates:
             gcode_filename = f"job_{job_pk}_plate_{plate_result.plate_number}.gcode"
             gcode_path = gcode_dir / gcode_filename
@@ -459,8 +500,6 @@ def _slice_job_in_background(job_pk: int) -> None:
 
             plate_filament = plate_result.filament_used_grams
             plate_time = plate_result.print_time_seconds
-
-            from core.models import PrintJobPlate
 
             plate = PrintJobPlate(print_job=job, plate_number=plate_result.plate_number)
             plate.gcode_file.name = str(relative)
@@ -484,6 +523,9 @@ def _slice_job_in_background(job_pk: int) -> None:
                 )
 
             plate.save()
+            plates[plate.plate_number] = plate
+
+        _record_plate_parts(plates, plate_shares, job_parts)
 
         # Update aggregate stats on the job
         job.filament_used_grams = result.total_filament_grams
@@ -492,8 +534,18 @@ def _slice_job_in_background(job_pk: int) -> None:
         )
         job.status = PrintJob.STATUS_SLICED
         job.slicing_error = ""
+        job.plate_parts_known = plate_shares is not None
         # Only the slicing columns: a concurrent name/notes edit must survive.
-        job.save(update_fields=["status", "slicing_error", "filament_used_grams", "print_time_estimate", "updated_at"])
+        job.save(
+            update_fields=[
+                "status",
+                "slicing_error",
+                "filament_used_grams",
+                "print_time_estimate",
+                "plate_parts_known",
+                "updated_at",
+            ]
+        )
         logger.info(
             "Background slicing completed for job %s (%d plates)",
             job_pk,

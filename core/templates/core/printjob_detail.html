@@ -49,6 +49,13 @@
 </div>
 {% endif %}
 
+{% if plate_warnings %}
+<div class="alert alert-warning plate-assignment-warning">
+  <i class="bi bi-exclamation-triangle me-1"></i>
+  {% for warning in plate_warnings %}{{ warning }}{% if not forloop.last %}<br>{% endif %}{% endfor %}
+</div>
+{% endif %}
+
 <div class="row g-4">
   <div class="col-lg-7">
     <!-- Parts in this job -->
@@ -127,6 +134,9 @@
                 {% if plate.queue_label %}
                 <div class="small text-body-secondary mb-1 plate-queue-label"><i class="bi bi-printer me-1"></i>{{ plate.queue_label }}</div>
                 {% endif %}
+                {% with plate_parts=plate.parts_summary %}{% if plate_parts %}
+                <div class="small text-body-secondary mb-1 plate-parts"><i class="bi bi-box me-1"></i>{{ plate_parts|join:", " }}</div>
+                {% endif %}{% endwith %}
                 <div class="d-flex justify-content-between text-body-secondary">
                   <small>
                     {% if plate.print_time_estimate %}<i class="bi bi-clock me-1"></i>{{ plate.print_time_estimate|duration_format }}{% endif %}

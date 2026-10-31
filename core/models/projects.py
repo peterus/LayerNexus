@@ -336,8 +336,9 @@ class Project(models.Model):
     def history_blocking_parts(self, ids: set[int] | None = None) -> QuerySet[Part]:
         """Return the parts of this project's subtree that have print history.
 
-        A part has print history once it is in a print job with print attempts
-        (see :meth:`Part.has_print_history`); the project cannot be deleted then.
+        A part has print history once it is in a print job with print attempts or
+        lies on a plate with attempts (see :meth:`Part.has_print_history`); the
+        project cannot be deleted then.
 
         Args:
             ids: Precomputed :meth:`subtree_ids`, to avoid walking the tree again.
@@ -346,8 +347,9 @@ class Project(models.Model):
             Distinct queryset of the subtree's parts with print history.
         """
         return Part.objects.filter(
+            Q(job_entries__print_job__plates__queue_entries__isnull=False)
+            | Q(plate_entries__plate__queue_entries__isnull=False),
             project_id__in=self.subtree_ids() if ids is None else ids,
-            job_entries__print_job__plates__queue_entries__isnull=False,
         ).distinct()
 
     def deletion_summary(self, ids: set[int] | None = None) -> dict[str, int]:

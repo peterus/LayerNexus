@@ -175,13 +175,20 @@ class Part(models.Model):
         return PrintJob.objects.filter(pk__in=self.job_entries.values("print_job_id")).unfinished()
 
     def history_jobs(self) -> QuerySet[PrintJob]:
-        """Return the print jobs with print attempts that contain this part (its print history)."""
+        """Return the print jobs with print attempts that contain this part (its print history).
+
+        A job counts if the part is one of its parts while any plate has attempts,
+        or if the part lies on a plate (plate parts) that has attempts.
+        """
         from core.models.printing import PrintJob
 
-        return PrintJob.objects.filter(job_parts__part=self, plates__queue_entries__isnull=False).distinct()
+        return PrintJob.objects.filter(
+            Q(job_parts__part=self) | Q(plates__plate_parts__part=self),
+            plates__queue_entries__isnull=False,
+        ).distinct()
 
     def has_print_history(self) -> bool:
-        """Return True if the part is in a print job that has print attempts.
+        """Return True if the part is in a print job (or on a plate) that has print attempts.
 
         Such a part is not deletable — its print history must be kept.
         """
