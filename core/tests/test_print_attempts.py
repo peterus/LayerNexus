@@ -89,15 +89,16 @@ class AttemptTransitionTests(_AttemptTestBase):
         attempt = self._attempt(start_claimed_at=timezone.now(), progress=0.7)
         attempt.mark_started(remote_filename="LN_x.gcode")
         attempt.refresh_from_db()
-        self.plate.refresh_from_db()
-        self.job.refresh_from_db()
+        plate = PrintJobPlate.objects.get(pk=self.plate.pk)
+        job = PrintJob.objects.get(pk=self.job.pk)
         self.assertEqual(attempt.state, PrintQueue.STATE_PRINTING)
         self.assertIsNone(attempt.start_claimed_at)
         self.assertIsNone(attempt.progress)
-        self.assertEqual(self.plate.status, PrintJobPlate.STATUS_PRINTING)
-        self.assertEqual(self.plate.remote_job_id, "LN_x.gcode")
-        self.assertEqual(self.job.status, PrintJob.STATUS_PRINTING)
-        self.assertIsNotNone(self.job.started_at)
+        self.assertEqual(plate.state, PrintJobPlate.STATE_PRINTING)
+        self.assertEqual(plate.started_at, attempt.started_at)
+        self.assertEqual(plate.remote_job_id, "LN_x.gcode")
+        self.assertEqual(job.display_status, PrintJob.DISPLAY_PRINTING)
+        self.assertEqual(job.started_at, attempt.started_at)
 
     def test_mark_finished_moves_to_review(self):
         attempt = self._attempt(state="printing")
@@ -119,21 +120,23 @@ class AttemptTransitionTests(_AttemptTestBase):
         attempt = self._attempt(state="awaiting_review")
         self.assertEqual(attempt.resolve(passed=True), "passed")
         attempt.refresh_from_db()
-        self.plate.refresh_from_db()
+        plate = PrintJobPlate.objects.get(pk=self.plate.pk)
         self.assertEqual(attempt.result, PrintQueue.RESULT_PASSED)
         self.assertIsNotNone(attempt.resolved_at)
-        self.assertEqual(self.plate.status, PrintJobPlate.STATUS_COMPLETED)
-        self.assertEqual(self.plate.completed_at, attempt.resolved_at)
+        self.assertEqual(plate.state, PrintJobPlate.STATE_COMPLETED)
+        self.assertEqual(plate.completed_at, attempt.resolved_at)
         self.assertFalse(PrintQueue.objects.open().exists())
 
     def test_pass_last_plate_completes_job(self):
         self._attempt(self.plate2, state="awaiting_review").resolve(passed=True)
-        self.job.refresh_from_db()
-        self.assertNotEqual(self.job.status, PrintJob.STATUS_COMPLETED)
-        self._attempt(state="awaiting_review").resolve(passed=True)
-        self.job.refresh_from_db()
-        self.assertEqual(self.job.status, PrintJob.STATUS_COMPLETED)
-        self.assertIsNotNone(self.job.completed_at)
+        job = PrintJob.objects.get(pk=self.job.pk)
+        self.assertEqual(job.display_status, PrintJob.DISPLAY_IN_PROGRESS)
+        self.assertIsNone(job.completed_at)
+        last = self._attempt(state="awaiting_review")
+        last.resolve(passed=True)
+        job = PrintJob.objects.get(pk=self.job.pk)
+        self.assertEqual(job.display_status, PrintJob.DISPLAY_COMPLETED)
+        self.assertEqual(job.completed_at, PrintQueue.objects.get(pk=last.pk).resolved_at)
 
     def test_fail_creates_retry_attempt_first_in_priority_group(self):
         attempt = self._attempt(state="awaiting_review", priority=3, position=5)
@@ -147,8 +150,7 @@ class AttemptTransitionTests(_AttemptTestBase):
         self.assertEqual(retry.printer, self.printer)
         self.assertEqual(retry.max_retries, attempt.max_retries)
         self.assertEqual(retry.state, PrintQueue.STATE_WAITING)
-        self.plate.refresh_from_db()
-        self.assertEqual(self.plate.status, PrintJobPlate.STATUS_WAITING)
+        self.assertEqual(PrintJobPlate.objects.get(pk=self.plate.pk).state, PrintJobPlate.STATE_WAITING)
         self.assertEqual(self.plate.failed_attempts_since_manual_enqueue(), 1)
 
     def test_fail_after_max_failures_marks_plate_failed_and_creates_no_retry(self):
@@ -163,8 +165,7 @@ class AttemptTransitionTests(_AttemptTestBase):
         self.assertEqual(outcomes, ["requeued", "requeued", "discarded"])
         self.assertFalse(PrintQueue.objects.open().filter(plate=self.plate).exists())
         self.assertEqual(self.plate.queue_entries.filter(result=PrintQueue.RESULT_FAILED).count(), 3)
-        self.plate.refresh_from_db()
-        self.assertEqual(self.plate.status, PrintJobPlate.STATUS_FAILED)
+        self.assertEqual(PrintJobPlate.objects.get(pk=self.plate.pk).state, PrintJobPlate.STATE_FAILED)
 
     def test_manual_requeue_resets_failure_counter(self):
         now = timezone.now()
@@ -183,15 +184,12 @@ class AttemptTransitionTests(_AttemptTestBase):
 
     def test_remove_started_marks_cancelled_and_frees_plate(self):
         attempt = self._attempt(state="printing")
-        self.plate.refresh_stored_status()
-        self.plate.refresh_from_db()
-        self.assertEqual(self.plate.status, PrintJobPlate.STATUS_PRINTING)
+        self.assertEqual(PrintJobPlate.objects.get(pk=self.plate.pk).state, PrintJobPlate.STATE_PRINTING)
         attempt.remove()
         attempt.refresh_from_db()
-        self.plate.refresh_from_db()
         self.assertEqual(attempt.result, PrintQueue.RESULT_CANCELLED)
         self.assertIsNotNone(attempt.resolved_at)
-        self.assertEqual(self.plate.status, PrintJobPlate.STATUS_WAITING)
+        self.assertEqual(PrintJobPlate.objects.get(pk=self.plate.pk).state, PrintJobPlate.STATE_NOT_QUEUED)
         # The plate is free again: a new open attempt is allowed.
         self._attempt()
 
@@ -199,8 +197,8 @@ class AttemptTransitionTests(_AttemptTestBase):
         for _ in range(3):
             self._attempt(state="printing", max_retries=1).remove()
         self.assertEqual(self.plate.failed_attempts_since_manual_enqueue(), 0)
-        self.plate.refresh_from_db()
-        self.assertEqual(self.plate.status, PrintJobPlate.STATUS_WAITING)
+        # Cancelled attempts never make the plate "failed" (max_retries=1 would otherwise trigger it).
+        self.assertEqual(PrintJobPlate.objects.get(pk=self.plate.pk).state, PrintJobPlate.STATE_NOT_QUEUED)
 
     def test_failed_retry_counts_from_last_manual_attempt_only(self):
         self._attempt(result=PrintQueue.RESULT_FAILED, resolved_at=timezone.now(), state="awaiting_review")
@@ -315,7 +313,7 @@ class AttemptReaderTests(_AttemptTestBase):
         resp = self.client.get(reverse("core:farm_dashboard"))
         card = next(c for c in resp.context["printer_cards"] if c["printer"] == self.printer)
         self.assertEqual(card["state"], "idle")
-        self.assertEqual(resp.context["completed_today"], 0)  # stored plate status untouched by fixture
+        self.assertEqual(resp.context["completed_today"], 1)  # derived from the attempt passed today
         self._attempt(self.plate2, state="awaiting_review")
         resp = self.client.get(reverse("core:farm_dashboard"))
         card = next(c for c in resp.context["printer_cards"] if c["printer"] == self.printer)
@@ -340,12 +338,9 @@ class AttemptReaderTests(_AttemptTestBase):
                 resolved_at=timezone.now(),
                 is_retry=index > 0,
             )
-        self.plate.refresh_stored_status()
-        self.plate.refresh_from_db()
-        self.assertEqual(self.plate.status, PrintJobPlate.STATUS_FAILED)
+        self.assertEqual(PrintJobPlate.objects.get(pk=self.plate.pk).state, PrintJobPlate.STATE_FAILED)
         PrintQueue.enqueue(plate=self.plate, printer=self.printer)
-        self.plate.refresh_from_db()
-        self.assertEqual(self.plate.status, PrintJobPlate.STATUS_WAITING)
+        self.assertEqual(PrintJobPlate.objects.get(pk=self.plate.pk).state, PrintJobPlate.STATE_WAITING)
         self.assertEqual(self.plate.failed_attempts_since_manual_enqueue(), 0)
 
 
@@ -377,7 +372,7 @@ class RetryCountConsistencyTests(_AttemptTestBase):
 
 
 class PrintHistoryDeleteGuardTests(_AttemptTestBase):
-    """Jobs and plates with print history are not deleted or re-sliced by any path."""
+    """Jobs and plates with print attempts (history) are not deleted or re-sliced by any path."""
 
     def setUp(self):
         super().setUp()
@@ -392,13 +387,30 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
         resp = self.client.post(url, follow=True)
         self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
         self.assertTrue(PrintQueue.objects.filter(pk=self.attempt.pk).exists())
-        self.assertIn("it has print history", " ".join(str(m) for m in resp.context["messages"]))
+        self.assertIn("it has print attempts", " ".join(str(m) for m in resp.context["messages"]))
 
-    def test_job_with_only_waiting_attempt_is_deletable(self):
+    def test_job_with_only_waiting_attempt_not_deletable(self):
+        """Any attempt — even a waiting one that never started — blocks deleting the job."""
         from django.urls import reverse
 
         self.attempt.delete()
-        self._attempt()
+        waiting = self._attempt()
+        url = reverse("core:printjob_delete", args=[self.job.pk])
+        self.assertContains(self.client.get(url), "Cannot delete this print job")
+        resp = self.client.post(url, follow=True)
+        self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
+        self.assertTrue(PrintQueue.objects.filter(pk=waiting.pk).exists())
+        self.assertIn("it has print attempts", " ".join(str(m) for m in resp.context["messages"]))
+
+    def test_job_deletable_after_waiting_attempt_removed(self):
+        """Removing the only (never started) attempt from the queue makes the job deletable again."""
+        from django.urls import reverse
+
+        self.attempt.delete()
+        waiting = self._attempt()
+        waiting.remove()
+        self.assertFalse(PrintQueue.objects.filter(pk=waiting.pk).exists())
+        self.assertTrue(PrintJob.objects.get(pk=self.job.pk).can_delete)
         resp = self.client.post(reverse("core:printjob_delete", args=[self.job.pk]))
         self.assertEqual(resp.status_code, 302)
         self.assertFalse(PrintJob.objects.filter(pk=self.job.pk).exists())
@@ -429,7 +441,7 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
     def test_reslice_refused_with_history(self):
         self._make_sliceable()
         resp, worker = self._post_slice()
-        self.assertIn("has print history and cannot be re-sliced", " ".join(str(m) for m in resp.context["messages"]))
+        self.assertIn("has print attempts and cannot be re-sliced", " ".join(str(m) for m in resp.context["messages"]))
         worker.assert_not_called()
         self.assertTrue(PrintJobPlate.objects.filter(pk=self.plate.pk).exists())
         self.job.refresh_from_db()
@@ -458,6 +470,21 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
         self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
         self.assertTrue(PrintQueue.objects.filter(pk=self.attempt.pk).exists())
 
+    def test_admin_cannot_delete_job_or_plate_with_only_waiting_attempt(self):
+        """The admin refuses the delete for any attempt, not only for started or resolved ones."""
+        from django.contrib.auth.models import User
+        from django.urls import reverse
+
+        User.objects.filter(pk=self.user.pk).update(is_staff=True, is_superuser=True)
+        self.attempt.delete()
+        waiting = self._attempt()
+        resp = self.client.post(reverse("admin:core_printjob_delete", args=[self.job.pk]), {"post": "yes"})
+        self.assertEqual(resp.status_code, 403)
+        resp = self.client.post(reverse("admin:core_printjobplate_delete", args=[self.plate.pk]), {"post": "yes"})
+        self.assertEqual(resp.status_code, 403)
+        self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
+        self.assertTrue(PrintQueue.objects.filter(pk=waiting.pk).exists())
+
     def test_job_with_print_start_in_progress_not_deletable_or_resliceable(self):
         from django.urls import reverse
 
@@ -481,7 +508,7 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
         self.assertEqual(resp.status_code, 403)
         self.assertTrue(PrintQueue.objects.filter(pk=claimed.pk).exists())
 
-    def test_admin_delete_waiting_attempt_refreshes_plate(self):
+    def test_admin_delete_waiting_attempt_restores_failed_plate(self):
         from django.contrib.auth.models import User
         from django.urls import reverse
 
@@ -495,12 +522,12 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
                 is_retry=index > 0,
             )
         waiting = PrintQueue.enqueue(plate=self.plate2, printer=self.printer)
-        self.plate2.refresh_from_db()
-        self.assertEqual(self.plate2.status, PrintJobPlate.STATUS_WAITING)
+        self.assertEqual(PrintJobPlate.objects.get(pk=self.plate2.pk).state, PrintJobPlate.STATE_WAITING)
         resp = self.client.post(reverse("admin:core_printqueue_delete", args=[waiting.pk]), {"post": "yes"})
         self.assertEqual(resp.status_code, 302)
-        self.plate2.refresh_from_db()
-        self.assertEqual(self.plate2.status, PrintJobPlate.STATUS_FAILED)
+        self.assertFalse(PrintQueue.objects.filter(pk=waiting.pk).exists())
+        # Without the manual enqueue the last retry cycle counts again: the plate is failed.
+        self.assertEqual(PrintJobPlate.objects.get(pk=self.plate2.pk).state, PrintJobPlate.STATE_FAILED)
 
     def test_admin_history_fields_readonly(self):
         from core.admin import PrintQueueAdmin
@@ -531,7 +558,7 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
         self.assertContains(resp, "already has an open print attempt")
         self.assertEqual(PrintQueue.objects.open().filter(plate=self.plate).count(), 1)
 
-    def test_admin_add_refreshes_plate_and_rejects_inactive_printer(self):
+    def test_admin_add_resets_failed_plate_and_rejects_inactive_printer(self):
         from django.urls import reverse
 
         from core.models import PrinterProfile
@@ -545,7 +572,7 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
                 resolved_at=timezone.now(),
                 is_retry=index > 0,
             )
-        self.plate2.refresh_stored_status()
+        self.assertEqual(PrintJobPlate.objects.get(pk=self.plate2.pk).state, PrintJobPlate.STATE_FAILED)
         inactive = PrinterProfile.objects.create(name="Off", is_active=False)
         data = {**self._admin_form_data(self.plate2), "printer": inactive.pk}
         resp = self.client.post(reverse("admin:core_printqueue_add"), data)
@@ -555,8 +582,8 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
         self.assertEqual(resp.status_code, 302)
         added = PrintQueue.objects.open().get(plate=self.plate2)
         self.assertFalse(added.is_retry)
-        self.plate2.refresh_from_db()
-        self.assertEqual(self.plate2.status, PrintJobPlate.STATUS_WAITING)  # manual enqueue resets "failed"
+        # A manual (admin) enqueue resets "failed".
+        self.assertEqual(PrintJobPlate.objects.get(pk=self.plate2.pk).state, PrintJobPlate.STATE_WAITING)
 
     def test_admin_change_cannot_move_attempt_or_touch_managed_fields(self):
         from django.urls import reverse

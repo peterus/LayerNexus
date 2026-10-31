@@ -172,22 +172,22 @@ class UploadToPrinterView(PrinterControlMixin, View):
     """Upload a plate's G-code to the printer via the configured backend."""
 
     def post(self, request, plate_pk):
-        plate = get_object_or_404(
-            PrintJobPlate.objects.select_related("print_job__printer"),
-            pk=plate_pk,
-        )
+        plate = get_object_or_404(PrintJobPlate.objects.select_related("print_job"), pk=plate_pk)
         job = plate.print_job
 
         if not plate.gcode_file:
             messages.error(request, "No G-code file for this plate.")
             return redirect("core:printjob_detail", pk=job.pk)
 
-        if not job.printer:
-            messages.error(request, "No printer assigned to this job.")
+        # The printer of the plate's latest attempt (jobs carry no printer of their own).
+        attempt = plate.queue_entries.filter(printer__isnull=False).select_related("printer").order_by("-pk").first()
+        printer = attempt.printer if attempt is not None else None
+        if printer is None:
+            messages.error(request, "No printer known for this plate — add it to a printer's queue first.")
             return redirect("core:printjob_detail", pk=job.pk)
 
         try:
-            backend = get_printer_backend(job.printer)
+            backend = get_printer_backend(printer)
             # Upload only: the plate status follows print attempts (queue), not uploads.
             backend.upload_gcode(plate.gcode_file.path)
             messages.success(request, f"G-code for plate {plate.plate_number} uploaded to printer.")

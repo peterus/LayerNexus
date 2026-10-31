@@ -62,7 +62,7 @@
         <h5 class="mb-0"><i class="bi bi-list-task me-2"></i>Print Jobs</h5>
       </div>
       <div class="card-body">
-        {% if part.print_jobs.all %}
+        {% if part_jobs %}
         <div class="table-responsive">
           <table class="table table-sm align-middle mb-0">
             <thead>
@@ -75,11 +75,11 @@
               </tr>
             </thead>
             <tbody>
-              {% for job in part.print_jobs.all %}
+              {% for job in part_jobs %}
               <tr>
                 <td><a href="{% url 'core:printjob_detail' job.pk %}" class="text-decoration-none">{{ job }}</a></td>
                 <td>
-                  {% include "core/includes/_job_status_badge.html" with status=job.status display=job.get_status_display %}
+                  {% include "core/includes/_job_status_badge.html" with status=job.display_status display=job.get_display_status_display %}
                 </td>
                 <td class="text-center">{{ job.plate_count }}</td>
                 <td><small>{{ job.created_at|timesince }} ago</small></td>

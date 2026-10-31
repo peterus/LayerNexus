@@ -5,9 +5,9 @@ from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
-from core.models import Part, PrintJob, PrintJobPart, SpoolmanFilamentMapping
+from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate, SpoolmanFilamentMapping
 from core.services.filament_display import filament_label, safe_hex
-from core.tests.mixins import TestDataMixin
+from core.tests.mixins import TestDataMixin, complete_plate
 
 
 class FilamentDisplayHelperTests(TestCase):
@@ -130,8 +130,9 @@ class PrintJobListFilamentTests(TestDataMixin, TestCase):
         self.assertEqual(pks, {self.job_none.pk, self.job_a.pk, self.job_mixed.pk})
 
     def test_filter_combined_with_status(self):
-        self.job_a.status = PrintJob.STATUS_COMPLETED
+        self.job_a.status = PrintJob.STATUS_SLICED
         self.job_a.save()
+        complete_plate(PrintJobPlate.objects.create(print_job=self.job_a, plate_number=1), self.printer)
         self.assertEqual([j.pk for j in self._jobs(filament="1", status="completed")], [self.job_a.pk])
 
     def test_invalid_filament_ignored(self):

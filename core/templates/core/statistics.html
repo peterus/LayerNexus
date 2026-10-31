@@ -184,7 +184,7 @@
         {% if jobs_by_status %}
         {% for item in jobs_by_status %}
         <div class="d-flex justify-content-between align-items-center mb-2">
-          {% include "core/includes/_job_status_badge.html" with status=item.status display=item.status %}
+          {% include "core/includes/_job_status_badge.html" with status=item.status display=item.label %}
           <span>{{ item.count }}</span>
         </div>
         {% endfor %}

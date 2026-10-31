@@ -237,11 +237,10 @@ class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
             operator_prompts_enabled=True,
             created_by=self.user,
         )
-        self.job = PrintJob.objects.create(name="Bracket", status=PrintJob.STATUS_PRINTING, created_by=self.user)
+        self.job = PrintJob.objects.create(name="Bracket", status=PrintJob.STATUS_SLICED, created_by=self.user)
         self.plate = PrintJobPlate.objects.create(
             print_job=self.job,
             plate_number=1,
-            status=PrintJobPlate.STATUS_PRINTING,
             gcode_file="gcode_jobs/p1.gcode",
         )
         self.entry = PrintQueue.objects.create(
@@ -308,8 +307,9 @@ class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
         await _handle_event_for_printer(self.printer, event, ui)
         await ui.wait_idle()
 
-        plate = await self._refresh(self.plate)
-        self.assertEqual(plate.status, PrintJobPlate.STATUS_COMPLETED)
+        # Re-fetch: ``plate.state`` caches the attempts on the instance.
+        state = await sync_to_async(lambda: PrintJobPlate.objects.get(pk=self.plate.pk).state)()
+        self.assertEqual(state, PrintJobPlate.STATE_COMPLETED)
         self.assertIn("Plate passed (1/1 plates done)", self._scripts()[-1])
         self.assertIn("Queue empty", self._scripts()[-1])
         mock_get_backend.assert_not_called()

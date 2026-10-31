@@ -51,8 +51,8 @@ class PrintJobPlateInline(admin.TabularInline):
     readonly_fields = ("gcode_file", "filament_used_grams", "print_time_estimate")
 
     def has_delete_permission(self, request: HttpRequest, obj: PrintJob | None = None) -> bool:
-        """Refuse deleting plates of a job with print history (the cascade would delete it)."""
-        if obj is not None and obj.has_print_history():
+        """Refuse deleting plates of a job with print attempts (the cascade would delete them)."""
+        if obj is not None and obj.print_started:
             return False
         return super().has_delete_permission(request, obj)
 
@@ -88,23 +88,29 @@ class _PrintHistoryDeleteGuardMixin:
 
 
 class _UnfinishedJobDeleteGuardMixin:
-    """Refuse admin deletes while unfinished print jobs still contain the affected parts.
+    """Refuse admin deletes while print jobs still contain the affected parts.
 
-    Same rule as the web and API deletes. The blocking jobs are listed as "protected"
-    objects on the confirmation page, which disables the delete there; the check runs
-    again inside the delete transaction.
+    Same rule as the web and API deletes: an unfinished job blocks the delete, and
+    a job with print attempts is print history that must be kept (every finished
+    job has attempts, so any job containing the parts blocks).  The blocking jobs
+    are listed as "protected" objects on the confirmation page, which disables the
+    delete there; the check runs again inside the delete transaction.
     """
 
     def _blocking_jobs(self, objs: Iterable[Model]) -> QuerySet[PrintJob]:
-        """Return the unfinished jobs that block deleting ``objs``."""
+        """Return the jobs (unfinished or with print history) that block deleting ``objs``."""
         raise NotImplementedError
 
     def _blocking_messages(self, objs: Iterable[Model]) -> list[str]:
         """Describe each blocking job for the confirmation page."""
-        return [
-            f"{job} — unfinished print job ({job.get_status_display()}); finish, cancel or remove it first"
-            for job in self._blocking_jobs(objs).order_by("-created_at")
-        ]
+        messages = []
+        for job in self._blocking_jobs(objs).with_display_status().order_by("-created_at"):
+            if job.print_started:
+                reason = f"has print history ({job.get_display_status_display()}), which must be kept"
+            else:
+                reason = f"unfinished print job ({job.get_display_status_display()}); finish or remove it first"
+            messages.append(f"{job} — {reason}")
+        return messages
 
     def get_deleted_objects(self, objs: Iterable[Model], request: HttpRequest) -> tuple[Any, ...]:
         """Add the blocking jobs to the protected objects so the admin refuses the delete."""
@@ -114,7 +120,9 @@ class _UnfinishedJobDeleteGuardMixin:
     def _refuse_if_blocked(self, objs: Iterable[Model]) -> None:
         """Raise :class:`PermissionDenied` if an unfinished job appeared since the confirmation."""
         if self._blocking_jobs(objs).exists():
-            raise PermissionDenied("Unfinished print jobs still contain parts that would be deleted.")
+            raise PermissionDenied(
+                "Print jobs (unfinished or print history) still contain parts that would be deleted."
+            )
 
     def delete_model(self, request: HttpRequest, obj: Model) -> None:
         """Delete one object after re-checking the guard in the same transaction."""
@@ -137,18 +145,14 @@ class ProjectAdmin(_UnfinishedJobDeleteGuardMixin, admin.ModelAdmin):
     inlines = [ProjectHardwareInline]
 
     def _blocking_jobs(self, objs: Iterable[Project]) -> QuerySet[PrintJob]:
-        """Unfinished jobs containing a part of any of the projects' subtrees."""
+        """Jobs containing a part of any of the projects' subtrees."""
         # One breadth-first walk over all selected roots (one query per tree level).
         ids: set[int] = {project.pk for project in objs}
         frontier = set(ids)
         while frontier:
             frontier = set(Project.objects.filter(parent_id__in=frontier).values_list("pk", flat=True)) - ids
             ids |= frontier
-        return (
-            PrintJob.objects.filter(job_parts__part__project_id__in=ids)
-            .exclude(status__in=PrintJob.TERMINAL_STATUSES)
-            .distinct()
-        )
+        return PrintJob.objects.filter(job_parts__part__project_id__in=ids).distinct()
 
 
 @admin.register(Part)
@@ -163,12 +167,8 @@ class PartAdmin(_UnfinishedJobDeleteGuardMixin, admin.ModelAdmin):
         return objs.values("pk") if isinstance(objs, QuerySet) else [part.pk for part in objs]
 
     def _blocking_jobs(self, objs: Iterable[Part]) -> QuerySet[PrintJob]:
-        """Unfinished jobs containing any of the parts."""
-        return (
-            PrintJob.objects.filter(job_parts__part__in=self._part_ids(objs))
-            .exclude(status__in=PrintJob.TERMINAL_STATUSES)
-            .distinct()
-        )
+        """Jobs containing any of the parts."""
+        return PrintJob.objects.filter(job_parts__part__in=self._part_ids(objs)).distinct()
 
 
 @admin.register(PrinterProfile)
@@ -183,18 +183,28 @@ class PrintJobAdmin(_PrintHistoryDeleteGuardMixin, admin.ModelAdmin):
     list_display = (
         "name",
         "machine_profile",
-        "printer",
         "status",
+        "display_status_label",
         "total_part_count",
         "plate_count",
         "created_at",
     )
-    list_filter = ("status", "machine_profile", "printer", "created_at")
+    list_filter = ("status", "machine_profile", "created_at")
     search_fields = ("name",)
     inlines = [PrintJobPartInline, PrintJobPlateInline]
 
+    def get_queryset(self, request: HttpRequest) -> QuerySet[PrintJob]:
+        """Annotate the derived display status for the change list."""
+        return super().get_queryset(request).with_display_status()
+
+    @admin.display(description="Print status")
+    def display_status_label(self, obj: PrintJob) -> str:
+        """Return the derived display status."""
+        return obj.get_display_status_display()
+
     def _history_attempts(self, objs: Iterable[PrintJob]) -> QuerySet[PrintQueue]:
-        return PrintQueue.objects.filter(PrintQueue.protected_q(), plate__print_job__in=[o.pk for o in objs])
+        # Any attempt counts: a job with print attempts is not deletable (same as the web delete).
+        return PrintQueue.objects.filter(plate__print_job__in=[o.pk for o in objs])
 
 
 @admin.register(PrintJobPart)
@@ -208,14 +218,24 @@ class PrintJobPlateAdmin(_PrintHistoryDeleteGuardMixin, admin.ModelAdmin):
     list_display = (
         "print_job",
         "plate_number",
-        "status",
+        "state_label",
         "filament_used_grams",
         "print_time_estimate",
     )
-    list_filter = ("status", "print_job")
+    list_filter = ("print_job",)
+
+    def get_queryset(self, request: HttpRequest) -> QuerySet[PrintJobPlate]:
+        """Annotate the derived plate state for the change list."""
+        return super().get_queryset(request).with_state()
+
+    @admin.display(description="State")
+    def state_label(self, obj: PrintJobPlate) -> str:
+        """Return the derived plate state."""
+        return obj.get_state_display()
 
     def _history_attempts(self, objs: Iterable[PrintJobPlate]) -> QuerySet[PrintQueue]:
-        return PrintQueue.objects.filter(PrintQueue.protected_q(), plate__in=[o.pk for o in objs])
+        # Any attempt counts: deleting the plate would cascade its attempts.
+        return PrintQueue.objects.filter(plate__in=[o.pk for o in objs])
 
 
 @admin.register(OrcaMachineProfile)
@@ -388,16 +408,6 @@ class PrintQueueAdmin(admin.ModelAdmin):
             readonly += self.PLANNING_FIELDS
         return readonly
 
-    def save_model(self, request: HttpRequest, obj: PrintQueue, form: Any, change: bool) -> None:
-        """Save and refresh the stored status of the affected plate(s)."""
-        old_plate_id = (
-            PrintQueue.objects.filter(pk=obj.pk).values_list("plate_id", flat=True).first() if change else None
-        )
-        with transaction.atomic():
-            super().save_model(request, obj, form, change)
-            for plate in PrintJobPlate.objects.filter(pk__in={old_plate_id, obj.plate_id} - {None}):
-                plate.refresh_stored_status()
-
     def has_delete_permission(self, request: HttpRequest, obj: PrintQueue | None = None) -> bool:
         """Refuse deleting history and attempts whose print start is in progress."""
         if obj is not None and (obj.is_history or obj.has_active_start_claim):
@@ -405,7 +415,7 @@ class PrintQueueAdmin(admin.ModelAdmin):
         return super().has_delete_permission(request, obj)
 
     def delete_model(self, request: HttpRequest, obj: PrintQueue) -> None:
-        """Delete one never-started attempt (re-checked under lock) and refresh its plate."""
+        """Delete one never-started attempt (re-checked under lock)."""
         self.delete_queryset(request, PrintQueue.objects.filter(pk=obj.pk))
 
     def delete_queryset(self, request: HttpRequest, queryset: QuerySet) -> None:
@@ -415,10 +425,7 @@ class PrintQueueAdmin(admin.ModelAdmin):
                 raise PermissionDenied(
                     "Started or resolved attempts (print history) and starting prints cannot be deleted."
                 )
-            plates = list(PrintJobPlate.objects.filter(queue_entries__in=queryset).distinct())
             super().delete_queryset(request, queryset)
-            for plate in plates:
-                plate.refresh_stored_status()
 
 
 @admin.register(ScheduledQueueStart)

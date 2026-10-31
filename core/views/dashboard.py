@@ -1,13 +1,14 @@
 """Dashboard views for the LayerNexus application."""
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from django.conf import settings
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.models import User
-from django.db.models import Count, Sum
+from django.db.models import Count, Exists, OuterRef, QuerySet, Subquery, Sum
 from django.urls import reverse
 from django.utils import timezone
 from django.views.generic import TemplateView
@@ -33,6 +34,59 @@ __all__ = [
 ]
 
 
+def _job_counts() -> dict[str, Any]:
+    """Count print jobs by their derived display status (one grouped query).
+
+    Returns:
+        ``completed_jobs``, ``partially_failed_jobs``, ``failed_jobs`` (slicing
+        failed or partially failed), ``active_jobs`` (slicing, printing or in
+        progress) and ``by_display_status`` (display status -> count).
+    """
+    rows = (
+        PrintJob.objects.with_display_status()
+        .order_by()
+        .values("annotated_display_status")
+        .annotate(n=Count("pk"))
+        .values_list("annotated_display_status", "n")
+    )
+    by_status = {status: 0 for status, _label in PrintJob.DISPLAY_CHOICES}
+    by_status.update(dict(rows))
+    return {
+        "completed_jobs": by_status[PrintJob.DISPLAY_COMPLETED],
+        "partially_failed_jobs": by_status[PrintJob.DISPLAY_PARTIALLY_FAILED],
+        "failed_jobs": by_status[PrintJob.DISPLAY_SLICING_FAILED] + by_status[PrintJob.DISPLAY_PARTIALLY_FAILED],
+        "active_jobs": sum(
+            by_status[status]
+            for status in (PrintJob.DISPLAY_SLICING, PrintJob.DISPLAY_PRINTING, PrintJob.DISPLAY_IN_PROGRESS)
+        ),
+        "by_display_status": {status: count for status, count in by_status.items() if count},
+    }
+
+
+def _completed_plates(since: datetime | None = None) -> QuerySet[PrintJobPlate]:
+    """Return the plates with a passed attempt (resolved since ``since``, if given)."""
+    passed = PrintQueue.objects.filter(plate=OuterRef("pk"), result=PrintQueue.RESULT_PASSED)
+    if since is not None:
+        passed = passed.filter(resolved_at__gte=since)
+    return PrintJobPlate.objects.filter(Exists(passed))
+
+
+def _jobs_completed_since(since: datetime) -> int:
+    """Count jobs whose plates are all completed and whose last plate passed since ``since``."""
+    last_pass = (
+        PrintQueue.objects.filter(plate__print_job=OuterRef("pk"), result=PrintQueue.RESULT_PASSED)
+        .order_by("-resolved_at")
+        .values("resolved_at")[:1]
+    )
+    return (
+        PrintJob.objects.with_display_status()
+        .filter(annotated_display_status=PrintJob.DISPLAY_COMPLETED)
+        .annotate(last_pass=Subquery(last_pass))
+        .filter(last_pass__gte=since)
+        .count()
+    )
+
+
 class DashboardView(LoginRequiredMixin, TemplateView):
     """Home page showing an overview of the user's projects and recent activity."""
 
@@ -54,7 +108,7 @@ class DashboardView(LoginRequiredMixin, TemplateView):
         context["projects"] = projects.select_related("parent__parent__parent").prefetch_related(
             *Project.aggregate_prefetch_lookups()
         )[:5]
-        context["recent_jobs"] = PrintJob.objects.all()[:10]
+        context["recent_jobs"] = PrintJob.objects.with_display_status()[:10]
         context["printer_profiles"] = PrinterProfile.objects.active()
 
         # Dashboard statistics
@@ -62,9 +116,7 @@ class DashboardView(LoginRequiredMixin, TemplateView):
         context["total_projects"] = projects.count()
         context["total_parts"] = Part.objects.aggregate(total=Sum("quantity"))["total"] or 0
         context["total_jobs"] = all_jobs.count()
-        context["completed_jobs"] = all_jobs.filter(status="completed").count()
-        context["active_jobs"] = all_jobs.filter(status__in=["slicing", "uploading", "uploaded", "printing"]).count()
-        context["failed_jobs"] = all_jobs.filter(status="failed").count()
+        context.update(_job_counts())
 
         # Filament statistics
         context["total_filament_grams"] = (
@@ -102,15 +154,10 @@ class DashboardView(LoginRequiredMixin, TemplateView):
             second=0,
             microsecond=0,
         )
-        context["completed_today"] = all_jobs.filter(
-            status=PrintJob.STATUS_COMPLETED,
-            completed_at__gte=today_start,
-        ).count()
+        context["completed_today"] = _jobs_completed_since(today_start)
 
         # Total completed plates
-        context["total_quantity_completed"] = PrintJobPlate.objects.filter(
-            status=PrintJobPlate.STATUS_COMPLETED,
-        ).count()
+        context["total_quantity_completed"] = _completed_plates().count()
 
         return context
 
@@ -177,10 +224,7 @@ class FarmDashboardView(LoginRequiredMixin, TemplateView):
 
         # Today's completed count
         today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        context["completed_today"] = PrintJobPlate.objects.filter(
-            status=PrintJobPlate.STATUS_COMPLETED,
-            completed_at__gte=today_start,
-        ).count()
+        context["completed_today"] = _completed_plates(since=today_start).count()
 
         return context
 
@@ -201,24 +245,19 @@ class StatisticsView(LoginRequiredMixin, TemplateView):
         # Job stats
         all_jobs = PrintJob.objects.all()
         context["total_jobs"] = all_jobs.count()
-        context["completed_jobs"] = all_jobs.filter(status="completed").count()
-        context["failed_jobs"] = all_jobs.filter(status="failed").count()
-        context["active_jobs"] = all_jobs.filter(status__in=["slicing", "uploading", "uploaded", "printing"]).count()
+        counts = _job_counts()
+        context.update(counts)
 
         # Plate stats
         all_plates = PrintJobPlate.objects.all()
         context["total_plates"] = all_plates.count()
-        context["total_plates_completed"] = all_plates.filter(
-            status=PrintJobPlate.STATUS_COMPLETED,
-        ).count()
+        context["total_plates_completed"] = _completed_plates().count()
         context["total_quantity_completed"] = context["total_plates_completed"]
         context["total_quantity_to_print"] = context["total_plates"]
 
-        # Success rate
-        finished = all_jobs.filter(status__in=["completed", "failed"]).count()
-        context["success_rate"] = (
-            round(all_jobs.filter(status="completed").count() / finished * 100, 1) if finished else None
-        )
+        # Success rate of finished jobs (all plates completed vs. some plate failed)
+        finished = counts["completed_jobs"] + counts["partially_failed_jobs"]
+        context["success_rate"] = round(counts["completed_jobs"] / finished * 100, 1) if finished else None
 
         # Filament stats
         context["total_filament_grams"] = (
@@ -240,7 +279,11 @@ class StatisticsView(LoginRequiredMixin, TemplateView):
         )
 
         # Jobs per status
-        context["jobs_by_status"] = all_jobs.values("status").annotate(count=Count("id")).order_by("status")
+        labels = dict(PrintJob.DISPLAY_CHOICES)
+        context["jobs_by_status"] = [
+            {"status": status, "label": labels[status], "count": count}
+            for status, count in counts["by_display_status"].items()
+        ]
 
         # Time estimation accuracy
         estimates = PrintTimeEstimate.objects.filter(
@@ -453,6 +496,8 @@ class AdminDashboardView(AdminRequiredMixin, TemplateView):
         # -- Recent activity --------------------------------------------------
         context["recent_projects"] = Project.objects.order_by("-updated_at")[:10]
         context["recent_parts"] = Part.objects.select_related("project").order_by("-updated_at")[:10]
-        context["recent_jobs"] = PrintJob.objects.select_related("created_by").order_by("-updated_at")[:10]
+        context["recent_jobs"] = (
+            PrintJob.objects.with_display_status().select_related("created_by").order_by("-updated_at")[:10]
+        )
 
         return context

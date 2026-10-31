@@ -4,8 +4,8 @@ from unittest import mock
 
 from django.urls import reverse
 
-from core.models import OrcaPrintPreset, Part, PrintJob, PrintJobPart, Project
-from core.tests.mixins import _RBACTestBase
+from core.models import OrcaPrintPreset, Part, PrintJobPart, Project
+from core.tests.mixins import _RBACTestBase, make_completed_job
 
 
 def _preset(name: str) -> OrcaPrintPreset:
@@ -75,13 +75,14 @@ class MoveViewTests(_RBACTestBase):
         self.assertNotIn("project", resp.context["form"].fields)
 
     def test_move_part_to_other_project_keeps_print_history(self, _worker: mock.Mock) -> None:
-        job = PrintJob.objects.create(name="done", status=PrintJob.STATUS_COMPLETED)
+        job = make_completed_job(name="done")
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
         resp = self.client.post(reverse("core:part_update", args=[self.part.pk]), self._part_data(self.same))
         self.assertRedirects(resp, reverse("core:part_detail", args=[self.part.pk]))
         self.part.refresh_from_db()
         self.assertEqual(self.part.project, self.same)
         self.assertEqual(PrintJobPart.objects.filter(part=self.part).count(), 1)
+        self.assertEqual(self.part.printed_quantity, 1)
         self.assertEqual(self.part.stl_file.name, "stl_files/leaf.stl")
 
     def test_move_part_same_preset_keeps_estimate(self, worker: mock.Mock) -> None:

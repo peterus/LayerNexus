@@ -4,8 +4,8 @@ from django.contrib.auth.models import Group
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
-from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate, Project
-from core.tests.mixins import TestDataMixin
+from core.models import Part, PrintJobPart, Project
+from core.tests.mixins import TestDataMixin, make_completed_job
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -31,9 +31,8 @@ class DashboardViewTests(TestDataMixin, TestCase):
         sub = Project.objects.create(name="Deep Sub", parent=root, quantity=2)
         for proj in (root, sub):
             part = Part.objects.create(name=f"{proj.name}-p", project=proj, quantity=2)
-            job = PrintJob.objects.create(status="completed")
+            job = make_completed_job()
             PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
-            PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
 
         resp = self.client.get(reverse("core:dashboard"))
         self.assertEqual(resp.status_code, 200)

@@ -8,12 +8,11 @@ from core.models import (
     Part,
     PrintJob,
     PrintJobPart,
-    PrintJobPlate,
     Project,
     ProjectDocument,
     ProjectHardware,
 )
-from core.tests.mixins import TestDataMixin
+from core.tests.mixins import TestDataMixin, make_completed_job
 
 
 class ProjectGetDescendantIdsTests(TestCase):
@@ -48,10 +47,8 @@ class ProjectAggregatePrefetchTests(TestCase):
         sub = Project.objects.create(name=f"{name}-sub", parent=root, quantity=2)
         for proj in (root, sub):
             part = Part.objects.create(name=f"{proj.name}-p", project=proj, quantity=2, filament_used_grams=5)
-            job = PrintJob.objects.create(status="completed")
+            job = make_completed_job(plates=2)
             PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
-            PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
-            PrintJobPlate.objects.create(print_job=job, plate_number=2, status=PrintJobPlate.STATUS_COMPLETED)
         return root
 
     def _touch_aggregates(self, projects: list[Project]) -> None:
@@ -84,9 +81,8 @@ class ProjectAggregatePrefetchTests(TestCase):
         for level in range(1, depth + 1):
             node = Project.objects.create(name=f"d{level}", parent=node, quantity=1)
             part = Part.objects.create(project=node, quantity=1, name=f"d{level}-p", filament_used_grams=1)
-            job = PrintJob.objects.create(status="completed")
+            job = make_completed_job()
             PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
-            PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
 
         qs = Project.objects.filter(parent__isnull=True).prefetch_related(
             *Project.aggregate_prefetch_lookups(depth=depth)
@@ -242,9 +238,8 @@ class ProjectAggregatedStatusTests(TestDataMixin, TestCase):
         part = Part.objects.create(
             project=proj, quantity=3, name="P1", filament_used_grams=10.0, estimation_status=Part.ESTIMATION_SUCCESS
         )
-        job = PrintJob.objects.create(status="completed", created_by=self.user)
+        job = make_completed_job(created_by=self.user)
         PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         self.assertEqual(proj.aggregated_status, Project.STATUS_IN_PROGRESS)
 
     def test_complete_status(self):
@@ -253,9 +248,8 @@ class ProjectAggregatedStatusTests(TestDataMixin, TestCase):
         part = Part.objects.create(
             project=proj, quantity=2, name="P1", filament_used_grams=10.0, estimation_status=Part.ESTIMATION_SUCCESS
         )
-        job = PrintJob.objects.create(status="completed", created_by=self.user)
+        job = make_completed_job(created_by=self.user)
         PrintJobPart.objects.create(print_job=job, part=part, quantity=2)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         self.assertEqual(proj.aggregated_status, Project.STATUS_COMPLETE)
 
     def test_error_status(self):
@@ -392,9 +386,8 @@ class ProjectTreeAggregationTests(TestCase):
         self.part = Part.objects.create(name="p", project=self.leaf, quantity=4, filament_used_grams=2.0)
 
     def _complete_job(self, quantity: int) -> PrintJob:
-        job = PrintJob.objects.create(status=PrintJob.STATUS_COMPLETED)
+        job = make_completed_job()
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=quantity)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         return job
 
     def test_needed_is_part_qty_times_chain(self):

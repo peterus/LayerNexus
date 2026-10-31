@@ -15,6 +15,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import transaction
+from django.db.models import ProtectedError
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from rest_framework.authtoken.models import Token
@@ -30,6 +31,7 @@ from core.models import (
     ProjectDocument,
 )
 from core.signals import MEDIA_FIELDS, file_is_referenced
+from core.tests.mixins import make_completed_job
 
 #: Smallest valid GIF, so ``ImageField`` accepts it.
 GIF = (
@@ -154,12 +156,21 @@ class FileDeleteSignalTests(_MediaTestBase):
         self.assertFalse(self.exists(copy.stl_file.name))
 
     def test_print_job_gcode_untouched_on_part_delete(self) -> None:
-        job = PrintJob.objects.create(name="done", status=PrintJob.STATUS_COMPLETED)
-        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
-        plate = PrintJobPlate.objects.create(print_job=job, plate_number=1)
+        """A part in a job cannot be deleted (``PROTECT``); the job's files stay either way.
+
+        Once the part is no longer in the job, deleting it removes only its own files.
+        """
+        job = make_completed_job(name="done")
+        entry = PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
+        plate = job.plates.get()
         plate.gcode_file.save("plate.gcode", ContentFile(b"G28"), save=False)
         plate.thumbnail.save("thumb.png", ContentFile(b"png"), save=False)
         plate.save()
+        with self.captureOnCommitCallbacks(execute=True), self.assertRaises(ProtectedError):
+            self.part.delete()
+        self.assertTrue(Part.objects.filter(pk=self.part.pk).exists())
+        self.assertTrue(self.exists(self.part.stl_file.name))
+        entry.delete()
         with self.captureOnCommitCallbacks(execute=True):
             self.part.delete()
         self.assertTrue(self.exists(plate.gcode_file.name))

@@ -6,7 +6,7 @@ from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
 from core.models import PrinterProfile, PrintJob, PrintJobPlate, PrintQueue
-from core.tests.mixins import TestDataMixin, _RBACTestBase, queue_state_fields
+from core.tests.mixins import TestDataMixin, _RBACTestBase, complete_plate, fail_plate, queue_state_fields
 from core.views.queue import PrintQueueDeleteView
 
 
@@ -59,12 +59,9 @@ class PrintQueueCreatePlateChoiceTests(TestDataMixin, TestCase):
         return set(r.context["form"].fields["plate"].queryset.values_list("pk", flat=True))
 
     def _start_plate(self, plate: PrintJobPlate) -> None:
-        """Mirror ``start_print_for_queue_entry``: plate, entry and job go to printing."""
+        """Give ``plate`` a printing attempt: the plate and its job are derived as printing."""
         PrintQueue.objects.create(plate=plate, printer=self.printer, **queue_state_fields("printing"))
-        plate.status = PrintJobPlate.STATUS_PRINTING
-        plate.save(update_fields=["status"])
-        self.job.status = PrintJob.STATUS_PRINTING
-        self.job.save(update_fields=["status"])
+        self.assertEqual(PrintJob.objects.get(pk=self.job.pk).display_status, PrintJob.DISPLAY_PRINTING)
 
     def test_all_plates_of_sliced_job_offered(self):
         self.assertEqual(self._offered_plate_pks(), {p.pk for p in self.plates})
@@ -93,21 +90,20 @@ class PrintQueueCreatePlateChoiceTests(TestDataMixin, TestCase):
         self.assertNotIn(self.plates[0].pk, self._offered_plate_pks())
 
     def test_completed_plate_not_offered(self):
-        self.plates[0].status = PrintJobPlate.STATUS_COMPLETED
-        self.plates[0].save(update_fields=["status"])
+        complete_plate(self.plates[0], self.printer)
         self.assertNotIn(self.plates[0].pk, self._offered_plate_pks())
 
     def test_failed_plate_offered_for_retry(self):
-        self._start_plate(self.plates[0])
-        PrintQueue.objects.filter(plate=self.plates[0]).delete()
-        self.plates[0].status = PrintJobPlate.STATUS_FAILED
-        self.plates[0].save(update_fields=["status"])
+        fail_plate(self.plates[0], self.printer)
+        self.assertEqual(PrintJobPlate.objects.get(pk=self.plates[0].pk).state, PrintJobPlate.STATE_FAILED)
         self.assertIn(self.plates[0].pk, self._offered_plate_pks())
 
-    def test_plates_of_cancelled_job_not_offered(self):
-        self.job.status = PrintJob.STATUS_CANCELLED
-        self.job.save(update_fields=["status"])
-        self.assertEqual(self._offered_plate_pks(), set())
+    def test_plates_of_unsliced_job_not_offered(self):
+        """Only plates of a ``sliced`` job are queueable (the former "cancelled" job status no longer exists)."""
+        for status in (PrintJob.STATUS_DRAFT, PrintJob.STATUS_PENDING, PrintJob.STATUS_SLICING, PrintJob.STATUS_FAILED):
+            with self.subTest(status=status):
+                PrintJob.objects.filter(pk=self.job.pk).update(status=status)
+                self.assertEqual(self._offered_plate_pks(), set())
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -219,8 +215,8 @@ class QueueEntryReviewRaceTests(TestDataMixin, TestCase):
     def test_already_reviewed_concurrently_shows_warning(self):
         from core.services.queue import ReviewStateError
 
-        job = PrintJob.objects.create(name="Race", status=PrintJob.STATUS_PRINTING, created_by=self.user)
-        plate = PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_PRINTING)
+        job = PrintJob.objects.create(name="Race", status=PrintJob.STATUS_SLICED, created_by=self.user)
+        plate = PrintJobPlate.objects.create(print_job=job, plate_number=1)
         entry = PrintQueue.objects.create(plate=plate, printer=self.printer, **queue_state_fields("awaiting_review"))
         self.client.login(username="testuser", password="testpass123")
 
