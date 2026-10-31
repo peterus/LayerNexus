@@ -25,7 +25,6 @@ from django.db.models import (
     Exists,
     F,
     IntegerField,
-    Max,
     Min,
     OuterRef,
     Q,
@@ -406,13 +405,12 @@ class PrintJob(models.Model):
     @property
     def completed_at(self) -> datetime | None:
         """Return when the last plate passed, once all plates are completed (derived)."""
-        if not self.all_plates_completed:
+        plates = list(self.plates.all())
+        if not plates or any(plate.state != PrintJobPlate.STATE_COMPLETED for plate in plates):
             return None
-        from core.models.queue import PrintQueue
-
-        return PrintQueue.objects.filter(plate__print_job=self, result=PrintQueue.RESULT_PASSED).aggregate(
-            last=Max("resolved_at")
-        )["last"]
+        # Per plate (index on plate, or the prefetched attempts) — not a scan over all passed attempts.
+        times = [plate.completed_at for plate in plates if plate.completed_at is not None]
+        return max(times) if times else None
 
     # ── Transitions ─────────────────────────────────────────────────────
 

@@ -79,7 +79,7 @@
                   {% if perms.core.change_printjob %}
                   <form method="post" action="{% url 'core:printjob_remove_part' job_pk=job.pk job_part_pk=jp.pk %}" class="d-inline">
                     {% csrf_token %}
-                    <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove" onclick="return confirm('Remove {{ jp.part.name }} from this job?{% if job.status != 'draft' %} The plates will be discarded and the job goes back to draft.{% endif %}')"><i class="bi bi-x-lg"></i></button>
+                    <button type="submit" class="btn btn-sm btn-outline-danger" title="Remove" onclick="return confirm('Remove {{ jp.part.name|escapejs }} from this job?{% if job.status != 'draft' %} The plates will be discarded and the job goes back to draft.{% endif %}')"><i class="bi bi-x-lg"></i></button>
                   </form>
                   {% endif %}
                 </td>

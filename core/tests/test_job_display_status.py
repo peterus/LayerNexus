@@ -196,6 +196,15 @@ class DashboardDisplayStatusTests(_JobStatusBase):
         self.assertEqual(context["completed_today"], 1)
         self.assertEqual(context["total_quantity_completed"], 1)
 
+    def test_completed_today_counts_job_whose_last_plate_passed_today(self):
+        job = make_sliced_job("Two days", plates=2)
+        first, second = list(job.plates.order_by("plate_number"))
+        complete_plate(first, self.printer, when=timezone.now() - timezone.timedelta(days=2))
+        complete_plate(second, self.printer)
+        old = make_sliced_job("Old")
+        complete_plate(old.plates.get(), self.printer, when=timezone.now() - timezone.timedelta(days=2))
+        self.assertEqual(self.client.get(reverse("core:dashboard")).context["completed_today"], 2)
+
     def test_statistics_counts_and_success_rate(self):
         context = self.client.get(reverse("core:statistics")).context
         self.assertEqual(context["success_rate"], 50.0)
@@ -353,3 +362,69 @@ class JobEditRuleTests(TestDataMixin, TestCase):
         self.assertTrue(self.client.get(url).context["can_change_contents"])
         self._start()
         self.assertFalse(self.client.get(url).context["can_change_contents"])
+
+    def test_name_edit_does_not_overwrite_concurrent_slicing_result(self):
+        """The name/notes path writes only those columns (no stale full-row save)."""
+        from unittest.mock import patch
+
+        from core.views.print_jobs import PrintJobUpdateView
+
+        PrintJob.objects.filter(pk=self.job.pk).update(status=PrintJob.STATUS_SLICING, filament_used_grams=None)
+        stale = PrintJob.objects.get(pk=self.job.pk)
+        # The slicing worker finishes after the edit view loaded the job.
+        PrintJob.objects.filter(pk=self.job.pk).update(status=PrintJob.STATUS_SLICED, filament_used_grams=42.0)
+        with patch.object(PrintJobUpdateView, "get_object", return_value=stale):
+            self._edit(name="Renamed while slicing")
+        job = PrintJob.objects.get(pk=self.job.pk)
+        self.assertEqual(job.name, "Renamed while slicing")
+        self.assertEqual(job.status, PrintJob.STATUS_SLICED)
+        self.assertEqual(job.filament_used_grams, 42.0)
+
+    def test_remove_confirm_escapes_part_name_for_js(self):
+        self.part.name = "x');alert(1);('"
+        self.part.save()
+        response = self.client.get(reverse("core:printjob_detail", args=[self.job.pk]))
+        self.assertContains(response, "Remove x\\u0027)")
+        self.assertNotContains(response, "Remove x&#x27;);alert(1)")
+
+
+class AdminJobContentsGuardTests(TestDataMixin, TestCase):
+    """The admin cannot rewrite the parts or machine profile of a job with print attempts."""
+
+    def setUp(self):
+        super().setUp()
+        self.user.is_staff = True
+        self.user.is_superuser = True
+        self.user.save()
+        self.client.login(username="testuser", password="testpass123")
+        self.job = make_sliced_job("Admin Job", plates=1)
+        self.entry = PrintJobPart.objects.create(print_job=self.job, part=self.part, quantity=2)
+
+    def test_job_part_delete_refused_after_first_attempt(self):
+        add_attempt(self.job.plates.get(), self.printer, PrintQueue.RESULT_PASSED)
+        response = self.client.post(reverse("admin:core_printjobpart_delete", args=[self.entry.pk]), {"post": "yes"})
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(PrintJobPart.objects.filter(pk=self.entry.pk).exists())
+
+    def test_job_part_bulk_delete_refused_after_first_attempt(self):
+        add_attempt(self.job.plates.get(), self.printer, "waiting")
+        self.client.post(
+            reverse("admin:core_printjobpart_changelist"),
+            {"action": "delete_selected", "_selected_action": [self.entry.pk], "post": "yes"},
+        )
+        self.assertTrue(PrintJobPart.objects.filter(pk=self.entry.pk).exists())
+
+    def test_job_part_delete_allowed_before_first_attempt(self):
+        response = self.client.post(reverse("admin:core_printjobpart_delete", args=[self.entry.pk]), {"post": "yes"})
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(PrintJobPart.objects.filter(pk=self.entry.pk).exists())
+
+    def test_job_change_form_freezes_parts_and_machine_profile(self):
+        add_attempt(self.job.plates.get(), self.printer, "printing")
+        response = self.client.get(reverse("admin:core_printjob_change", args=[self.job.pk]))
+        self.assertEqual(response.status_code, 200)
+        inline = next(f for f in response.context["inline_admin_formsets"] if f.opts.model is PrintJobPart)
+        self.assertFalse(inline.has_add_permission)
+        self.assertFalse(inline.has_change_permission)
+        self.assertFalse(inline.has_delete_permission)
+        self.assertNotIn("machine_profile", response.context["adminform"].form.fields)

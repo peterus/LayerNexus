@@ -183,28 +183,31 @@ class PrintJobListView(LoginRequiredMixin, ListView):
             .select_related("machine_profile")
             .prefetch_related("job_parts__part", "plates")
         )
+        # Join filters go through ``pk__in`` subqueries: no row fan-out, so no ``distinct()``
+        # (which would make the database compute the display-status subqueries for every row).
         if filters["q"]:
             queryset = queryset.filter(
-                Q(name__icontains=filters["q"]) | Q(job_parts__part__name__icontains=filters["q"])
+                Q(name__icontains=filters["q"])
+                | Q(pk__in=PrintJobPart.objects.filter(part__name__icontains=filters["q"]).values("print_job_id"))
             )
         if filters["status"]:
             queryset = queryset.filter(annotated_display_status__in=filters["status"])
         if filters["printer"]:
-            queryset = queryset.filter(plates__queue_entries__printer_id__in=[int(v) for v in filters["printer"]])
+            attempts = PrintQueue.objects.filter(printer_id__in=[int(v) for v in filters["printer"]])
+            queryset = queryset.filter(pk__in=attempts.values("plate__print_job_id"))
         if filters["project"]:
             project_ids: set[int] = set()
             for root in Project.objects.filter(pk__in=[int(v) for v in filters["project"]]):
                 project_ids |= root.subtree_ids()
-            queryset = queryset.filter(job_parts__part__project_id__in=project_ids)
-        if filters["filament"]:
-            condition = Q(
-                job_parts__part__spoolman_filament_id__in=[int(v) for v in filters["filament"] if v != self.no_filament]
+            queryset = queryset.filter(
+                pk__in=PrintJobPart.objects.filter(part__project_id__in=project_ids).values("print_job_id")
             )
+        if filters["filament"]:
+            condition = Q(part__spoolman_filament_id__in=[int(v) for v in filters["filament"] if v != self.no_filament])
             if self.no_filament in filters["filament"]:
-                # ``job_parts__isnull=False`` keeps part-less jobs out (else the OR matches their NULL outer join).
-                condition |= Q(job_parts__isnull=False, job_parts__part__spoolman_filament_id__isnull=True)
-            queryset = queryset.filter(condition)
-        return queryset.distinct().order_by("-created_at", "-pk")
+                condition |= Q(part__spoolman_filament_id__isnull=True)
+            queryset = queryset.filter(pk__in=PrintJobPart.objects.filter(condition).values("print_job_id"))
+        return queryset.order_by("-created_at", "-pk")
 
     def _filament_options(self) -> list[dict[str, str]]:
         """Return the filament filter options: filaments used by any job, plus ``none`` if some part has none."""
@@ -446,8 +449,12 @@ class PrintJobUpdateView(RoleRequiredMixin, UpdateView):
         """Save; a changed machine profile on a sliced job discards its plates (back to draft)."""
         job = self.object
         if "machine_profile" not in form.changed_data:
+            # Only name / notes: write just those columns, so a concurrent slicing
+            # worker's status and stats are neither overwritten nor stale.
+            self.object = form.save(commit=False)
+            self.object.save(update_fields=[*form.changed_data, "updated_at"])
             messages.success(self.request, "Print job updated.")
-            return super().form_valid(form)
+            return redirect(self.get_success_url())
         try:
             with transaction.atomic():
                 response = super().form_valid(form)

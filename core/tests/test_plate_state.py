@@ -110,6 +110,18 @@ class PlateStateTests(_PlateStateBase):
             lambda p: add_attempt(p, None, PrintQueue.RESULT_CANCELLED),
             lambda p: (fail_plate(p, self.printer), add_attempt(p, self.printer, PrintQueue.RESULT_FAILED)),
             lambda p: (add_attempt(p, self.printer, PrintQueue.RESULT_FAILED), complete_plate(p, self.printer)),
+            # Retry-only history (no manual attempt): falls back to the last attempt's max_retries.
+            lambda p: [add_attempt(p, self.printer, PrintQueue.RESULT_FAILED, is_retry=True) for _ in range(3)],
+            lambda p: add_attempt(p, self.printer, PrintQueue.RESULT_FAILED, is_retry=True, max_retries=2),
+            # max_retries=0: never "failed" without a failure, failed after one.
+            lambda p: add_attempt(p, self.printer, PrintQueue.RESULT_CANCELLED, max_retries=0),
+            lambda p: add_attempt(p, self.printer, PrintQueue.RESULT_FAILED, max_retries=0),
+            # Mixed max_retries along the chain: the last manual attempt's value counts.
+            lambda p: (
+                add_attempt(p, self.printer, PrintQueue.RESULT_FAILED, max_retries=1),
+                add_attempt(p, self.printer, PrintQueue.RESULT_FAILED, max_retries=5),
+                add_attempt(p, self.printer, PrintQueue.RESULT_FAILED, is_retry=True, max_retries=1),
+            ),
         ]
         job = make_sliced_job("Many", plates=len(setups))
         plates = list(job.plates.order_by("plate_number"))

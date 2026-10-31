@@ -8,7 +8,7 @@ from typing import Any
 from django.conf import settings
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.contrib.auth.models import User
-from django.db.models import Count, Exists, OuterRef, QuerySet, Subquery, Sum
+from django.db.models import Count, Exists, OuterRef, QuerySet, Sum
 from django.urls import reverse
 from django.utils import timezone
 from django.views.generic import TemplateView
@@ -72,17 +72,17 @@ def _completed_plates(since: datetime | None = None) -> QuerySet[PrintJobPlate]:
 
 
 def _jobs_completed_since(since: datetime) -> int:
-    """Count jobs whose plates are all completed and whose last plate passed since ``since``."""
-    last_pass = (
-        PrintQueue.objects.filter(plate__print_job=OuterRef("pk"), result=PrintQueue.RESULT_PASSED)
-        .order_by("-resolved_at")
-        .values("resolved_at")[:1]
-    )
+    """Count completed jobs (all plates passed) with a plate that passed since ``since``.
+
+    Since every plate of a completed job has passed, the job's last pass is
+    ``>= since`` exactly when one of its passes is — so the cheap ``resolved_at``
+    filter replaces a per-job "latest pass" subquery.
+    """
+    recent = PrintQueue.objects.filter(result=PrintQueue.RESULT_PASSED, resolved_at__gte=since)
     return (
-        PrintJob.objects.with_display_status()
+        PrintJob.objects.filter(pk__in=recent.values("plate__print_job_id"))
+        .with_display_status()
         .filter(annotated_display_status=PrintJob.DISPLAY_COMPLETED)
-        .annotate(last_pass=Subquery(last_pass))
-        .filter(last_pass__gte=since)
         .count()
     )
 
