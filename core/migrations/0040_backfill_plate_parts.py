@@ -42,7 +42,7 @@ def _file_path(field_file) -> Path | None:
         return None
     try:
         path = Path(field_file.path)
-    except (NotImplementedError, ValueError):
+    except Exception:  # noqa: BLE001 — e.g. a suspicious stored name; treat as missing
         return None
     return path if path.is_file() else None
 
@@ -59,7 +59,7 @@ def _job_plate_shares(plates: list, job_parts: list) -> tuple[dict | None, str]:
         unknown; the reason when unknown).
     """
     from core.services.gcode_objects import assign_plate_objects, parse_gcode_object_ids
-    from core.services.threemf import ThreeMFError, bundle_objects, read_model_meshes
+    from core.services.threemf import bundle_objects, read_model_meshes
 
     gcode_paths: dict[int, Path] = {}
     for plate in plates:
@@ -68,21 +68,30 @@ def _job_plate_shares(plates: list, job_parts: list) -> tuple[dict | None, str]:
             return None, "gcode file missing"
         gcode_paths[plate.plate_number] = path
 
-    parts: list[tuple[int, int]] = []
-    model_mtimes: list[float] = []
+    model_paths: list[Path] = []
     for job_part in job_parts:
         path = _file_path(job_part.part.stl_file)
         if path is None:
             return None, "model file missing"
+        model_paths.append(path)
+
+    try:
+        replaced = bool(model_paths) and max(p.stat().st_mtime for p in model_paths) > min(
+            p.stat().st_mtime for p in gcode_paths.values()
+        )
+    except OSError:
+        return None, "file not accessible"
+    if replaced:
+        return None, "model file replaced after slicing"
+
+    parts: list[tuple[int, int]] = []
+    for job_part, path in zip(job_parts, model_paths, strict=True):
         try:
             mesh_count = len(read_model_meshes(path))
-        except (ThreeMFError, OSError, ValueError):
+        except Exception:  # noqa: BLE001 — any broken upload must not block ``migrate`` on startup
+            logger.exception("Model file %s of part %s is unreadable", path, job_part.part_id)
             return None, "model file unreadable"
         parts.append((job_part.quantity, mesh_count))
-        model_mtimes.append(path.stat().st_mtime)
-
-    if model_mtimes and max(model_mtimes) > min(p.stat().st_mtime for p in gcode_paths.values()):
-        return None, "model file replaced after slicing"
 
     try:
         plate_ids = {number: parse_gcode_object_ids(path.read_bytes()) for number, path in gcode_paths.items()}

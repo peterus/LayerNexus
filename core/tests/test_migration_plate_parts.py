@@ -204,6 +204,18 @@ class PlatePartsBackfillTests(TransactionTestCase):
 
         self.assertFalse(self._known(job))
 
+    def test_backfill_broken_model_file_does_not_block_migrate(self) -> None:
+        """Any parser error on a stored upload marks the job unknown instead of failing the migration."""
+        from unittest import mock
+
+        part = self._part("P")
+        job = self._job("J", [(part, 1)], [plate_gcode([1])])
+
+        with mock.patch("core.services.threemf.read_model_meshes", side_effect=RuntimeError("encrypted zip")):
+            self._migrate(BACKFILL)
+
+        self.assertFalse(self._known(job))
+
     def test_backfill_count_mismatch_marks_unknown(self) -> None:
         """An object ID beyond Σ quantity × meshes → the bundle order does not fit → unknown."""
         part = self._part("P")
