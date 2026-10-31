@@ -17,7 +17,7 @@
           <dt class="col-sm-4">Machine</dt>
           <dd class="col-sm-8">{{ object.machine_profile.name|default:"—" }}</dd>
           <dt class="col-sm-4">Status</dt>
-          <dd class="col-sm-8">{{ object.get_status_display }}</dd>
+          <dd class="col-sm-8">{{ object.get_display_status_display }}</dd>
           <dt class="col-sm-4">Parts</dt>
           <dd class="col-sm-8">{{ object.total_part_count }}</dd>
           <dt class="col-sm-4">Plates</dt>
@@ -26,14 +26,14 @@
         {% if has_print_history %}
         <div class="alert alert-danger mb-3">
           <i class="bi bi-x-circle-fill me-1"></i>
-          <strong>Cannot delete this print job:</strong> it has print history (started or reviewed print attempts), which must be kept.
+          <strong>Cannot delete this print job:</strong> it has print attempts. Print history must be kept; a waiting attempt that never started can be removed from the queue first.
         </div>
         <a href="{% url 'core:printjob_detail' object.pk %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back to Job</a>
         {% else %}
         {% if object.plates.exists %}
         <div class="alert alert-warning mb-3">
           <i class="bi bi-exclamation-triangle me-1"></i>
-          This job has <strong>{{ object.plate_count }}</strong> plate{{ object.plate_count|pluralize }} and associated queue entries that will also be removed.
+          This job has <strong>{{ object.plate_count }}</strong> plate{{ object.plate_count|pluralize }} that will also be removed.
         </div>
         {% endif %}
         <form method="post">

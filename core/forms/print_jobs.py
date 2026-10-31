@@ -34,8 +34,9 @@ class PrintJobForm(forms.ModelForm):
 class AddPartToJobForm(forms.Form):
     """Form for adding a part to a print job.
 
-    Used on the Part detail page — the user selects an existing draft
-    job or chooses to create a new one.
+    Used on the Part detail page — the user selects an existing job that
+    has not started printing (a sliced one falls back to draft) or chooses
+    to create a new one.
     """
 
     job = forms.ModelChoiceField(
@@ -43,7 +44,7 @@ class AddPartToJobForm(forms.Form):
         required=False,
         empty_label="— Create new job —",
         label="Print Job",
-        help_text="Select an existing draft job or create a new one.",
+        help_text="Select an existing job that has not started printing, or create a new one.",
     )
     quantity = forms.IntegerField(
         min_value=1,
@@ -53,11 +54,10 @@ class AddPartToJobForm(forms.Form):
     )
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
-        """Initialise with current user's draft jobs."""
+        """Initialise with the current user's jobs whose contents may still change."""
         user = kwargs.pop("user", None)
         super().__init__(*args, **kwargs)
         if user:
-            self.fields["job"].queryset = PrintJob.objects.filter(
-                status=PrintJob.STATUS_DRAFT,
-                created_by=user,
-            ).order_by("-created_at")
+            self.fields["job"].queryset = (
+                PrintJob.objects.contents_editable().filter(created_by=user).order_by("-created_at")
+            )

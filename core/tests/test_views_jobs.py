@@ -16,7 +16,14 @@ from core.models import (
     PrintJobPlate,
     Project,
 )
-from core.tests.mixins import TestDataMixin
+from core.tests.mixins import (
+    TestDataMixin,
+    add_attempt,
+    complete_plate,
+    fail_plate,
+    make_completed_job,
+    make_sliced_job,
+)
 from core.views.print_jobs import PrintJobListView
 
 
@@ -119,9 +126,8 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
         part = Part.objects.create(
             project=sub, quantity=3, name="Hub", stl_file=SimpleUploadedFile("hub.stl", b"solid hub")
         )
-        done = PrintJob.objects.create(status=PrintJob.STATUS_COMPLETED)
+        done = make_completed_job()
         PrintJobPart.objects.create(print_job=done, part=part, quantity=3)
-        PrintJobPlate.objects.create(print_job=done, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
 
         self.client.post(reverse("core:project_create_jobs", args=[sub.pk]))
 
@@ -176,19 +182,13 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
     def test_skips_fully_printed_parts(self):
         """Parts with a remaining of 0 (needed − printed) are skipped."""
         # Mark part as fully printed via a completed job plate. Part quantity is 3 (TestDataMixin).
-        job = PrintJob.objects.create(
-            name="Old Job",
-            status=PrintJob.STATUS_DRAFT,
-            created_by=self.user,
-        )
+        job = make_completed_job(name="Old Job", created_by=self.user)
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=3)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status="completed")
 
         resp = self.client.post(self._url())
         self.assertEqual(resp.status_code, 302)
-        # No new draft job should be created (only the old one exists)
-        new_jobs = PrintJob.objects.filter(created_by=self.user, status=PrintJob.STATUS_DRAFT)
-        self.assertEqual(new_jobs.count(), 1)  # only the old one
+        # No new job should be created (only the old one exists)
+        self.assertEqual(list(PrintJob.objects.filter(created_by=self.user)), [job])
 
     def test_uses_remaining_quantity(self):
         """Job quantity equals the remaining (needed − printed)."""
@@ -201,9 +201,8 @@ class CreateJobsFromProjectViewTests(TestDataMixin, TestCase):
     def test_create_jobs_subtracts_global_printed(self):
         """Quantity is needed − printed across all completed jobs (no attribution)."""
         # 3 needed (part quantity from TestDataMixin), 1 already printed in any completed job → 2 remaining.
-        done = PrintJob.objects.create(status="completed", created_by=self.user)
+        done = make_completed_job(created_by=self.user)
         PrintJobPart.objects.create(print_job=done, part=self.part, quantity=1)
-        PrintJobPlate.objects.create(print_job=done, plate_number=1, status="completed")
 
         self.client.post(self._url())
         new_job = (
@@ -474,6 +473,23 @@ class PartDetailDraftJobFilterTests(TestDataMixin, TestCase):
         self.assertIn(match.pk, offered)
         self.assertNotIn(mismatch.pk, offered)
 
+    def test_offers_contents_editable_jobs_not_only_drafts(self):
+        """Sliced / slicing-failed jobs without attempts are offered; slicing or started jobs are not."""
+        preset = self._preset("P")
+        proj = Project.objects.create(name="P", default_print_preset=preset)
+        part = Part.objects.create(project=proj, quantity=1, name="p", stl_file=SimpleUploadedFile("p.stl", b"solid"))
+        jobs = {
+            status: PrintJob.objects.create(name=status, status=status, created_by=self.user, print_preset=preset)
+            for status, _ in PrintJob.STATUS_CHOICES
+        }
+        started = make_sliced_job(name="Started", created_by=self.user, print_preset=preset)
+        add_attempt(started.plates.get(), self.printer, "waiting")
+
+        resp = self.client.get(reverse("core:part_detail", kwargs={"pk": part.pk}))
+        offered = {j.pk for j in resp.context["draft_jobs"]}
+        expected = {jobs[s].pk for s in (PrintJob.STATUS_DRAFT, PrintJob.STATUS_SLICED, PrintJob.STATUS_FAILED)}
+        self.assertEqual(offered & {job.pk for job in [*jobs.values(), started]}, expected)
+
 
 class AddPartToJobNoPresetRejectTests(TestDataMixin, TestCase):
     """Adding a part with no resolvable preset is rejected, not turned into a None-preset job."""
@@ -558,8 +574,9 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
         super().setUp()
         self.client.login(username="testuser", password="testpass123")
         self.url = reverse("core:printjob_list")
-        self.job_a = PrintJob.objects.create(name="Alpha", status=PrintJob.STATUS_DRAFT, printer=self.printer)
-        self.job_b = PrintJob.objects.create(name="Beta", status=PrintJob.STATUS_COMPLETED)
+        self.job_a = PrintJob.objects.create(name="Alpha", status=PrintJob.STATUS_DRAFT)
+        # The printer filter matches jobs with a print attempt on that printer.
+        self.job_b = make_completed_job(name="Beta", printer=self.printer)
         PrintJobPart.objects.create(print_job=self.job_a, part=self.part, quantity=1)
         PrintJobPart.objects.create(print_job=self.job_b, part=self.other_part, quantity=2)
 
@@ -578,7 +595,17 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
         self.assertEqual(len(self._jobs(status="bogus")), 2)
 
     def test_filter_printer(self):
-        self.assertEqual(self._jobs(printer=self.printer.pk), [self.job_a])
+        self.assertEqual(self._jobs(printer=self.printer.pk), [self.job_b])
+
+    def test_filter_printer_matches_any_attempt_without_duplicates(self):
+        """A job matches when any attempt of any plate ran on the printer (listed once)."""
+        other_printer = PrinterProfile.objects.create(name="Second", created_by=self.user)
+        job_c = make_sliced_job(name="Gamma", plates=2)
+        plate1, plate2 = job_c.plates.order_by("plate_number")
+        fail_plate(plate1, self.printer)
+        add_attempt(plate2, other_printer, "printing")
+        self.assertEqual(self._jobs(printer=self.printer.pk), [job_c, self.job_b])
+        self.assertEqual(self._jobs(printer=other_printer.pk), [job_c])
 
     def test_non_numeric_printer_ignored(self):
         resp = self.client.get(self.url, {"printer": "abc"})
@@ -596,8 +623,8 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
         self.assertEqual(self._jobs(q="part"), [self.job_b, self.job_a])
 
     def test_combined_filters(self):
-        self.assertEqual(self._jobs(status="draft", printer=self.printer.pk, q="alpha"), [self.job_a])
-        self.assertEqual(self._jobs(status="completed", printer=self.printer.pk), [])
+        self.assertEqual(self._jobs(status="completed", printer=self.printer.pk, q="beta"), [self.job_b])
+        self.assertEqual(self._jobs(status="draft", printer=self.printer.pk), [])
 
     def test_empty_result_message(self):
         resp = self.client.get(self.url, {"q": "nomatch"})
@@ -607,15 +634,33 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
     def test_pagination_keeps_filters(self):
         for i in range(30):
             PrintJob.objects.create(name=f"Bulk {i}", status=PrintJob.STATUS_FAILED)
-        resp = self.client.get(self.url, {"status": "failed"})
+        resp = self.client.get(self.url, {"status": "slicing_failed"})
         self.assertEqual(len(resp.context["print_jobs"]), 25)
-        self.assertContains(resp, "page=2&amp;status=failed")
-        page2 = self.client.get(self.url, {"status": "failed", "page": 2})
+        self.assertContains(resp, "page=2&amp;status=slicing_failed")
+        page2 = self.client.get(self.url, {"status": "slicing_failed", "page": 2})
         self.assertEqual(len(page2.context["print_jobs"]), 5)
 
     def test_multi_status(self):
         self.assertEqual(self._jobs(status=["draft", "completed"]), [self.job_b, self.job_a])
-        self.assertEqual(self._jobs(status=["draft", "failed"]), [self.job_a])
+        self.assertEqual(self._jobs(status=["draft", "slicing_failed"]), [self.job_a])
+
+    def test_filter_derived_display_status(self):
+        """The status filter uses the derived display status, not the stored slicing status."""
+        ready = make_sliced_job(name="Ready")
+        printing = make_sliced_job(name="Printing")
+        add_attempt(printing.plates.get(), self.printer, "printing")
+        partial = make_sliced_job(name="Partial", plates=2)
+        plate1, plate2 = partial.plates.order_by("plate_number")
+        complete_plate(plate1, self.printer)
+        fail_plate(plate2, self.printer)
+        in_progress = make_sliced_job(name="InProgress", plates=2)
+        complete_plate(in_progress.plates.get(plate_number=1), self.printer)
+        self.assertEqual(self._jobs(status="ready"), [ready])
+        self.assertEqual(self._jobs(status="printing"), [printing])
+        self.assertEqual(self._jobs(status="partially_failed"), [partial])
+        self.assertEqual(self._jobs(status="in_progress"), [in_progress])
+        self.assertEqual(self._jobs(status="completed"), [self.job_b])
+        self.assertEqual(len(self._jobs(status="sliced")), 6)  # a stored status, not a display status: ignored
 
     def test_multi_status_ignores_invalid_values(self):
         self.assertEqual(self._jobs(status=["bogus", "draft"]), [self.job_a])
@@ -631,8 +676,9 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
 
     def test_multi_printer(self):
         other_printer = PrinterProfile.objects.create(name="Second", created_by=self.user)
-        job_c = PrintJob.objects.create(name="Gamma", printer=other_printer)
-        self.assertEqual(self._jobs(printer=[self.printer.pk, other_printer.pk]), [job_c, self.job_a])
+        job_c = make_sliced_job(name="Gamma")
+        add_attempt(job_c.plates.get(), other_printer, "waiting")
+        self.assertEqual(self._jobs(printer=[self.printer.pk, other_printer.pk]), [job_c, self.job_b])
 
     def test_multi_combined(self):
         self.assertEqual(self._jobs(status=["draft", "completed"], project=[self.project.pk]), [self.job_a])
@@ -645,14 +691,14 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
     def test_pagination_keeps_multi_params(self):
         for i in range(30):
             PrintJob.objects.create(name=f"Bulk {i}", status=PrintJob.STATUS_FAILED)
-        resp = self.client.get(self.url, {"status": ["failed", "draft"]})
-        self.assertContains(resp, "page=2&amp;status=failed&amp;status=draft")
+        resp = self.client.get(self.url, {"status": ["slicing_failed", "draft"]})
+        self.assertContains(resp, "page=2&amp;status=slicing_failed&amp;status=draft")
 
     def test_checked_state_rendered(self):
-        resp = self.client.get(self.url, {"status": ["draft", "failed"], "project": [self.project.pk]})
+        resp = self.client.get(self.url, {"status": ["draft", "slicing_failed"], "project": [self.project.pk]})
         html = resp.content.decode()
         self.assertRegex(html, r'name="status" value="draft"[^>]*checked')
-        self.assertRegex(html, r'name="status" value="failed"[^>]*checked')
+        self.assertRegex(html, r'name="status" value="slicing_failed"[^>]*checked')
         self.assertNotRegex(html, r'name="status" value="completed"[^>]*checked')
         self.assertRegex(html, rf'name="project" value="{self.project.pk}"[^>]*checked')
         self.assertContains(resp, "2 selected")
@@ -663,19 +709,32 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
         self.assertNotRegex(resp.content.decode(), r'name="status" value="[a-z]+"[^>]*checked')
         self.assertContains(resp, "All statuses")
 
-    def test_hide_completed_shortcut(self):
+    def test_hide_finished_shortcut(self):
+        """ "Hide finished" (was "Hide completed") drops completed and partially failed jobs."""
+        partial = make_sliced_job(name="Partial", plates=2)
+        plate1, plate2 = partial.plates.order_by("plate_number")
+        complete_plate(plate1, self.printer)
+        fail_plate(plate2, self.printer)
         resp = self.client.get(self.url)
-        self.assertContains(resp, "Hide completed")
-        jobs = self._jobs(status=[v for v, _ in PrintJob.STATUS_CHOICES if v != PrintJob.STATUS_COMPLETED])
+        self.assertContains(resp, "Hide finished")
+        querystring = resp.context["hide_completed_querystring"]
+        self.assertNotIn("status=completed", querystring)
+        self.assertNotIn("status=partially_failed", querystring)
+        self.assertIn("status=printing", querystring)
+        self.assertEqual(self._jobs(status="partially_failed"), [partial])
+        jobs = self._jobs(
+            status=[v for v, _ in PrintJob.DISPLAY_CHOICES if v not in PrintJob.FINISHED_DISPLAY_STATUSES]
+        )
         self.assertEqual(jobs, [self.job_a])
-        self.assertNotContains(self.client.get(self.url, {"status": "draft"}), "Hide completed")
+        self.assertNotContains(self.client.get(self.url, {"status": "draft"}), "Hide finished")
+        self.assertContains(self.client.get(self.url, {"status": ["draft", "partially_failed"]}), "Hide finished")
 
     def test_filters_remembered_across_requests(self):
-        self.client.get(self.url, {"status": ["draft", "failed"], "q": "alp"})
+        self.client.get(self.url, {"status": ["draft", "slicing_failed"], "q": "alp"})
         resp = self.client.get(self.url)
         self.assertEqual(resp.status_code, 302)
         followed = self.client.get(self.url, follow=True)
-        self.assertEqual(followed.context["status"], ["draft", "failed"])
+        self.assertEqual(followed.context["status"], ["draft", "slicing_failed"])
         self.assertEqual(followed.context["q"], "alp")
         self.assertEqual(list(followed.context["print_jobs"]), [self.job_a])
 
@@ -715,13 +774,15 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
         self.assertRedirects(self.client.get(self.url), f"{self.url}?status=completed", fetch_redirect_response=False)
 
     def test_saved_deleted_project_and_printer_discarded(self):
+        # Printers with print attempts are PROTECTed, so only attempt-free printers can vanish.
+        kept = PrinterProfile.objects.create(name="Kept", created_by=self.user)
         other_printer = PrinterProfile.objects.create(name="Gone", created_by=self.user)
-        self.client.get(self.url, {"printer": [self.printer.pk, other_printer.pk]})
+        self.client.get(self.url, {"printer": [kept.pk, other_printer.pk]})
         other_printer.delete()
         resp = self.client.get(self.url)
-        self.assertRedirects(resp, f"{self.url}?printer={self.printer.pk}", fetch_redirect_response=False)
-        self.client.get(self.url, {"printer": self.printer.pk})
-        self.printer.delete()
+        self.assertRedirects(resp, f"{self.url}?printer={kept.pk}", fetch_redirect_response=False)
+        self.client.get(self.url, {"printer": kept.pk})
+        kept.delete()
         self.assertEqual(self.client.get(self.url).status_code, 200)
 
     def test_saved_deleted_project_discarded(self):
@@ -799,9 +860,10 @@ class PrintJobListFilterTests(TestDataMixin, TestCase):
         with CaptureQueriesContext(connection) as small:
             self.client.get(self.url)
         for i in range(10):
-            job = PrintJob.objects.create(name=f"Extra {i}")
+            job = make_sliced_job(name=f"Extra {i}")
             PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
-            PrintJobPlate.objects.create(print_job=job, plate_number=1)
+            if i % 2:
+                complete_plate(job.plates.get(), self.printer)
         with CaptureQueriesContext(connection) as large:
             self.client.get(self.url)
         self.assertEqual(len(small), len(large))
@@ -843,8 +905,24 @@ class JobBedDimensionsTests(TestDataMixin, TestCase):
     def test_bed_dimensions_fall_back_to_printer(self):
         machine = self._machine(["0x0", "220x0", "220x220", "0x220"], "250")
         printer = PrinterProfile.objects.create(name="P", orca_machine_profile=machine)
-        job = self._job_with_plate(printer=printer)
+        job = self._job_with_plate()
+        complete_plate(job.plates.get(), printer)
         self.assertEqual(job.bed_dimensions, (220.0, 220.0, 250.0))
+
+    def test_bed_dimensions_use_printer_of_latest_attempt(self):
+        """The fallback is the printer of the job's most recent print attempt."""
+        small = PrinterProfile.objects.create(
+            name="Small", orca_machine_profile=self._machine(["0x0", "180x0", "180x180", "0x180"], "180")
+        )
+        large = PrinterProfile.objects.create(
+            name="Large", orca_machine_profile=self._machine(["0x0", "300x0", "300x300", "0x300"], "400")
+        )
+        job = self._job_with_plate()
+        plate = job.plates.get()
+        add_attempt(plate, small, "failed")
+        self.assertEqual(job.bed_dimensions, (180.0, 180.0, 180.0))
+        add_attempt(plate, large, "printing")
+        self.assertEqual(job.bed_dimensions, (300.0, 300.0, 400.0))
 
     def test_bed_dimensions_without_profile_is_none(self):
         job = self._job_with_plate()
@@ -877,7 +955,8 @@ class JobBedDimensionsTests(TestDataMixin, TestCase):
         )
         machine = self._machine(["0x0", "220x0", "220x220", "0x220"], "250")
         printer = PrinterProfile.objects.create(name="P", orca_machine_profile=machine)
-        job = PrintJob.objects.create(name="J", machine_profile=empty, printer=printer)
+        job = self._job_with_plate(machine_profile=empty)
+        add_attempt(job.plates.get(), printer, "waiting")
         self.assertEqual(job.bed_dimensions, (220.0, 220.0, 250.0))
 
     def test_bed_dimensions_malformed_area_is_none(self):
