@@ -462,11 +462,7 @@ def _slice_job_in_background(job_pk: int) -> None:
 
             from core.models import PrintJobPlate
 
-            plate = PrintJobPlate(
-                print_job=job,
-                plate_number=plate_result.plate_number,
-                status=PrintJobPlate.STATUS_WAITING,
-            )
+            plate = PrintJobPlate(print_job=job, plate_number=plate_result.plate_number)
             plate.gcode_file.name = str(relative)
             if plate_filament is not None:
                 plate.filament_used_grams = plate_filament

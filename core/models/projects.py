@@ -8,7 +8,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
-from django.db.models import CheckConstraint, Q, QuerySet, prefetch_related_objects
+from django.db.models import CheckConstraint, Prefetch, Q, QuerySet, prefetch_related_objects
 
 from core.models.file_copy import CopiedFiles, duplicate_field_file
 from core.models.parts import Part
@@ -248,7 +248,7 @@ class Project(models.Model):
     _AGGREGATE_PART_LEAF = "parts__job_entries__print_job__plates"
 
     @classmethod
-    def aggregate_prefetch_lookups(cls, depth: int = 3) -> list[str]:
+    def aggregate_prefetch_lookups(cls, depth: int = 3) -> list[str | Prefetch]:
         """Prefetch lookups that keep the tree aggregate properties query-flat.
 
         Returns the ``prefetch_related`` arguments a list/detail view should use
@@ -257,19 +257,22 @@ class Project(models.Model):
         cache instead of issuing a query per node/part.
 
         Covers, up to ``depth`` levels of ``subprojects`` nesting, the part leaf
-        (``parts__job_entries__print_job__plates``) and the ``subprojects`` relation.
+        (``parts__job_entries__print_job__plates``, the plates annotated with
+        their derived state) and the ``subprojects`` relation.
         Levels below ``depth`` degrade gracefully to lazy queries.
 
         Args:
             depth: Number of sub-project levels to cover (root counts as 0).
 
         Returns:
-            List of ``prefetch_related`` lookup strings.
+            List of ``prefetch_related`` lookups (strings and ``Prefetch`` objects).
         """
-        lookups: list[str] = []
+        from core.models.printing import PrintJobPlate
+
+        lookups: list[str | Prefetch] = []
         prefix = ""
         for _ in range(depth + 1):
-            lookups.append(f"{prefix}{cls._AGGREGATE_PART_LEAF}")
+            lookups.append(Prefetch(f"{prefix}{cls._AGGREGATE_PART_LEAF}", queryset=PrintJobPlate.objects.with_state()))
             lookups.append(f"{prefix}subprojects")
             prefix += "subprojects__"
         return lookups
@@ -320,16 +323,34 @@ class Project(models.Model):
             ids: Precomputed :meth:`subtree_ids`, to avoid walking the tree again.
 
         Returns:
-            Distinct queryset of :class:`~core.models.printing.PrintJob` rows whose
-            status is not in :attr:`PrintJob.TERMINAL_STATUSES`.
+            Distinct queryset of :class:`~core.models.printing.PrintJob` rows that
+            are not finished (display status not in
+            :attr:`PrintJob.FINISHED_DISPLAY_STATUSES`).
         """
         from core.models.printing import PrintJob
 
         return (
             PrintJob.objects.filter(job_parts__part__project_id__in=self.subtree_ids() if ids is None else ids)
-            .exclude(status__in=PrintJob.TERMINAL_STATUSES)
+            .unfinished()
             .distinct()
         )
+
+    def history_blocking_parts(self, ids: set[int] | None = None) -> QuerySet[Part]:
+        """Return the parts of this project's subtree that have print history.
+
+        A part has print history once it is in a print job with print attempts
+        (see :meth:`Part.has_print_history`); the project cannot be deleted then.
+
+        Args:
+            ids: Precomputed :meth:`subtree_ids`, to avoid walking the tree again.
+
+        Returns:
+            Distinct queryset of the subtree's parts with print history.
+        """
+        return Part.objects.filter(
+            project_id__in=self.subtree_ids() if ids is None else ids,
+            job_entries__print_job__plates__queue_entries__isnull=False,
+        ).distinct()
 
     def deletion_summary(self, ids: set[int] | None = None) -> dict[str, int]:
         """Count what deleting this project would remove along with it.
@@ -339,11 +360,11 @@ class Project(models.Model):
 
         Returns:
             Dict with keys ``subprojects``, ``parts``, ``documents``, ``hardware`` and
-            ``print_history`` (the ``PrintJobPart`` rows of the subtree's parts).
+            ``print_history`` (the subtree's parts with print history — while
+            there are any, the project cannot be deleted).
         """
         from core.models.documents import ProjectDocument
         from core.models.hardware import ProjectHardware
-        from core.models.printing import PrintJobPart
 
         if ids is None:
             ids = self.subtree_ids()
@@ -352,7 +373,7 @@ class Project(models.Model):
             "parts": Part.objects.filter(project_id__in=ids).count(),
             "documents": ProjectDocument.objects.filter(project_id__in=ids).count(),
             "hardware": ProjectHardware.objects.filter(project_id__in=ids).count(),
-            "print_history": PrintJobPart.objects.filter(part__project_id__in=ids).count(),
+            "print_history": self.history_blocking_parts(ids).count(),
         }
 
     #: Suffix of the default name of a copied project.
