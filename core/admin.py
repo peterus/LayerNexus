@@ -3,6 +3,7 @@
 from collections.abc import Iterable
 from typing import Any
 
+from django import forms
 from django.contrib import admin
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
@@ -291,8 +292,46 @@ class PrintTimeEstimateAdmin(admin.ModelAdmin):
     list_filter = ("printer",)
 
 
+class PrintQueueAdminForm(forms.ModelForm):
+    """Admin form that validates "one open attempt per plate" itself.
+
+    ``result`` is read-only in the admin, so Django skips the conditional
+    unique constraint (its condition references an excluded field) — without
+    this check a duplicate would only fail in the database (500).
+    """
+
+    class Meta:
+        model = PrintQueue
+        fields = [
+            "plate",
+            "printer",
+            "priority",
+            "position",
+            "max_retries",
+            "result",
+            "resolved_at",
+            "is_retry",
+            "started_at",
+            "completed_at",
+            "progress",
+            "status_updated_at",
+            "last_error",
+            "start_claimed_at",
+        ]
+
+    def clean_plate(self) -> PrintJobPlate | None:
+        """Reject a plate that already has another open attempt."""
+        plate = self.cleaned_data.get("plate")
+        if plate is not None and not self.instance.result:
+            others = PrintQueue.objects.open().filter(plate=plate).exclude(pk=self.instance.pk)
+            if others.exists():
+                raise forms.ValidationError("This plate already has an open print attempt.")
+        return plate
+
+
 @admin.register(PrintQueue)
 class PrintQueueAdmin(admin.ModelAdmin):
+    form = PrintQueueAdminForm
     list_display = (
         "plate",
         "printer",
@@ -323,7 +362,8 @@ class PrintQueueAdmin(admin.ModelAdmin):
     def get_readonly_fields(self, request: HttpRequest, obj: PrintQueue | None = None) -> tuple[str, ...]:
         """Keep transition facts read-only; freeze the whole attempt once it is history."""
         readonly = tuple(super().get_readonly_fields(request, obj)) + self.TRANSITION_FIELDS
-        if obj is not None and obj.is_history:
+        if obj is not None and (obj.is_history or obj.has_active_start_claim):
+            # A starting print must stay on its plate/printer (as for deletes).
             return readonly + self.HISTORY_READONLY_FIELDS
         return readonly
 

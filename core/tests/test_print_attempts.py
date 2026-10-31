@@ -294,6 +294,20 @@ class AttemptReaderTests(_AttemptTestBase):
         review = self._attempt(self.plate2, state="awaiting_review")
         self.assertEqual(busy_entry_for_printer(self.printer), review)
 
+    def test_farm_cards_waiting_counts_per_printer(self):
+        from django.urls import reverse
+
+        from core.models import PrinterProfile
+
+        empty = PrinterProfile.objects.create(name="Empty Printer")
+        self._attempt()
+        self._attempt(self.plate2)
+        self._resolved(PrintJobPlate.objects.create(print_job=self.job, plate_number=3))
+        resp = self.client.get(reverse("core:farm_dashboard"))
+        counts = {c["printer"].pk: c["waiting_count"] for c in resp.context["printer_cards"]}
+        self.assertEqual(counts[self.printer.pk], 2)
+        self.assertEqual(counts[empty.pk], 0)
+
     def test_farm_card_state_from_open_attempts(self):
         from django.urls import reverse
 
@@ -498,6 +512,49 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
         self.assertIn("result", readonly)  # transitions only via the model methods
         self.assertIn("started_at", readonly)
         self.assertNotIn("plate", readonly)
+
+    def _admin_login(self) -> None:
+        from django.contrib.auth.models import User
+
+        User.objects.filter(pk=self.user.pk).update(is_staff=True, is_superuser=True)
+
+    def _admin_form_data(self, plate: PrintJobPlate) -> dict:
+        return {"plate": plate.pk, "printer": self.printer.pk, "priority": 2, "position": 0, "max_retries": 3}
+
+    def test_admin_add_duplicate_open_attempt_is_form_error(self):
+        from django.urls import reverse
+
+        self._admin_login()
+        resp = self.client.post(reverse("admin:core_printqueue_add"), self._admin_form_data(self.plate))
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "already has an open print attempt")
+        self.assertEqual(PrintQueue.objects.open().filter(plate=self.plate).count(), 1)
+
+    def test_admin_add_and_move_waiting_attempt_refreshes_plates(self):
+        from django.urls import reverse
+
+        self._admin_login()
+        plate3 = PrintJobPlate.objects.create(print_job=self.job, plate_number=3)
+        resp = self.client.post(reverse("admin:core_printqueue_add"), self._admin_form_data(self.plate2))
+        self.assertEqual(resp.status_code, 302)
+        added = PrintQueue.objects.open().get(plate=self.plate2)
+        # Moving it to a plate with an open attempt is a form error ...
+        url = reverse("admin:core_printqueue_change", args=[added.pk])
+        resp = self.client.post(url, self._admin_form_data(self.plate))
+        self.assertContains(resp, "already has an open print attempt")
+        # ... moving it to a free plate works and refreshes both plates.
+        PrintJobPlate.objects.filter(pk=self.plate2.pk).update(status=PrintJobPlate.STATUS_PRINTING)
+        resp = self.client.post(url, self._admin_form_data(plate3))
+        self.assertEqual(resp.status_code, 302)
+        self.plate2.refresh_from_db()
+        self.assertEqual(self.plate2.status, PrintJobPlate.STATUS_WAITING)
+        self.assertEqual(PrintQueue.objects.get(pk=added.pk).plate, plate3)
+
+    def test_admin_freezes_plate_of_starting_attempt(self):
+        from core.admin import PrintQueueAdmin
+
+        claimed = self._attempt(self.plate2, start_claimed_at=timezone.now())
+        self.assertIn("plate", PrintQueueAdmin(PrintQueue, None).get_readonly_fields(None, claimed))
 
     def test_admin_bulk_delete_refuses_history_and_starting_attempts(self):
         from django.contrib.auth.models import User
