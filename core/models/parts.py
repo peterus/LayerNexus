@@ -175,13 +175,32 @@ class Part(models.Model):
         return PrintJob.objects.filter(pk__in=self.job_entries.values("print_job_id")).unfinished()
 
     def history_jobs(self) -> QuerySet[PrintJob]:
-        """Return the print jobs with print attempts that contain this part (its print history)."""
-        from core.models.printing import PrintJob
+        """Return the print jobs with print attempts that contain this part (its print history).
 
-        return PrintJob.objects.filter(job_parts__part=self, plates__queue_entries__isnull=False).distinct()
+        A job counts if the part is one of its parts while any plate has attempts,
+        or if the part lies on a plate (plate parts) that has attempts.  Built from
+        ``EXISTS`` subqueries, so no row fan-out over plates and attempts.
+        """
+        from core.models.printing import PrintJob, PrintJobPart, PrintJobPlatePart
+        from core.models.queue import PrintQueue
+
+        in_job = Exists(PrintJobPart.objects.filter(print_job=OuterRef("pk"), part=self))
+        on_attempted_plate = Exists(
+            PrintJobPlatePart.objects.filter(
+                plate__print_job=OuterRef("pk"),
+                part=self,
+                plate__queue_entries__isnull=False,
+            )
+        )
+        has_attempts = Exists(PrintQueue.objects.filter(plate__print_job=OuterRef("pk")))
+        # Restrict the outer scan to this part's jobs (indexed) before the correlated checks.
+        candidates = Q(pk__in=self.job_entries.values("print_job_id")) | Q(
+            pk__in=PrintJobPlatePart.objects.filter(part=self).values("plate__print_job_id")
+        )
+        return PrintJob.objects.filter(candidates).filter((in_job & has_attempts) | on_attempted_plate)
 
     def has_print_history(self) -> bool:
-        """Return True if the part is in a print job that has print attempts.
+        """Return True if the part is in a print job (or on a plate) that has print attempts.
 
         Such a part is not deletable — its print history must be kept.
         """

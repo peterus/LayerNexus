@@ -158,6 +158,13 @@ raw `request.user.is_staff` check.
   `discard_slicing()` (back to draft). Parts in any print job are not deletable
   (`PrintJobPart.part` is `PROTECT`; guards: `blocking_jobs()`, `has_print_history()`,
   `Project.history_blocking_parts()`).
+- **Plate parts:** a plate knows its part copies (`PrintJobPlatePart`: plate, part, `copy_index`,
+  `meshes_on_plate`/`mesh_count`). The slicing worker bundles job parts in pk order,
+  `create_3mf_bundle()` returns the object-to-part mapping (`BundleObject`), and
+  `services/gcode_objects.py` maps the G-code labels (`EXCLUDE_OBJECT_DEFINE NAME=Object_<N>…`) back.
+  `PrintJob.plate_parts_known=False` = mapping unreliable → count printed parts with the old
+  "all plates completed" rule. Unplaced copies: `PrintJob.unplaced_copies()` / warning on the job page.
+  Keep `bundle_objects()` numbering stable — the backfill migration `0040` relies on it.
 - **Sub-project aggregation:** recurse with a quantity multiplier — see
   `Project._collect_parts_with_multiplier()` (and `_collect_hardware_with_multiplier`,
   `_collect_documents`) as the reference shape.

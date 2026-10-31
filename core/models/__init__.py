@@ -10,7 +10,7 @@ from core.models.orca_profiles import (
 )
 from core.models.parts import Part, PrintTimeEstimate
 from core.models.printers import CostProfile, PrinterProfile
-from core.models.printing import PrintJob, PrintJobPart, PrintJobPlate
+from core.models.printing import PrintJob, PrintJobPart, PrintJobPlate, PrintJobPlatePart
 from core.models.projects import Project
 from core.models.queue import PrintQueue, ScheduledQueueStart
 from core.models.spoolman import SpoolmanFilamentMapping
@@ -28,6 +28,7 @@ __all__ = [
     "PrintJob",
     "PrintJobPart",
     "PrintJobPlate",
+    "PrintJobPlatePart",
     "PrintQueue",
     "ScheduledQueueStart",
     "PrintTimeEstimate",

@@ -8,7 +8,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
-from django.db.models import CheckConstraint, Prefetch, Q, QuerySet, prefetch_related_objects
+from django.db.models import CheckConstraint, Exists, OuterRef, Prefetch, Q, QuerySet, prefetch_related_objects
 
 from core.models.file_copy import CopiedFiles, duplicate_field_file
 from core.models.parts import Part
@@ -336,19 +336,30 @@ class Project(models.Model):
     def history_blocking_parts(self, ids: set[int] | None = None) -> QuerySet[Part]:
         """Return the parts of this project's subtree that have print history.
 
-        A part has print history once it is in a print job with print attempts
-        (see :meth:`Part.has_print_history`); the project cannot be deleted then.
+        A part has print history once it is in a print job with print attempts or
+        lies on a plate with attempts (see :meth:`Part.has_print_history`); the
+        project cannot be deleted then.
 
         Args:
             ids: Precomputed :meth:`subtree_ids`, to avoid walking the tree again.
 
         Returns:
-            Distinct queryset of the subtree's parts with print history.
+            Queryset of the subtree's parts with print history (no duplicates).
         """
+        from core.models.printing import PrintJobPlatePart
+        from core.models.queue import PrintQueue
+
+        # ``EXISTS`` subqueries instead of joins: no row fan-out over jobs, plates and attempts.
+        in_attempted_job = Exists(
+            PrintQueue.objects.filter(plate__print_job__job_parts__part=OuterRef("pk")).order_by()
+        )
+        on_attempted_plate = Exists(
+            PrintJobPlatePart.objects.filter(part=OuterRef("pk"), plate__queue_entries__isnull=False)
+        )
         return Part.objects.filter(
+            in_attempted_job | on_attempted_plate,
             project_id__in=self.subtree_ids() if ids is None else ids,
-            job_entries__print_job__plates__queue_entries__isnull=False,
-        ).distinct()
+        )
 
     def deletion_summary(self, ids: set[int] | None = None) -> dict[str, int]:
         """Count what deleting this project would remove along with it.

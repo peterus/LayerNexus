@@ -23,6 +23,7 @@ from .models import (
     PrintJob,
     PrintJobPart,
     PrintJobPlate,
+    PrintJobPlatePart,
     PrintQueue,
     PrintTimeEstimate,
     Project,
@@ -257,6 +258,8 @@ class PrintJobAdmin(_PrintHistoryDeleteGuardMixin, admin.ModelAdmin):
             readonly += ("machine_profile",)
         if obj is not None and obj.print_started:
             readonly += ("status",)
+        # Slicer fact: decides how printed parts are counted.
+        readonly += ("plate_parts_known",)
         return readonly
 
     def _history_attempts(self, objs: Iterable[PrintJob]) -> QuerySet[PrintQueue]:
@@ -350,6 +353,27 @@ class PrintJobPartAdmin(admin.ModelAdmin):
             super().delete_queryset(request, queryset)
 
 
+class PrintJobPlatePartInline(admin.TabularInline):
+    """Read-only list of the part copies on a plate (recorded by the slicer)."""
+
+    model = PrintJobPlatePart
+    extra = 0
+    fields = ("part", "copy_index", "meshes_on_plate", "mesh_count")
+    readonly_fields = fields
+
+    def has_add_permission(self, request: HttpRequest, obj: PrintJobPlate | None = None) -> bool:
+        """Refuse adding plate parts by hand: they come from the slicer only."""
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj: PrintJobPlate | None = None) -> bool:
+        """Plate parts are slicer facts and not editable."""
+        return False
+
+    def has_delete_permission(self, request: HttpRequest, obj: PrintJobPlate | None = None) -> bool:
+        """Plate parts go away with their plate only."""
+        return False
+
+
 @admin.register(PrintJobPlate)
 class PrintJobPlateAdmin(_PrintHistoryDeleteGuardMixin, admin.ModelAdmin):
     list_display = (
@@ -360,6 +384,7 @@ class PrintJobPlateAdmin(_PrintHistoryDeleteGuardMixin, admin.ModelAdmin):
         "print_time_estimate",
     )
     list_filter = ("print_job",)
+    inlines = [PrintJobPlatePartInline]
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[PrintJobPlate]:
         """Annotate the derived plate state for the change list."""

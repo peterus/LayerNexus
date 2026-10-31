@@ -8,6 +8,7 @@ import io
 import logging
 import struct
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from xml.etree.ElementTree import Element, ParseError, SubElement, tostring
 
@@ -27,6 +28,57 @@ REL_TYPE_3DMODEL = "http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel
 
 class ThreeMFError(Exception):
     """Raised when 3MF bundle creation fails."""
+
+
+@dataclass(frozen=True)
+class BundleObject:
+    """One ``<object>`` of a bundle and the job part copy it belongs to.
+
+    OrcaSlicer names every bundle object ``Object_<object_id>`` in the G-code,
+    so this record maps the G-code object labels back to the parts.
+
+    Attributes:
+        object_id: 3MF object ID (1-based, consecutive across the bundle).
+        part_index: Index of the source file in the ``parts`` list.
+        copy_index: Copy of that part (0-based, ``< quantity``).
+        mesh_index: Mesh of the source file (0-based; STL files have one mesh).
+        mesh_count: Number of meshes in the source file.
+    """
+
+    object_id: int
+    part_index: int
+    copy_index: int
+    mesh_index: int
+    mesh_count: int
+
+
+def bundle_objects(parts: list[tuple[int, int]]) -> list[BundleObject]:
+    """Number the bundle objects the way :func:`create_3mf_bundle` writes them.
+
+    Object IDs run consecutively: per part, per mesh, per copy (mesh-major, so
+    the copies of one mesh are adjacent).  This order must stay stable — the
+    plate-parts backfill re-derives the mapping of G-code sliced long ago with it.
+
+    Args:
+        parts: List of (quantity, mesh_count) tuples in bundle order.
+
+    Returns:
+        One :class:`BundleObject` per object, ordered by ``object_id``.
+    """
+    objects: list[BundleObject] = []
+    for part_index, (quantity, mesh_count) in enumerate(parts):
+        for mesh_index in range(mesh_count):
+            for copy_index in range(quantity):
+                objects.append(
+                    BundleObject(
+                        object_id=len(objects) + 1,
+                        part_index=part_index,
+                        copy_index=copy_index,
+                        mesh_index=mesh_index,
+                        mesh_count=mesh_count,
+                    )
+                )
+    return objects
 
 
 def _parse_binary_stl(
@@ -273,19 +325,56 @@ def extract_meshes_from_3mf(
     return meshes
 
 
-def create_3mf_bundle(parts: list[tuple[Path | str, int]]) -> bytes:
+def read_model_meshes(
+    model_path: Path | str,
+) -> list[tuple[list[tuple[float, float, float]], list[tuple[int, int, int]]]]:
+    """Parse a model file (binary STL or 3MF) into its meshes.
+
+    Args:
+        model_path: Path to the STL or 3MF file.
+
+    Returns:
+        List of (vertices, triangles) tuples — one for an STL file, one per
+        mesh object for a 3MF file.
+
+    Raises:
+        ThreeMFError: If the file cannot be parsed.
+        FileNotFoundError: If the file does not exist.
+    """
+    model_path = Path(model_path)
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+
+    file_data = model_path.read_bytes()
+
+    if model_path.suffix.lower() == ".3mf":
+        meshes = extract_meshes_from_3mf(file_data)
+        logger.debug("Parsed 3MF %s: %d mesh(es)", model_path.name, len(meshes))
+        return meshes
+
+    # Detect ASCII STL (starts with "solid") vs binary
+    if file_data[:5] == b"solid" and b"\n" in file_data[:100]:
+        raise ThreeMFError(f"ASCII STL files are not supported: {model_path.name}. Please convert to binary STL.")
+
+    vertices, triangles = _parse_binary_stl(file_data)
+    logger.debug("Parsed STL %s: %d vertices, %d triangles", model_path.name, len(vertices), len(triangles))
+    return [(vertices, triangles)]
+
+
+def create_3mf_bundle(parts: list[tuple[Path | str, int]]) -> tuple[bytes, list[BundleObject]]:
     """Create a 3MF package containing multiple model files.
 
     Accepts both STL and 3MF files.  Each file is parsed into mesh
-    data and added as ``<object>`` elements in the output 3MF model.
-    The ``quantity`` determines how many ``<item>`` references are
-    created in the ``<build>`` section.
+    data and every mesh is added *quantity* times as separate
+    ``<object>`` elements in the output 3MF model.  The object IDs are
+    numbered as described in :func:`bundle_objects`.
 
     Args:
         parts: List of (model_path, quantity) tuples.
 
     Returns:
-        Bytes of the 3MF ZIP archive.
+        Tuple of (bytes of the 3MF ZIP archive, bundle objects ordered by
+        object ID — the object-to-part mapping).
 
     Raises:
         ThreeMFError: If any file cannot be parsed.
@@ -295,39 +384,12 @@ def create_3mf_bundle(parts: list[tuple[Path | str, int]]) -> bytes:
         raise ThreeMFError("No parts provided for 3MF bundle")
 
     objects = []
+    mesh_counts: list[tuple[int, int]] = []
     for model_path, quantity in parts:
-        model_path = Path(model_path)
-        if not model_path.exists():
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-
-        file_data = model_path.read_bytes()
-
-        if model_path.suffix.lower() == ".3mf":
-            meshes = extract_meshes_from_3mf(file_data)
-            for vertices, triangles in meshes:
-                objects.append((vertices, triangles, quantity))
-            logger.debug(
-                "Parsed 3MF %s: %d mesh(es), qty=%d",
-                model_path.name,
-                len(meshes),
-                quantity,
-            )
-        else:
-            # Detect ASCII STL (starts with "solid") vs binary
-            if file_data[:5] == b"solid" and b"\n" in file_data[:100]:
-                raise ThreeMFError(
-                    f"ASCII STL files are not supported: {model_path.name}. Please convert to binary STL."
-                )
-
-            vertices, triangles = _parse_binary_stl(file_data)
+        meshes = read_model_meshes(model_path)
+        for vertices, triangles in meshes:
             objects.append((vertices, triangles, quantity))
-            logger.debug(
-                "Parsed STL %s: %d vertices, %d triangles, qty=%d",
-                model_path.name,
-                len(vertices),
-                len(triangles),
-                quantity,
-            )
+        mesh_counts.append((quantity, len(meshes)))
 
     # Build the 3MF ZIP archive in memory
     buffer = io.BytesIO()
@@ -342,4 +404,4 @@ def create_3mf_bundle(parts: list[tuple[Path | str, int]]) -> bytes:
         len(objects),
         len(bundle_bytes),
     )
-    return bundle_bytes
+    return bundle_bytes, bundle_objects(mesh_counts)

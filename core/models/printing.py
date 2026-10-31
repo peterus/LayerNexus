@@ -25,6 +25,7 @@ from django.db.models import (
     Exists,
     F,
     IntegerField,
+    Max,
     Min,
     OuterRef,
     Q,
@@ -37,6 +38,9 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from core.models.parts import Part
     from core.models.printers import PrinterProfile
     from core.models.queue import PrintQueue
 
@@ -45,6 +49,26 @@ def _count_subquery(queryset: models.QuerySet, group_field: str) -> Coalesce:
     """Return ``COUNT(*)`` of ``queryset`` (already filtered on an ``OuterRef``) as a subquery expression."""
     counted = queryset.order_by().values(group_field).annotate(n=Count("pk")).values("n")
     return Coalesce(Subquery(counted, output_field=IntegerField()), 0)
+
+
+def _part_labels(parts: Iterable[Part]) -> dict[int, str]:
+    """Return part pk → display name; parts sharing a name get their project path appended.
+
+    The full path (not just the project name) tells deep-copied variants apart,
+    whose sub-projects keep their names.  The paths come from one
+    :meth:`Project.path_label_map` query, made only on a collision.
+    """
+    from core.models.projects import Project
+
+    parts = {part.pk: part for part in parts}
+    name_counts: dict[str, int] = {}
+    for part in parts.values():
+        name_counts[part.name] = name_counts.get(part.name, 0) + 1
+    paths = Project.path_label_map() if any(count > 1 for count in name_counts.values()) else {}
+    labels: dict[int, str] = {}
+    for pk, part in parts.items():
+        labels[pk] = part.name if name_counts[part.name] == 1 else f"{part.name} ({paths.get(part.project_id)})"
+    return labels
 
 
 class PrintJobQuerySet(models.QuerySet):
@@ -218,6 +242,13 @@ class PrintJob(models.Model):
         null=True,
         blank=True,
         help_text="Timestamp when slicing was started",
+    )
+    plate_parts_known = models.BooleanField(
+        default=True,
+        help_text=(
+            "Whether the plate parts (which part copies lie on which plate) are reliable enough to count "
+            "printed parts. If not, a part counts as printed only once every plate of the job is completed."
+        ),
     )
 
     notes = models.TextField(blank=True)
@@ -441,6 +472,75 @@ class PrintJob(models.Model):
         if not locked.can_change_contents:
             raise ValueError(f"Job {self.pk} cannot change its contents (print started or slicing).")
         return locked
+
+    # ── Plate parts ─────────────────────────────────────────────────────
+
+    def has_plate_parts(self) -> bool:
+        """Return True if any plate of the job has recorded plate parts."""
+        return PrintJobPlatePart.objects.filter(plate__print_job=self).exists()
+
+    def unplaced_copies(self) -> dict[int, int]:
+        """Count the part copies that lie on no plate (completely).
+
+        A copy of a multi-mesh part counts as unplaced unless all of its meshes
+        lie on plates.  Only meaningful once the job has plates with recorded
+        plate parts; otherwise (not sliced, or plate assignment unknown) the
+        result is empty.
+
+        Returns:
+            Part primary key → number of copies not (completely) on any plate;
+            parts with every copy placed are omitted.
+        """
+        if not self.plates.exists() or not (self.plate_parts_known or self.has_plate_parts()):
+            return {}
+        complete: dict[int, int] = {}
+        copies = (
+            PrintJobPlatePart.objects.filter(plate__print_job=self)
+            .order_by()
+            .values("part_id", "copy_index")
+            .annotate(on_plates=Sum("meshes_on_plate"), meshes=Max("mesh_count"))
+        )
+        for row in copies:
+            if row["on_plates"] >= row["meshes"]:
+                complete[row["part_id"]] = complete.get(row["part_id"], 0) + 1
+        missing: dict[int, int] = {}
+        for part_id, quantity in self.job_parts.values_list("part_id", "quantity"):
+            unplaced = quantity - complete.get(part_id, 0)
+            if unplaced > 0:
+                missing[part_id] = unplaced
+        return missing
+
+    def part_labels(self) -> dict[int, str]:
+        """Return part pk → display label for the job's parts (cached on the instance).
+
+        Same-named parts get their project path, see :func:`_part_labels`.
+        """
+        if "_part_labels_cache" not in self.__dict__:
+            from core.models.parts import Part
+
+            self._part_labels_cache = _part_labels(Part.objects.filter(job_entries__print_job=self))
+        return self._part_labels_cache
+
+    def plate_assignment_warnings(self) -> list[str]:
+        """Return user-facing warnings about the plate assignment of the job's parts.
+
+        Returns:
+            ``"N× <part> on no plate"`` per part with unplaced copies, or a single
+            "assignment unknown" warning if the plates' parts could not be determined.
+        """
+        if not self.plates.exists():
+            return []
+        if not self.plate_parts_known and not self.has_plate_parts():
+            return [
+                "Plate assignment unknown: it could not be determined which parts lie on which plate. "
+                "Printed parts of this job count only once every plate is completed."
+            ]
+        missing = self.unplaced_copies()
+        if not missing:
+            return []
+
+        labels = self.part_labels()
+        return [f"{count}× {labels[part_id]} on no plate" for part_id, count in sorted(missing.items())]
 
     def discard_slicing(self) -> None:
         """Throw the slicing result away and put the job back to ``draft``.
@@ -738,6 +838,28 @@ class PrintJobPlate(models.Model):
         attempt = self.passed_attempt
         return attempt.resolved_at if attempt is not None else None
 
+    def parts_summary(self) -> list[str]:
+        """Return the parts on this plate as ``"<part> ×<copies>"`` labels (from the prefetch cache when present).
+
+        Copies of a multi-mesh part with only some meshes on this plate are
+        labelled ``"<part> (partial) ×<copies>"``.  Parts sharing a name are told
+        apart by their project.
+        """
+        if "plate_parts" in getattr(self, "_prefetched_objects_cache", {}):
+            entries = list(self.plate_parts.all())
+        else:
+            entries = list(self.plate_parts.select_related("part"))
+        # The detail view hands in the job's labels (one computation for all plates).
+        labels = getattr(self, "part_labels", None) or _part_labels(entry.part for entry in entries)
+        counts: dict[tuple[int, bool], int] = {}
+        for entry in entries:
+            key = (entry.part_id, entry.meshes_on_plate < entry.mesh_count)
+            counts[key] = counts.get(key, 0) + 1
+        return [
+            f"{labels[part_id]}{' (partial)' if partial else ''} ×{count}"
+            for (part_id, partial), count in counts.items()
+        ]
+
     def failed_attempts_since_manual_enqueue(self) -> int:
         """Count failed attempts since (and including) the last user-enqueued attempt.
 
@@ -754,3 +876,38 @@ class PrintJobPlate(models.Model):
         if last_manual is not None:
             attempts = attempts.filter(pk__gte=last_manual)
         return attempts.filter(result=PrintQueue.RESULT_FAILED).count()
+
+
+class PrintJobPlatePart(models.Model):
+    """Which part copy (or which share of its meshes) lies on a plate.
+
+    Recorded from the G-code object labels when a job is sliced (see
+    :mod:`core.services.gcode_objects`).  A copy of a part with several meshes
+    (multi-object 3MF) can be split across plates; it is complete once the
+    ``meshes_on_plate`` of all its rows add up to ``mesh_count``.
+    """
+
+    plate = models.ForeignKey(PrintJobPlate, on_delete=models.CASCADE, related_name="plate_parts")
+    # ``PROTECT``: a plate's parts are print history once the plate has attempts.
+    part = models.ForeignKey("core.Part", on_delete=models.PROTECT, related_name="plate_entries")
+    copy_index = models.PositiveIntegerField(help_text="Copy of the part within the job (0-based)")
+    meshes_on_plate = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+        help_text="How many meshes of this copy lie on the plate",
+    )
+    mesh_count = models.PositiveIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+        help_text="Total number of meshes of the copy",
+    )
+
+    class Meta:
+        ordering = ["plate", "part", "copy_index"]
+        constraints = [
+            models.UniqueConstraint(fields=["plate", "part", "copy_index"], name="printjobplatepart_unique_copy"),
+        ]
+
+    def __str__(self) -> str:
+        share = "" if self.meshes_on_plate == self.mesh_count else f" ({self.meshes_on_plate}/{self.mesh_count} meshes)"
+        return f"{self.part.name} copy {self.copy_index + 1}{share} on {self.plate}"

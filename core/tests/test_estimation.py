@@ -210,7 +210,7 @@ class EstimationWorkerTests(TestDataMixin, TestCase):
 
         with (
             patch.object(slicing_worker, "_find_compatible_machine", return_value=MagicMock()),
-            patch.object(slicing_worker, "create_3mf_bundle", return_value=b"3mf"),
+            patch.object(slicing_worker, "create_3mf_bundle", return_value=(b"3mf", [])),
             patch.object(slicing_worker, "_build_slicer_kwargs", return_value={}),
             patch.object(slicing_worker, "OrcaSlicerAPIClient", return_value=fake_client),
         ):
@@ -600,7 +600,7 @@ class SliceJobUsesJobPresetTests(TestCase):
 
         with (
             mock.patch.object(slicing_worker, "_build_slicer_kwargs", side_effect=fake_build_kwargs),
-            mock.patch.object(slicing_worker, "create_3mf_bundle", return_value=b"3mf"),
+            mock.patch.object(slicing_worker, "create_3mf_bundle", return_value=(b"3mf", [])),
             mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls,
         ):
             client_cls.return_value.slice_bundle.return_value = mock.Mock(
@@ -805,7 +805,7 @@ class SliceLegacyJobFallbackTests(TestCase):
 
         with (
             mock.patch.object(slicing_worker, "_build_slicer_kwargs", side_effect=fake_build_kwargs),
-            mock.patch.object(slicing_worker, "create_3mf_bundle", return_value=b"3mf"),
+            mock.patch.object(slicing_worker, "create_3mf_bundle", return_value=(b"3mf", [])),
             mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls,
         ):
             client_cls.return_value.slice_bundle.return_value = mock.Mock(
@@ -847,7 +847,7 @@ class WorkerConditionalCompletionTests(TestCase):
                 slicing_worker, "_find_compatible_machine", return_value=OrcaMachineProfile.objects.first()
             ),
             mock.patch.object(slicing_worker, "_build_slicer_kwargs", return_value={}),
-            mock.patch.object(slicing_worker, "create_3mf_bundle", return_value=b"3mf"),
+            mock.patch.object(slicing_worker, "create_3mf_bundle", return_value=(b"3mf", [])),
             mock.patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls,
         ):
             client_cls.return_value.slice_bundle.return_value = mock.Mock(
@@ -971,7 +971,7 @@ class WorkerFailurePathTests(TestCase):
         with (
             patch.object(slicing_worker, "_find_compatible_machine", return_value=self.machine),
             patch.object(slicing_worker, "_build_slicer_kwargs", return_value={}),
-            patch.object(slicing_worker, "create_3mf_bundle", return_value=b"3mf"),
+            patch.object(slicing_worker, "create_3mf_bundle", return_value=(b"3mf", [])),
             patch.object(slicing_worker, "OrcaSlicerAPIClient") as client_cls,
         ):
             client_cls.return_value.slice_bundle.configure_mock(**slice_kwargs)
