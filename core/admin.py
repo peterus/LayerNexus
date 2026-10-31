@@ -7,7 +7,7 @@ from django import forms
 from django.contrib import admin
 from django.core.exceptions import PermissionDenied
 from django.db import transaction
-from django.db.models import Model, Q, QuerySet
+from django.db.models import Exists, Model, OuterRef, Q, QuerySet
 from django.http import HttpRequest
 
 from .models import (
@@ -298,25 +298,33 @@ class PrintJobPartAdmin(admin.ModelAdmin):
         )
 
     @staticmethod
-    def _job_started(request: HttpRequest, obj: PrintJobPart) -> bool:
-        """Return whether the entry's job is frozen (cached per request and job).
+    def _job_cached(request: HttpRequest, obj: PrintJobPart) -> tuple[bool, bool]:
+        """Return ``(frozen, started)`` for the entry's job, cached per request and job.
 
-        The part/project delete confirmation asks this for every protected entry.
+        The part/project/job delete confirmations ask this for every cascaded entry.
         """
         cache = request.__dict__.setdefault("_printjob_frozen_cache", {})
         if obj.print_job_id not in cache:
-            cache[obj.print_job_id] = _contents_frozen(PrintJob.objects.get(pk=obj.print_job_id))
+            # One query: the attempts check is annotated (``PrintJob.print_started`` reads it).
+            attempts = PrintQueue.objects.filter(plate__print_job=OuterRef("pk"))
+            job = PrintJob.objects.annotate(job_has_attempts=Exists(attempts)).get(pk=obj.print_job_id)
+            cache[obj.print_job_id] = (_contents_frozen(job), job.print_started)
         return cache[obj.print_job_id]
 
     def has_change_permission(self, request: HttpRequest, obj: PrintJobPart | None = None) -> bool:
-        """Refuse changing an entry of a job with print attempts."""
-        if obj is not None and self._job_started(request, obj):
+        """Refuse changing an entry unless its job is a draft without print attempts."""
+        if obj is not None and self._job_cached(request, obj)[0]:
             return False
         return super().has_change_permission(request, obj)
 
     def has_delete_permission(self, request: HttpRequest, obj: PrintJobPart | None = None) -> bool:
-        """Refuse deleting an entry of a job with print attempts."""
-        if obj is not None and self._job_started(request, obj):
+        """Refuse deleting an entry of a job with print attempts.
+
+        Only print history blocks here: Django asks this for every entry cascaded by a
+        job delete, and deleting a whole sliced job without attempts must stay possible.
+        Deleting a single entry of a non-draft job is refused in :meth:`delete_queryset`.
+        """
+        if obj is not None and self._job_cached(request, obj)[1]:
             return False
         return super().has_delete_permission(request, obj)
 

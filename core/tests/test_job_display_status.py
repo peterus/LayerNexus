@@ -435,6 +435,16 @@ class AdminJobContentsGuardTests(TestDataMixin, TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(PrintJobPart.objects.filter(print_job=self.job, part=self.other_part).exists())
 
+    def test_admin_deletes_sliced_or_slicing_failed_job_without_attempts(self):
+        for status in (PrintJob.STATUS_SLICED, PrintJob.STATUS_FAILED):
+            with self.subTest(status=status):
+                job = make_sliced_job(f"Deletable {status}", plates=1)
+                PrintJob.objects.filter(pk=job.pk).update(status=status)
+                PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
+                response = self.client.post(reverse("admin:core_printjob_delete", args=[job.pk]), {"post": "yes"})
+                self.assertEqual(response.status_code, 302)
+                self.assertFalse(PrintJob.objects.filter(pk=job.pk).exists())
+
     def test_plate_admin_add_refused_and_plate_pinned_to_job(self):
         self.assertEqual(self.client.get(reverse("admin:core_printjobplate_add")).status_code, 403)
         plate = self.job.plates.get()
