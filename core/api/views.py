@@ -41,6 +41,7 @@ from core.models import (
     HardwarePart,
     OrcaPrintPreset,
     Part,
+    PrintJob,
     Project,
     ProjectDocument,
     ProjectHardware,
@@ -51,6 +52,17 @@ from core.views.helpers import _requeue_stale_estimates, _trigger_part_estimatio
 # Model-file upload limits mirror the UI ``PartForm.clean_stl_file`` rules.
 STL_MAX_SIZE = 100 * 1024 * 1024  # 100 MB
 ALLOWED_MODEL_EXTENSIONS = (".stl", ".3mf")
+
+
+def _delete_blocked(detail: str, reason: str, jobs: list[int]) -> Response:
+    """Return the 409 response of a refused part/project delete.
+
+    Args:
+        detail: Human-readable message.
+        reason: ``"print_history"`` or ``"unfinished_jobs"``.
+        jobs: PKs of the print jobs that block the delete.
+    """
+    return Response({"detail": detail, "reason": reason, "blocking_jobs": jobs}, status=status.HTTP_409_CONFLICT)
 
 
 def _part_ref(part: Part) -> dict[str, Any]:
@@ -126,8 +138,10 @@ class ProjectViewSet(viewsets.ModelViewSet):
         summary="Delete a project and its whole subtree",
         description=(
             "Deletes the project with all sub-projects, parts, documents and hardware "
-            "assignments. Refused with 409 while an unfinished print job (any status "
-            "other than completed, failed or cancelled) contains a part of the subtree."
+            "assignments. Refused with 409 while a part of the subtree has print history "
+            "(reason `print_history`: it is in a job with print attempts) or an unfinished "
+            "print job (any display status other than completed / partially failed) contains "
+            "a part of the subtree (reason `unfinished_jobs`)."
         ),
         responses={
             204: None,
@@ -135,29 +149,45 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 "ProjectDeleteBlocked",
                 fields={
                     "detail": serializers.CharField(),
+                    "reason": serializers.ChoiceField(choices=["print_history", "unfinished_jobs"]),
                     "blocking_jobs": serializers.ListField(child=serializers.IntegerField()),
                 },
             ),
         },
     )
     def destroy(self, request: Request, *args: Any, **kwargs: Any) -> Response:
-        """Delete the subtree unless unfinished print jobs still use it.
+        """Delete the subtree unless print history or unfinished print jobs still use it.
 
         Returns:
-            204 on success; 409 with the blocking job ids otherwise.
+            204 on success; 409 with the reason and the blocking job ids otherwise.
         """
         project = self.get_object()
         with transaction.atomic():
-            blocking = list(project.blocking_jobs().values_list("pk", flat=True))
-            if blocking:
-                return Response(
-                    {
-                        "detail": "Project cannot be deleted while unfinished print jobs contain its parts.",
-                        "blocking_jobs": blocking,
-                    },
-                    status=status.HTTP_409_CONFLICT,
+            ids = project.subtree_ids()
+            history = list(
+                PrintJob.objects.filter(
+                    job_parts__part__in=project.history_blocking_parts(ids), plates__queue_entries__isnull=False
                 )
-            project.delete()
+                .distinct()
+                .values_list("pk", flat=True)
+            )
+            if history:
+                return _delete_blocked(
+                    "Project cannot be deleted: parts of it have print history.", "print_history", history
+                )
+            blocking = list(project.blocking_jobs(ids).values_list("pk", flat=True))
+            if blocking:
+                return _delete_blocked(
+                    "Project cannot be deleted while unfinished print jobs contain its parts.",
+                    "unfinished_jobs",
+                    blocking,
+                )
+            try:
+                project.delete()
+            except ProtectedError:
+                return _delete_blocked(
+                    "Project cannot be deleted: print jobs still contain its parts.", "unfinished_jobs", []
+                )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(
@@ -360,9 +390,10 @@ class PartViewSet(viewsets.ModelViewSet):
     @extend_schema(
         summary="Delete a part",
         description=(
-            "Deletes the part with its model file and print history entries (finished jobs "
-            "are kept). Refused with 409 while an unfinished print job (any status other "
-            "than completed, failed or cancelled) contains the part."
+            "Deletes the part with its model file. Refused with 409 while the part has print "
+            "history (reason `print_history`: it is in a job with print attempts) or an "
+            "unfinished print job (any display status other than completed / partially "
+            "failed) contains it (reason `unfinished_jobs`)."
         ),
         responses={
             204: None,
@@ -370,29 +401,32 @@ class PartViewSet(viewsets.ModelViewSet):
                 "PartDeleteBlocked",
                 fields={
                     "detail": serializers.CharField(),
+                    "reason": serializers.ChoiceField(choices=["print_history", "unfinished_jobs"]),
                     "blocking_jobs": serializers.ListField(child=serializers.IntegerField()),
                 },
             ),
         },
     )
     def destroy(self, request: Request, *args: Any, **kwargs: Any) -> Response:
-        """Delete the part unless unfinished print jobs still use it.
+        """Delete the part unless print history or unfinished print jobs still use it.
 
         Returns:
-            204 on success; 409 with the blocking job ids otherwise.
+            204 on success; 409 with the reason and the blocking job ids otherwise.
         """
         part = self.get_object()
         with transaction.atomic():
+            history = list(part.history_jobs().values_list("pk", flat=True))
+            if history:
+                return _delete_blocked("Part cannot be deleted: it has print history.", "print_history", history)
             blocking = list(part.blocking_jobs().values_list("pk", flat=True))
             if blocking:
-                return Response(
-                    {
-                        "detail": "Part cannot be deleted while unfinished print jobs contain it.",
-                        "blocking_jobs": blocking,
-                    },
-                    status=status.HTTP_409_CONFLICT,
+                return _delete_blocked(
+                    "Part cannot be deleted while unfinished print jobs contain it.", "unfinished_jobs", blocking
                 )
-            part.delete()
+            try:
+                part.delete()
+            except ProtectedError:
+                return _delete_blocked("Part cannot be deleted: print jobs still contain it.", "unfinished_jobs", [])
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(

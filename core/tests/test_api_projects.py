@@ -7,6 +7,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 from core.models import OrcaPrintPreset, Part, PrintJob, PrintJobPart, Project
+from core.tests.mixins import make_completed_job
 
 
 class ApiProjectPartTests(APITestCase):
@@ -236,19 +237,29 @@ class ApiTreeContractTests(APITestCase):
         PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
         resp = self.client.delete(f"/api/v1/projects/{self.root.pk}/")
         self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["reason"], "unfinished_jobs")
         self.assertEqual(resp.data["blocking_jobs"], [job.pk])
         self.assertTrue(Project.objects.filter(pk=self.leaf.pk).exists())
 
+    def test_api_delete_project_with_finished_job_409_print_history(self) -> None:
+        """A finished job is print history: refused (was: 204, part deleted, job kept)."""
+        part = Part.objects.create(name="deep", project=self.leaf)
+        job = make_completed_job(name="done")
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
+        resp = self.client.delete(f"/api/v1/projects/{self.sub.pk}/")
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["reason"], "print_history")
+        self.assertEqual(resp.data["blocking_jobs"], [job.pk])
+        self.assertTrue(Project.objects.filter(pk__in=[self.sub.pk, self.leaf.pk]).count() == 2)
+        self.assertTrue(Part.objects.filter(pk=part.pk).exists())
+
     def test_api_delete_project_cascades_subtree_204(self) -> None:
         part = Part.objects.create(name="deep", project=self.leaf)
-        job = PrintJob.objects.create(name="done", status=PrintJob.STATUS_COMPLETED)
-        PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
         resp = self.client.delete(f"/api/v1/projects/{self.sub.pk}/")
         self.assertEqual(resp.status_code, 204)
         self.assertFalse(Project.objects.filter(pk__in=[self.sub.pk, self.leaf.pk]).exists())
         self.assertFalse(Part.objects.filter(pk=part.pk).exists())
         self.assertTrue(Project.objects.filter(pk=self.root.pk).exists())
-        self.assertTrue(PrintJob.objects.filter(pk=job.pk).exists())
 
 
 class ProjectSerializerPresetRequiredTests(APITestCase):

@@ -13,11 +13,16 @@ from core.models import (
     PrinterProfile,
     PrintJob,
     PrintJobPart,
-    PrintJobPlate,
-    PrintQueue,
     Project,
 )
-from core.tests.mixins import TestDataMixin
+from core.tests.mixins import (
+    TestDataMixin,
+    add_attempt,
+    complete_plate,
+    fail_plate,
+    make_completed_job,
+    make_sliced_job,
+)
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
@@ -320,37 +325,46 @@ class BuildProgressExpandedTests(TestCase):
         self.assertFalse(self._context()["build_progress_expanded"])
 
     def test_true_when_printed_gt_zero(self):
-        job = PrintJob.objects.create(status=PrintJob.STATUS_COMPLETED)
+        job = make_completed_job()
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
-        PrintJobPlate.objects.create(print_job=job, plate_number=1, status=PrintJobPlate.STATUS_COMPLETED)
         self.assertTrue(self._context()["build_progress_expanded"])
 
     def test_true_when_active_job(self):
-        """A non-terminal job with a part of this project expands the section."""
-        job = PrintJob.objects.create(status=PrintJob.STATUS_PRINTING)
+        """An unfinished (printing) job with a part of this project expands the section."""
+        job = make_sliced_job()
+        add_attempt(job.plates.get(), None, "printing")
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
         self.assertTrue(self._context()["build_progress_expanded"])
 
     def test_true_when_job_queued(self):
         """A queued job with a part of this project expands the section."""
         printer = PrinterProfile.objects.create(name="BP Printer", created_by=self.user)
-        job = PrintJob.objects.create(status=PrintJob.STATUS_UPLOADED)
+        job = make_sliced_job()
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
-        plate = PrintJobPlate.objects.create(print_job=job, plate_number=1)
-        PrintQueue.objects.create(plate=plate, printer=printer)
+        add_attempt(job.plates.get(), printer, "waiting")
         self.assertTrue(self._context()["build_progress_expanded"])
 
-    def test_false_when_only_cancelled_job(self):
-        """Terminal (cancelled) jobs do not expand the section."""
-        job = PrintJob.objects.create(status=PrintJob.STATUS_CANCELLED)
+    def test_false_when_only_partially_failed_job(self):
+        """A finished job that printed nothing countable (partially failed) does not expand the section.
+
+        (Replaces the former cancelled-job case — jobs are no longer cancelled; a
+        finished job without a fully passed print is the terminal "nothing printed" case.)
+        """
+        job = make_sliced_job(plates=2)
+        plate1, plate2 = job.plates.order_by("plate_number")
+        complete_plate(plate1)
+        fail_plate(plate2)
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
         self.assertFalse(self._context()["build_progress_expanded"])
 
-    def test_false_when_only_failed_job(self):
-        """Terminal (failed) jobs do not expand the section."""
+    def test_true_when_only_slicing_failed_job(self):
+        """A slicing-failed job is unfinished now (it can be re-sliced), so it expands the section.
+
+        (Was: terminal ``failed`` jobs did not expand it.)
+        """
         job = PrintJob.objects.create(status=PrintJob.STATUS_FAILED)
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
-        self.assertFalse(self._context()["build_progress_expanded"])
+        self.assertTrue(self._context()["build_progress_expanded"])
 
     def test_true_when_active_job_in_subproject(self):
         """An unfinished job with a part of a grandchild expands the root's section."""
@@ -363,7 +377,8 @@ class BuildProgressExpandedTests(TestCase):
 
     def test_template_renders_show_class(self):
         """Template renders Bootstrap 'show' class when build_progress_expanded is True."""
-        job = PrintJob.objects.create(status=PrintJob.STATUS_PRINTING)
+        job = make_sliced_job()
+        add_attempt(job.plates.get(), None, "printing")
         PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
         resp = self.client.get(reverse("core:project_detail", args=[self.project.pk]))
         self.assertContains(resp, "buildProgressBody")

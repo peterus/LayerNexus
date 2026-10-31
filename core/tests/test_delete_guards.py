@@ -1,4 +1,4 @@
-"""Tests for the unfinished-print-job guard on part deletes and on Django admin deletes."""
+"""Tests for the print-job guards (unfinished jobs, print history) on part deletes and on Django admin deletes."""
 
 from unittest import mock
 
@@ -10,13 +10,42 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 from core.models import OrcaPrintPreset, Part, PrintJob, PrintJobPart, Project
+from core.tests.mixins import add_attempt, complete_plate, fail_plate, make_sliced_job
 
-UNFINISHED = ["draft", "pending", "slicing", "sliced", "uploading", "uploaded", "printing"]
+#: Display statuses of unfinished jobs (every one blocks the delete of its parts).
+UNFINISHED = ["draft", "pending", "slicing", "slicing_failed", "ready", "printing", "in_progress"]
+
+_SLICING_STATUS = {
+    PrintJob.DISPLAY_DRAFT: PrintJob.STATUS_DRAFT,
+    PrintJob.DISPLAY_PENDING: PrintJob.STATUS_PENDING,
+    PrintJob.DISPLAY_SLICING: PrintJob.STATUS_SLICING,
+    PrintJob.DISPLAY_SLICING_FAILED: PrintJob.STATUS_FAILED,
+}
 
 
-def _job(status: str, *parts: Part) -> PrintJob:
-    """Create a print job with the given status that contains ``parts``."""
-    job = PrintJob.objects.create(name=f"job-{status}", status=status)
+def job_in_display_status(display_status: str, *parts: Part) -> PrintJob:
+    """Create a print job in the given display status that contains ``parts``.
+
+    Jobs without print attempts get the slicing status; ``ready`` and later states
+    are sliced jobs whose plates get print attempts.
+    """
+    if display_status in _SLICING_STATUS:
+        job = PrintJob.objects.create(name=f"job-{display_status}", status=_SLICING_STATUS[display_status])
+    else:
+        job = make_sliced_job(name=f"job-{display_status}", plates=2)
+        plate1, plate2 = job.plates.order_by("plate_number")
+        if display_status == PrintJob.DISPLAY_PRINTING:
+            add_attempt(plate1, None, "printing")
+        elif display_status == PrintJob.DISPLAY_IN_PROGRESS:
+            complete_plate(plate1)
+        elif display_status == PrintJob.DISPLAY_COMPLETED:
+            complete_plate(plate1)
+            complete_plate(plate2)
+        elif display_status == PrintJob.DISPLAY_PARTIALLY_FAILED:
+            complete_plate(plate1)
+            fail_plate(plate2)
+        elif display_status != PrintJob.DISPLAY_READY:
+            raise ValueError(f"Unknown display status: {display_status}")
     for part in parts:
         PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
     return job
@@ -30,25 +59,47 @@ class PartBlockingJobsTests(TestCase):
         self.part = Part.objects.create(name="p", project=self.project)
         self.other = Part.objects.create(name="other", project=self.project)
 
+    def test_job_helper_builds_requested_display_status(self) -> None:
+        for display_status, _ in PrintJob.DISPLAY_CHOICES:
+            with self.subTest(display_status=display_status):
+                job = job_in_display_status(display_status)
+                self.assertEqual(PrintJob.objects.get(pk=job.pk).display_status, display_status)
+                self.assertEqual(PrintJob.objects.with_display_status().get(pk=job.pk).display_status, display_status)
+
     def test_unfinished_statuses_block(self) -> None:
         for status in UNFINISHED:
             with self.subTest(status=status):
-                job = _job(status, self.part)
+                job = job_in_display_status(status, self.part)
                 self.assertEqual(list(self.part.blocking_jobs()), [job])
                 job.delete()
 
-    def test_terminal_statuses_and_other_parts_do_not_block(self) -> None:
-        for status in PrintJob.TERMINAL_STATUSES:
-            _job(status, self.part)
-        _job(PrintJob.STATUS_PRINTING, self.other)
+    def test_finished_statuses_and_other_parts_do_not_block(self) -> None:
+        for status in PrintJob.FINISHED_DISPLAY_STATUSES:
+            job_in_display_status(status, self.part)
+        job_in_display_status(PrintJob.DISPLAY_PRINTING, self.other)
         self.assertFalse(self.part.blocking_jobs().exists())
 
     def test_statuses_match_project_guard(self) -> None:
-        self.assertEqual(set(UNFINISHED) | set(PrintJob.TERMINAL_STATUSES), {s for s, _ in PrintJob.STATUS_CHOICES})
+        self.assertEqual(
+            set(UNFINISHED) | set(PrintJob.FINISHED_DISPLAY_STATUSES), {s for s, _ in PrintJob.DISPLAY_CHOICES}
+        )
+
+    def test_print_history_is_any_job_with_attempts(self) -> None:
+        """Jobs with print attempts are the part's history — finished or not; jobs without are not."""
+        for status in ("draft", "slicing_failed", "ready"):
+            job_in_display_status(status, self.part)
+        self.assertFalse(self.part.has_print_history())
+        history = {
+            job_in_display_status(status, self.part)
+            for status in ("printing", "in_progress", "completed", "partially_failed")
+        }
+        job_in_display_status(PrintJob.DISPLAY_COMPLETED, self.other)
+        self.assertEqual(set(self.part.history_jobs()), history)
+        self.assertTrue(self.part.has_print_history())
 
 
 class PartDeleteViewGuardTests(TestCase):
-    """The web part delete refuses while an unfinished job contains the part."""
+    """The web part delete refuses while a job contains the part (unfinished or print history)."""
 
     def setUp(self) -> None:
         self.user = User.objects.create_user(username="deleter", password="testpass123")
@@ -59,16 +110,17 @@ class PartDeleteViewGuardTests(TestCase):
         self.url = reverse("core:part_delete", args=[self.part.pk])
 
     def test_confirm_page_lists_blocking_jobs_and_hides_submit(self) -> None:
-        job = _job(PrintJob.STATUS_SLICED, self.part)
+        job = job_in_display_status(PrintJob.DISPLAY_READY, self.part)
         resp = self.client.get(self.url)
         self.assertEqual(resp.context["blocking_jobs"], [job])
+        self.assertEqual(resp.context["history_jobs"], [])
         self.assertContains(resp, reverse("core:printjob_detail", args=[job.pk]))
         self.assertNotContains(resp, "btn btn-danger")
 
     def test_post_with_unfinished_job_is_refused(self) -> None:
         for status in UNFINISHED:
             with self.subTest(status=status):
-                job = _job(status, self.part)
+                job = job_in_display_status(status, self.part)
                 resp = self.client.post(self.url, follow=True)
                 self.assertRedirects(resp, self.url)
                 self.assertContains(resp, "cannot be deleted")
@@ -78,27 +130,39 @@ class PartDeleteViewGuardTests(TestCase):
     def test_post_rechecks_after_get(self) -> None:
         resp = self.client.get(self.url)
         self.assertEqual(resp.context["blocking_jobs"], [])
-        _job(PrintJob.STATUS_DRAFT, self.part)
+        job_in_display_status(PrintJob.DISPLAY_DRAFT, self.part)
         self.client.post(self.url)
         self.assertTrue(Part.objects.filter(pk=self.part.pk).exists())
 
-    def test_finished_job_is_kept_and_part_deleted(self) -> None:
-        job = _job(PrintJob.STATUS_COMPLETED, self.part)
+    def test_finished_job_refuses_delete_and_keeps_history(self) -> None:
+        """A finished job is print history: the part cannot be deleted (was: deleted, history dropped)."""
+        for status in PrintJob.FINISHED_DISPLAY_STATUSES:
+            with self.subTest(status=status):
+                job = job_in_display_status(status, self.part)
+                resp = self.client.post(self.url, follow=True)
+                self.assertRedirects(resp, self.url)
+                self.assertContains(resp, "it has print history")
+                self.assertTrue(Part.objects.filter(pk=self.part.pk).exists())
+                self.assertTrue(job.job_parts.filter(part=self.part).exists())
+                job.delete()
+
+    def test_part_without_jobs_is_deleted(self) -> None:
         resp = self.client.post(self.url)
         self.assertRedirects(resp, reverse("core:project_detail", args=[self.project.pk]))
         self.assertFalse(Part.objects.filter(pk=self.part.pk).exists())
-        self.assertTrue(PrintJob.objects.filter(pk=job.pk).exists())
-        self.assertFalse(job.job_parts.exists())
 
-    def test_confirm_page_warns_about_print_history(self) -> None:
-        _job(PrintJob.STATUS_COMPLETED, self.part)
+    def test_confirm_page_lists_print_history_and_hides_submit(self) -> None:
+        job = job_in_display_status(PrintJob.DISPLAY_COMPLETED, self.part)
         resp = self.client.get(self.url)
-        self.assertEqual(resp.context["print_history"], 1)
+        self.assertEqual(resp.context["history_jobs"], [job])
+        self.assertEqual(resp.context["blocking_jobs"], [])
         self.assertContains(resp, "print history")
+        self.assertContains(resp, reverse("core:printjob_detail", args=[job.pk]))
+        self.assertNotContains(resp, "btn btn-danger")
 
 
 class PartApiDeleteGuardTests(APITestCase):
-    """``DELETE /api/v1/parts/{id}/`` answers 409 with the blocking job ids."""
+    """``DELETE /api/v1/parts/{id}/`` answers 409 with the reason and the blocking job ids."""
 
     def setUp(self) -> None:
         user = User.objects.create_user(username="api", password="x")
@@ -109,22 +173,46 @@ class PartApiDeleteGuardTests(APITestCase):
         self.part = Part.objects.create(name="p", project=self.project)
 
     def test_delete_with_unfinished_job_409(self) -> None:
-        job = _job(PrintJob.STATUS_PRINTING, self.part)
+        job = job_in_display_status(PrintJob.DISPLAY_READY, self.part)
         resp = self.client.delete(f"/api/v1/parts/{self.part.pk}/")
         self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["reason"], "unfinished_jobs")
         self.assertEqual(resp.data["blocking_jobs"], [job.pk])
         self.assertTrue(Part.objects.filter(pk=self.part.pk).exists())
 
-    def test_delete_with_finished_job_204(self) -> None:
-        job = _job(PrintJob.STATUS_FAILED, self.part)
+    def test_delete_with_printing_job_409_print_history(self) -> None:
+        job = job_in_display_status(PrintJob.DISPLAY_PRINTING, self.part)
+        resp = self.client.delete(f"/api/v1/parts/{self.part.pk}/")
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["reason"], "print_history")
+        self.assertEqual(resp.data["blocking_jobs"], [job.pk])
+        self.assertTrue(Part.objects.filter(pk=self.part.pk).exists())
+
+    def test_delete_with_finished_job_409_print_history(self) -> None:
+        """A finished job is print history: refused (was: 204, part deleted)."""
+        job = job_in_display_status(PrintJob.DISPLAY_COMPLETED, self.part)
+        resp = self.client.delete(f"/api/v1/parts/{self.part.pk}/")
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["reason"], "print_history")
+        self.assertEqual(resp.data["blocking_jobs"], [job.pk])
+        self.assertTrue(Part.objects.filter(pk=self.part.pk).exists())
+
+    def test_delete_with_slicing_failed_job_409(self) -> None:
+        """A slicing-failed job is unfinished now (was: terminal, 204)."""
+        job = job_in_display_status(PrintJob.DISPLAY_SLICING_FAILED, self.part)
+        resp = self.client.delete(f"/api/v1/parts/{self.part.pk}/")
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data["reason"], "unfinished_jobs")
+        self.assertEqual(resp.data["blocking_jobs"], [job.pk])
+
+    def test_delete_without_jobs_204(self) -> None:
         resp = self.client.delete(f"/api/v1/parts/{self.part.pk}/")
         self.assertEqual(resp.status_code, 204)
         self.assertFalse(Part.objects.filter(pk=self.part.pk).exists())
-        self.assertTrue(PrintJob.objects.filter(pk=job.pk).exists())
 
 
 class AdminDeleteGuardTests(TestCase):
-    """Django admin refuses to delete projects/parts that unfinished jobs still use."""
+    """Django admin refuses to delete projects/parts that print jobs still contain."""
 
     def setUp(self) -> None:
         self.admin = User.objects.create_superuser(username="root", password="pw", email="r@example.com")
@@ -134,7 +222,7 @@ class AdminDeleteGuardTests(TestCase):
         self.part = Part.objects.create(name="p", project=self.sub)
         self.free = Project.objects.create(name="Free")
         self.free_part = Part.objects.create(name="free part", project=self.free)
-        self.job = _job(PrintJob.STATUS_PRINTING, self.part)
+        self.job = job_in_display_status(PrintJob.DISPLAY_READY, self.part)
 
     def _bulk_delete(self, model: str, *pks: int):  # noqa: ANN202
         return self.client.post(
@@ -166,19 +254,38 @@ class AdminDeleteGuardTests(TestCase):
         self.assertContains(resp, "unfinished print job")
         self.assertEqual(Part.objects.filter(pk__in=[self.part.pk, self.free_part.pk]).count(), 2)
 
+    def test_print_history_blocks_delete(self) -> None:
+        """A finished job (print history) blocks too (was: finishing the job unblocked the delete)."""
+        self.job.delete()
+        job_in_display_status(PrintJob.DISPLAY_COMPLETED, self.part)
+        for url in (
+            reverse("admin:core_part_delete", args=[self.part.pk]),
+            reverse("admin:core_project_delete", args=[self.root.pk]),
+        ):
+            with self.subTest(url=url):
+                self.assertContains(self.client.get(url), "has print history")
+                self.client.post(url, {"post": "yes"})
+        self.assertContains(self._bulk_delete("part", self.part.pk), "has print history")
+        self.assertTrue(Part.objects.filter(pk=self.part.pk).exists())
+        self.assertTrue(Project.objects.filter(pk=self.root.pk).exists())
+
     def test_unblocked_deletes_still_work(self) -> None:
         self.client.post(reverse("admin:core_project_delete", args=[self.free.pk]), {"post": "yes"})
         self.assertFalse(Project.objects.filter(pk=self.free.pk).exists())
-        self.job.status = PrintJob.STATUS_COMPLETED
-        self.job.save()
+        self.job.delete()
         self._bulk_delete("part", self.part.pk)
         self.assertFalse(Part.objects.filter(pk=self.part.pk).exists())
 
     def test_race_between_confirm_and_delete_is_refused(self) -> None:
-        """A job that appears after the confirmation check still blocks the delete."""
+        """A job that appears after the confirmation check still blocks the delete.
+
+        Since ``PrintJobPart.part`` is ``PROTECT``, Django's own collector lists the
+        job entries as protected too, so the whole confirmation result is mocked
+        empty to reach the re-check inside the delete transaction.
+        """
         from core.admin import PartAdmin
 
-        with mock.patch.object(PartAdmin, "_blocking_messages", return_value=[]):
+        with mock.patch.object(PartAdmin, "get_deleted_objects", return_value=([], {}, set(), [])):
             resp = self.client.post(reverse("admin:core_part_delete", args=[self.part.pk]), {"post": "yes"})
         self.assertEqual(resp.status_code, 403)
         self.assertTrue(Part.objects.filter(pk=self.part.pk).exists())
