@@ -337,3 +337,29 @@ class PrintedPlatesTests(TestCase):
         rows = {row["plate"].plate_number: (row["copies"], row["partial"]) for row in part.printed_plates()}
         self.assertEqual(rows, {1: (1, 0), 2: (1, 0)})
         self.assertEqual(sum(copies for copies, _partial in rows.values()), part.printed_quantity)
+
+    def test_split_copy_listed_on_plate_that_passed_last(self) -> None:
+        """Attribution follows completion time, not plate number (plate 2 passed first)."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        project = Project.objects.create(name="P")
+        part = Part.objects.create(name="Multi", project=project, quantity=1)
+        job = make_sliced_job(plates=2)
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=1)
+        plate1, plate2 = job.plates.order_by("plate_number")
+        PrintJobPlatePart.objects.create(plate=plate1, part=part, copy_index=0, meshes_on_plate=1, mesh_count=2)
+        PrintJobPlatePart.objects.create(plate=plate2, part=part, copy_index=0, meshes_on_plate=1, mesh_count=2)
+        now = timezone.now()
+        complete_plate(plate2, when=now - timedelta(hours=2))
+        complete_plate(plate1, when=now)
+
+        expected = {1: (1, 0)}
+        rows = {row["plate"].plate_number: (row["copies"], row["partial"]) for row in part.printed_plates()}
+        self.assertEqual(rows, expected)
+        prefetched = Part.objects.prefetch_related(
+            *Part.printed_quantity_prefetch_lookups(), "job_entries__print_job__plates__queue_entries"
+        ).get(pk=part.pk)
+        rows = {row["plate"].plate_number: (row["copies"], row["partial"]) for row in prefetched.printed_plates()}
+        self.assertEqual(rows, expected)
