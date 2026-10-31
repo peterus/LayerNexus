@@ -492,9 +492,27 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
         from core.admin import PrintQueueAdmin
 
         admin_obj = PrintQueueAdmin(PrintQueue, None)
-        self.assertIn("result", admin_obj.get_readonly_fields(None, self.attempt))
+        self.assertIn("plate", admin_obj.get_readonly_fields(None, self.attempt))
         waiting = self._attempt(self.plate2)
-        self.assertNotIn("result", admin_obj.get_readonly_fields(None, waiting))
+        readonly = admin_obj.get_readonly_fields(None, waiting)
+        self.assertIn("result", readonly)  # transitions only via the model methods
+        self.assertIn("started_at", readonly)
+        self.assertNotIn("plate", readonly)
+
+    def test_admin_bulk_delete_refuses_history_and_starting_attempts(self):
+        from django.contrib.auth.models import User
+        from django.urls import reverse
+
+        User.objects.filter(pk=self.user.pk).update(is_staff=True, is_superuser=True)
+        claimed = self._attempt(self.plate2, start_claimed_at=timezone.now())
+        for selection in ([self.attempt.pk], [claimed.pk]):
+            with self.subTest(selection=selection):
+                resp = self.client.post(
+                    reverse("admin:core_printqueue_changelist"),
+                    {"action": "delete_selected", "_selected_action": selection, "post": "yes"},
+                )
+                self.assertEqual(resp.status_code, 403)
+        self.assertTrue(PrintQueue.objects.filter(pk__in=[self.attempt.pk, claimed.pk]).count() == 2)
 
 
 class QueueViewRaceTests(_AttemptTestBase):

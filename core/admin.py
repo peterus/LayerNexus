@@ -313,25 +313,29 @@ class PrintQueueAdmin(admin.ModelAdmin):
         """Return the derived attempt state."""
         return obj.get_state_display()
 
-    #: Facts of a started/resolved attempt; editing them would bypass the model
-    #: transitions (and ``PrintJobPlate.refresh_stored_status``).
-    HISTORY_READONLY_FIELDS = (
-        "plate",
-        "printer",
-        "result",
-        "resolved_at",
-        "is_retry",
-        "started_at",
-        "completed_at",
-        "max_retries",
-    )
+    #: Facts that only the model transitions may set (``mark_started``,
+    #: ``mark_finished``, ``resolve``, ``remove``); editing them here would
+    #: bypass ``PrintJobPlate.refresh_stored_status``.
+    TRANSITION_FIELDS = ("result", "resolved_at", "is_retry", "started_at", "completed_at")
+    #: Additionally frozen once the attempt is print history.
+    HISTORY_READONLY_FIELDS = ("plate", "printer", "max_retries")
 
     def get_readonly_fields(self, request: HttpRequest, obj: PrintQueue | None = None) -> tuple[str, ...]:
-        """Make the facts of started or resolved attempts read-only."""
-        readonly = tuple(super().get_readonly_fields(request, obj))
+        """Keep transition facts read-only; freeze the whole attempt once it is history."""
+        readonly = tuple(super().get_readonly_fields(request, obj)) + self.TRANSITION_FIELDS
         if obj is not None and obj.is_history:
             return readonly + self.HISTORY_READONLY_FIELDS
         return readonly
+
+    def save_model(self, request: HttpRequest, obj: PrintQueue, form: Any, change: bool) -> None:
+        """Save and refresh the stored status of the affected plate(s)."""
+        old_plate_id = (
+            PrintQueue.objects.filter(pk=obj.pk).values_list("plate_id", flat=True).first() if change else None
+        )
+        with transaction.atomic():
+            super().save_model(request, obj, form, change)
+            for plate in PrintJobPlate.objects.filter(pk__in={old_plate_id, obj.plate_id} - {None}):
+                plate.refresh_stored_status()
 
     def has_delete_permission(self, request: HttpRequest, obj: PrintQueue | None = None) -> bool:
         """Refuse deleting history and attempts whose print start is in progress."""

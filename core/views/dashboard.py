@@ -134,12 +134,19 @@ class FarmDashboardView(LoginRequiredMixin, TemplateView):
         # Pre-fetch active queue entries (printing / awaiting_review)
         active_entries = PrintQueue.objects.active().with_retry_count().select_related("plate__print_job", "printer")
         active_map: dict[int, PrintQueue] = {e.printer_id: e for e in active_entries}
+        waiting_counts: dict[int, int] = dict(
+            PrintQueue.objects.waiting()
+            .order_by()
+            .values("printer_id")
+            .annotate(n=Count("pk"))
+            .values_list("printer_id", "n")
+        )
 
         # Per-printer info
         printer_cards: list[dict[str, Any]] = []
         for p in printers:
             entry = active_map.get(p.pk)
-            waiting_count = PrintQueue.objects.waiting().filter(printer=p).count()
+            waiting_count = waiting_counts.get(p.pk, 0)
 
             if entry and entry.is_awaiting_review:
                 state = "awaiting_review"
