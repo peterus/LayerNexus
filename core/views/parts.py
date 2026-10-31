@@ -116,7 +116,7 @@ class PartDetailView(LoginRequiredMixin, DetailView):
     def get_queryset(self) -> QuerySet[Part]:
         """Load the part with everything its printed quantity and print sources need (no N+1)."""
         return Part.objects.prefetch_related(
-            *Part.printed_quantity_prefetch_lookups(), "job_entries__print_job__plates__queue_entries"
+            *Part.printed_quantity_prefetch_lookups(with_authors=True), "job_entries__print_job__plates__queue_entries"
         )
 
     def get_context_data(self, **kwargs):

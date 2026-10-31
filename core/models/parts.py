@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import TYPE_CHECKING, Any, Optional
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
 from django.db.models import CheckConstraint, Exists, OuterRef, Prefetch, Q, QuerySet, prefetch_related_objects
@@ -55,6 +57,23 @@ def _printed_in_job(part_id: int, entry: PrintJobPart, plates: list[PrintJobPlat
                 mesh_counts[row.copy_index] = row.mesh_count
     complete = sum(1 for copy, meshes in printed_meshes.items() if meshes >= mesh_counts[copy])
     return min(complete, entry.quantity)
+
+
+def _finished_later(plate: PrintJobPlate, other: PrintJobPlate) -> bool:
+    """Return whether ``plate`` passed after ``other`` (by completion time, then plate number)."""
+    first, second = plate.completed_at, other.completed_at
+    if first is not None and second is not None and first != second:
+        return first > second
+    return plate.plate_number > other.plate_number
+
+
+def _counting_plate_parts() -> QuerySet:
+    """Return plate parts with only the columns the printed count needs (no ordering, no other fields)."""
+    from core.models.printing import PrintJobPlatePart
+
+    return PrintJobPlatePart.objects.only(
+        "id", "plate_id", "part_id", "copy_index", "meshes_on_plate", "mesh_count"
+    ).order_by()
 
 
 class Part(models.Model):
@@ -409,11 +428,13 @@ class Part(models.Model):
         return self.color or "—"
 
     @staticmethod
-    def printed_quantity_prefetch_lookups(prefix: str = "") -> list[str | Prefetch]:
+    def printed_quantity_prefetch_lookups(prefix: str = "", *, with_authors: bool = False) -> list[str | Prefetch]:
         """Prefetch lookups that let :attr:`printed_quantity` run without any query.
 
         Args:
             prefix: Lookup path to the parts (e.g. ``"parts__"`` from a project).
+            with_authors: Also load each manual record's ``created_by`` (for pages
+                that list the records).
 
         Returns:
             ``prefetch_related`` arguments: the job entries with their jobs, the
@@ -422,10 +443,11 @@ class Part(models.Model):
         """
         from core.models.printing import PrintJobPlate
 
+        records = PrintedPartRecord.objects.select_related("created_by") if with_authors else PrintedPartRecord.objects
         return [
             Prefetch(f"{prefix}job_entries__print_job__plates", queryset=PrintJobPlate.objects.with_state()),
-            f"{prefix}job_entries__print_job__plates__plate_parts",
-            Prefetch(f"{prefix}printed_records", queryset=PrintedPartRecord.objects.select_related("created_by")),
+            Prefetch(f"{prefix}job_entries__print_job__plates__plate_parts", queryset=_counting_plate_parts()),
+            Prefetch(f"{prefix}printed_records", queryset=records.all()),
         ]
 
     @property
@@ -464,8 +486,8 @@ class Part(models.Model):
 
         Returns:
             Dicts with ``job``, ``plate`` (or ``None``), ``copies`` (copies completed
-            by this plate — a multi-mesh copy split over plates is listed on the last
-            one — or counted for the whole job), ``partial`` (meshes of copies that
+            by this plate — a multi-mesh copy split over plates is listed on the one
+            that passed last — or counted for the whole job), ``partial`` (meshes of copies that
             are not complete yet) and ``date`` (when the plate passed), newest first.
         """
         from core.models.printing import PrintJobPlate
@@ -489,7 +511,7 @@ class Part(models.Model):
                 continue
             passed_plates = [plate for plate in plates if plate.state == PrintJobPlate.STATE_COMPLETED]
             # Same completion rule as ``_printed_in_job``; a complete copy is listed on the
-            # (last) passed plate that finished it, so the listed copies add up to the count.
+            # passed plate that finished it (latest completion), so the listed copies add up to the count.
             meshes: dict[int, int] = {}
             mesh_counts: dict[int, int] = {}
             finished_on: dict[int, PrintJobPlate] = {}
@@ -498,7 +520,9 @@ class Part(models.Model):
                     if row.part_id == self.pk:
                         meshes[row.copy_index] = meshes.get(row.copy_index, 0) + row.meshes_on_plate
                         mesh_counts[row.copy_index] = row.mesh_count
-                        finished_on[row.copy_index] = plate
+                        current = finished_on.get(row.copy_index)
+                        if current is None or _finished_later(plate, current):
+                            finished_on[row.copy_index] = plate
             complete = {copy for copy, count in meshes.items() if count >= mesh_counts[copy]}
             for plate in passed_plates:
                 mine = [row for row in plate.plate_parts.all() if row.part_id == self.pk]
@@ -556,10 +580,17 @@ class Part(models.Model):
         plates_by_job: dict[int, list[PrintJobPlate]] = {}
         if entries:
             job_ids = {entry.print_job_id for entry in entries}
-            plates = PrintJobPlate.objects.with_state().filter(print_job_id__in=job_ids).prefetch_related("plate_parts")
+            plates = PrintJobPlate.objects.with_state().filter(print_job_id__in=job_ids)
+            plates = plates.prefetch_related(Prefetch("plate_parts", queryset=_counting_plate_parts()))
             for plate in plates:
                 plates_by_job.setdefault(plate.print_job_id, []).append(plate)
         return entries, plates_by_job, list(self.printed_records.all())
+
+
+def validate_not_in_future(value: date) -> None:
+    """Reject a date after today (a printed-part booking cannot be in the future)."""
+    if value > timezone.localdate():
+        raise ValidationError("The print date cannot be in the future.")
 
 
 class PrintedPartRecord(models.Model):
@@ -575,7 +606,11 @@ class PrintedPartRecord(models.Model):
         validators=[MinValueValidator(1)],
         help_text="Number of printed copies",
     )
-    printed_on = models.DateField(default=timezone.localdate, help_text="When the copies were printed")
+    printed_on = models.DateField(
+        default=timezone.localdate,
+        validators=[validate_not_in_future],
+        help_text="When the copies were printed",
+    )
     note = models.CharField(max_length=255, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from django.contrib.auth.models import Permission, User
+from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
@@ -51,6 +54,12 @@ class ApiPrintedRecordTests(APITestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertIn("quantity", resp.data)
         self.assertFalse(PrintedPartRecord.objects.exists())
+
+    def test_future_date_rejected(self) -> None:
+        tomorrow = timezone.localdate() + timedelta(days=1)
+        resp = self.client.post(self.url, {"quantity": 1, "printed_on": tomorrow.isoformat()}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("printed_on", resp.data)
 
     def test_unknown_part_404(self) -> None:
         url = "/api/v1/parts/999999/printed-records/"

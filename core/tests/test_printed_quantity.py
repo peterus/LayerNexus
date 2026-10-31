@@ -222,20 +222,32 @@ class PrintedQuantityTests(TestCase):
             (1, [[]], ["passed"], True),
             (2, [[0], [1]], [None, None], True),
         ]
-        for plates, placement, results, known in scenarios:
-            job = make_sliced_job(plates=plates, plate_parts_known=known)
-            quantity = max([c for copies in placement for c in copies], default=0) + 1
-            PrintJobPart.objects.create(print_job=job, part=self.part, quantity=quantity)
-            for plate, copies, result in zip(job.plates.order_by("plate_number"), placement, results, strict=True):
-                _place(plate, self.part, *copies)
-                if result == "passed":
-                    complete_plate(plate)
-                elif result == "failed":
-                    fail_plate(plate)
-                elif result == "waiting":
-                    add_attempt(plate, None, "waiting")
-        self.assertGreaterEqual(Part.objects.get(pk=self.part.pk).printed_quantity, _legacy_printed(self.part))
-        self.assertGreater(Part.objects.get(pk=self.part.pk).printed_quantity, _legacy_printed(self.part))
+        for index, (plates, placement, results, known) in enumerate(scenarios):
+            with self.subTest(scenario=index):
+                part = Part.objects.create(name=f"S{index}", project=self.project, quantity=10)
+                job = make_sliced_job(plates=plates, plate_parts_known=known)
+                quantity = max([c for copies in placement for c in copies], default=0) + 1
+                PrintJobPart.objects.create(print_job=job, part=part, quantity=quantity)
+                for plate, copies, result in zip(job.plates.order_by("plate_number"), placement, results, strict=True):
+                    _place(plate, part, *copies)
+                    if result == "passed":
+                        complete_plate(plate)
+                    elif result == "failed":
+                        fail_plate(plate)
+                    elif result == "waiting":
+                        add_attempt(plate, None, "waiting")
+                self.assertGreaterEqual(Part.objects.get(pk=part.pk).printed_quantity, _legacy_printed(part))
+
+    def test_failed_then_passed_retry_counts(self) -> None:
+        """A plate that failed and then passed on a retry counts its copies."""
+        job = make_sliced_job(plates=1)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=2)
+        plate = job.plates.get()
+        _place(plate, self.part, 0, 1)
+        add_attempt(plate, None, "failed", max_retries=3)
+        self.assertPrinted(self.part, 0)
+        add_attempt(plate, None, "passed", is_retry=True, max_retries=3)
+        self.assertPrinted(self.part, 2)
 
 
 class KeepCountsMigrationTests(TransactionTestCase):
@@ -280,14 +292,44 @@ class KeepCountsMigrationTests(TransactionTestCase):
         _place(done_complete.plates.get(), other, 0, 1)
         complete_plate(done_complete.plates.get())
 
-        legacy = {part.pk: _legacy_printed(part), other.pk: _legacy_printed(other)}
+        multi = Part.objects.create(name="Multi", project=project, quantity=1)
+        done_multi = make_sliced_job("multi", plates=1)
+        PrintJobPart.objects.create(print_job=done_multi, part=multi, quantity=1)
+        _place(done_multi.plates.get(), multi, 0, meshes_on_plate=1, mesh_count=2)  # second mesh on no plate
+        complete_plate(done_multi.plates.get())
+
+        absent = Part.objects.create(name="Absent", project=project, quantity=1)
+        PrintJobPart.objects.create(print_job=done_complete, part=absent, quantity=1)  # on no plate at all
+
+        legacy = {p.pk: _legacy_printed(p) for p in (part, other, multi, absent)}
         self._migrate(self.AFTER)
 
         self.assertFalse(PrintJob.objects.get(pk=done_unplaced.pk).plate_parts_known)
         self.assertTrue(PrintJob.objects.get(pk=open_unplaced.pk).plate_parts_known)
-        self.assertTrue(PrintJob.objects.get(pk=done_complete.pk).plate_parts_known)
+        self.assertFalse(PrintJob.objects.get(pk=done_complete.pk).plate_parts_known)  # ``absent`` on no plate
+        self.assertFalse(PrintJob.objects.get(pk=done_multi.pk).plate_parts_known)  # incomplete multi-mesh copy
         # 4 (legacy, completed job) + 1 (passed plate of the open job).
         self.assertEqual(Part.objects.get(pk=part.pk).printed_quantity, 5)
         self.assertEqual(Part.objects.get(pk=other.pk).printed_quantity, 2)
+        self.assertEqual(Part.objects.get(pk=multi.pk).printed_quantity, 1)
+        self.assertEqual(Part.objects.get(pk=absent.pk).printed_quantity, 1)
         for pk, count in legacy.items():
             self.assertGreaterEqual(Part.objects.get(pk=pk).printed_quantity, count)
+
+    def test_fully_placed_completed_job_keeps_plate_rule(self) -> None:
+        self._migrate(self.BEFORE)
+        project = Project.objects.create(name="P")
+        part = Part.objects.create(name="R10", project=project, quantity=4)
+        job = make_sliced_job("done", plates=2)
+        PrintJobPart.objects.create(print_job=job, part=part, quantity=2)
+        p1, p2 = job.plates.order_by("plate_number")
+        _place(p1, part, 0)
+        _place(p2, part, 1)
+        add_attempt(p2, None, "failed", max_retries=3)
+        add_attempt(p2, None, "passed", is_retry=True, max_retries=3)
+        complete_plate(p1)
+
+        self._migrate(self.AFTER)
+
+        self.assertTrue(PrintJob.objects.get(pk=job.pk).plate_parts_known)
+        self.assertEqual(Part.objects.get(pk=part.pk).printed_quantity, 2)

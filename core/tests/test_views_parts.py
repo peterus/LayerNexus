@@ -209,6 +209,15 @@ class PrintedPartRecordViewTests(TestDataMixin, TestCase):
         response = self.client.get(reverse("core:part_detail", args=[self.part.pk]))
         self.assertContains(response, "Printed copies not booked")
 
+    def test_future_date_rejected(self) -> None:
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        tomorrow = timezone.localdate() + timedelta(days=1)
+        self._book(printed_on=tomorrow.isoformat())
+        self.assertFalse(PrintedPartRecord.objects.exists())
+
     def test_get_not_allowed(self) -> None:
         response = self.client.get(reverse("core:printed_record_create", args=[self.part.pk]))
         self.assertEqual(response.status_code, 405)
