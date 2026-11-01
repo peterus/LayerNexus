@@ -40,6 +40,7 @@ from .projects import (
     SubProjectForm,
 )
 from .queue import (
+    EnqueueAllPlatesForm,
     PrintQueueForm,
     ScheduledStartForm,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "AddExistingSubprojectForm",
     "AddPartToJobForm",
     "CostProfileForm",
+    "EnqueueAllPlatesForm",
     "HardwarePartForm",
     "OrcaFilamentProfileImportForm",
     "OrcaMachineProfileImportForm",

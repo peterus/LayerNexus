@@ -7,7 +7,9 @@ from core.views import (
     PrintJobCreateView,
     PrintJobDeleteView,
     PrintJobDetailView,
+    PrintJobEnqueueAllView,
     PrintJobListView,
+    PrintJobResliceRequeueView,
     PrintJobSliceView,
     PrintJobUpdateView,
     RemovePartFromJobView,
@@ -35,6 +37,16 @@ urlpatterns = [
         "jobs/<int:pk>/slice/",
         PrintJobSliceView.as_view(),
         name="printjob_slice",
+    ),
+    path(
+        "jobs/<int:pk>/reslice-requeue/",
+        PrintJobResliceRequeueView.as_view(),
+        name="printjob_reslice_requeue",
+    ),
+    path(
+        "jobs/<int:pk>/enqueue-all/",
+        PrintJobEnqueueAllView.as_view(),
+        name="printjob_enqueue_all",
     ),
     path(
         "jobs/<int:job_pk>/remove-part/<int:job_part_pk>/",

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import IO
 
 from django.conf import settings
+from django.db import transaction
 
 from core.models import (
     Part,
@@ -535,17 +536,22 @@ def _slice_job_in_background(job_pk: int) -> None:
         job.status = PrintJob.STATUS_SLICED
         job.slicing_error = ""
         job.plate_parts_known = plate_shares is not None
-        # Only the slicing columns: a concurrent name/notes edit must survive.
-        job.save(
-            update_fields=[
-                "status",
-                "slicing_error",
-                "filament_used_grams",
-                "print_time_estimate",
-                "plate_parts_known",
-                "updated_at",
-            ]
-        )
+        with transaction.atomic():
+            # Only the slicing columns: a concurrent name/notes edit must survive.
+            job.save(
+                update_fields=[
+                    "status",
+                    "slicing_error",
+                    "filament_used_grams",
+                    "print_time_estimate",
+                    "plate_parts_known",
+                    "updated_at",
+                ]
+            )
+            # "Re-slice & re-queue": queue the new plates together with the status change.
+            requeued = job.requeue_after_slicing()
+        if requeued:
+            logger.info("Re-queued %d plate(s) of job %s after re-slicing", requeued, job_pk)
         logger.info(
             "Background slicing completed for job %s (%d plates)",
             job_pk,
@@ -586,6 +592,7 @@ def _slice_job_in_background(job_pk: int) -> None:
             job.status = PrintJob.STATUS_FAILED
             job.slicing_error = str(exc)
             job.save(update_fields=["status", "slicing_error", "updated_at"])
+            job.abandon_requeue()
         except PrintJob.DoesNotExist:
             pass
     except PrintJob.DoesNotExist:
@@ -597,5 +604,6 @@ def _slice_job_in_background(job_pk: int) -> None:
             job.status = PrintJob.STATUS_FAILED
             job.slicing_error = f"Unexpected error: {exc}"
             job.save(update_fields=["status", "slicing_error", "updated_at"])
+            job.abandon_requeue()
         except PrintJob.DoesNotExist:
             pass

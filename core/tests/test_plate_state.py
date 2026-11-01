@@ -231,14 +231,14 @@ class PlateStateDisplayTests(_PlateStateBase):
         complete_plate(self.plate2, self.printer)
         response = self.client.get(self.url)
         self.assertNotContains(response, "plate-queue-button")
-        self.assertIsNone(response.context["first_queueable_plate"])
+        self.assertEqual(response.context["queueable_plate_count"], 0)
 
     def test_enqueue_button_shown_for_failed_plate(self):
         fail_plate(self.plate, self.printer)
         complete_plate(self.plate2, self.printer)
         response = self.client.get(self.url)
         self.assertContains(response, "plate-queue-button", count=1)
-        self.assertEqual(response.context["first_queueable_plate"], self.plate)
+        self.assertEqual(response.context["queueable_plate_count"], 1)
 
     def test_job_detail_shows_attempt_history_per_plate(self):
         start = timezone.now() - timedelta(hours=2)
