@@ -23,6 +23,14 @@ mkdir layernexus
 cd layernexus
 ```
 
+Download the OrcaSlicer wrapper script. It stops the OrcaSlicer CLI from rotating parts in 45° steps when it arranges them on the plates:
+
+```bash
+mkdir docker
+curl -fsSL -o docker/orcaslicer-cli.sh https://raw.githubusercontent.com/peterus/LayerNexus/main/docker/orcaslicer-cli.sh
+chmod +x docker/orcaslicer-cli.sh
+```
+
 ---
 
 ## 2. Create a `docker-compose.yml` File
@@ -47,6 +55,10 @@ services:
 
   orcaslicer:
     image: ghcr.io/afkfelix/orca-slicer-api:latest-orca2.3.1
+    environment:
+      - ORCASLICER_PATH=/usr/local/bin/orcaslicer-cli
+    volumes:
+      - ./docker/orcaslicer-cli.sh:/usr/local/bin/orcaslicer-cli:ro
     restart: unless-stopped
 
   spoolman:
