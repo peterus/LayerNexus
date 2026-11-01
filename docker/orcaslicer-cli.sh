@@ -5,4 +5,6 @@
 # desktop GUI has it disabled), so `--arrange 1` turns parts in 45-degree steps.
 # orca-slicer-api has no setting for this, so we inject it here.
 # Note: only `--allow-rotations=0` works; `=false` and `--no-allow-rotations` do not.
-exec "${ORCASLICER_BINARY:-/app/squashfs-root/AppRun}" --allow-rotations=0 "$@"
+# /app/squashfs-root/AppRun is the image's own ORCASLICER_PATH — re-check it when
+# bumping the orca-slicer-api image tag.
+exec /app/squashfs-root/AppRun --allow-rotations=0 "$@"
