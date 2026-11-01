@@ -20,6 +20,14 @@ if TYPE_CHECKING:
 #: by a crashed process expires after this.
 START_CLAIM_TIMEOUT = timedelta(minutes=10)
 
+#: Queue priorities (higher runs first); shared with ``PrintJob.requeue_priority``.
+PRIORITY_CHOICES = [
+    (1, "Low"),
+    (2, "Normal"),
+    (3, "High"),
+    (4, "Urgent"),
+]
+
 
 class PrintQueueQuerySet(models.QuerySet):
     """Filters for the derived state of print attempts (``PrintQueue`` rows)."""
@@ -115,12 +123,7 @@ class PrintQueue(models.Model):
         RESULT_CANCELLED: "Cancelled",
     }
 
-    PRIORITY_CHOICES = [
-        (1, "Low"),
-        (2, "Normal"),
-        (3, "High"),
-        (4, "Urgent"),
-    ]
+    PRIORITY_CHOICES = PRIORITY_CHOICES
 
     # ``null=True`` exists only so historical rows/backfills without a plate can
     # persist; the application treats a plate as REQUIRED — ``PrintQueueForm``

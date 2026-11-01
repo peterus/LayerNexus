@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import IO
 
 from django.conf import settings
+from django.db import transaction
 
 from core.models import (
     Part,
@@ -21,7 +22,7 @@ from core.models import (
     SpoolmanFilamentMapping,
 )
 from core.services.gcode_objects import PlateCopyShare, assign_plate_objects, parse_gcode_object_ids
-from core.services.orcaslicer import OrcaSlicerAPIClient, OrcaSlicerError
+from core.services.orcaslicer import MultiPlateSliceResult, OrcaSlicerAPIClient, OrcaSlicerError
 from core.services.slicing import _build_slicer_kwargs, _find_compatible_machine
 from core.services.threemf import ThreeMFError, create_3mf_bundle
 
@@ -421,6 +422,40 @@ def _record_plate_parts(
     )
 
 
+def _backfill_part_estimates(job: PrintJob, result: MultiPlateSliceResult) -> None:
+    """Fill missing Part estimates with the per-copy share of a job's slicing result.
+
+    Args:
+        job: The sliced job.
+        result: The slicer result of the job.
+    """
+    job_parts_list = list(job.job_parts.select_related("part"))
+    total_copies = sum(jp.quantity for jp in job_parts_list)
+    if total_copies > 0:
+        total_g = result.total_filament_grams
+        total_mm = result.total_filament_mm
+        total_time = result.total_print_time_seconds
+
+        per_copy_g = total_g / total_copies if total_g else None
+        per_copy_mm = total_mm / total_copies if total_mm else None
+        per_copy_time = total_time / total_copies if total_time else None
+
+        for jp in job_parts_list:
+            part = jp.part
+            updated: list[str] = []
+            if per_copy_g is not None and not part.filament_used_grams:
+                part.filament_used_grams = round(per_copy_g, 2)
+                updated.append("filament_used_grams")
+            if per_copy_mm is not None and not part.filament_used_meters:
+                part.filament_used_meters = round(per_copy_mm / 1000.0, 4)
+                updated.append("filament_used_meters")
+            if per_copy_time is not None and not part.estimated_print_time:
+                part.estimated_print_time = timedelta(seconds=per_copy_time)
+                updated.append("estimated_print_time")
+            if updated:
+                part.save(update_fields=updated)
+
+
 def _slice_job_in_background(job_pk: int) -> None:
     """Slice a PrintJob via OrcaSlicer API.
 
@@ -535,49 +570,34 @@ def _slice_job_in_background(job_pk: int) -> None:
         job.status = PrintJob.STATUS_SLICED
         job.slicing_error = ""
         job.plate_parts_known = plate_shares is not None
-        # Only the slicing columns: a concurrent name/notes edit must survive.
-        job.save(
-            update_fields=[
-                "status",
-                "slicing_error",
-                "filament_used_grams",
-                "print_time_estimate",
-                "plate_parts_known",
-                "updated_at",
-            ]
-        )
+        with transaction.atomic():
+            # Only the slicing columns: a concurrent name/notes edit must survive.
+            job.save(
+                update_fields=[
+                    "status",
+                    "slicing_error",
+                    "filament_used_grams",
+                    "print_time_estimate",
+                    "plate_parts_known",
+                    "updated_at",
+                ]
+            )
+            # "Re-slice & re-queue": queue the new plates together with the status change.
+            requeued = job.requeue_after_slicing()
+        if requeued:
+            logger.info("Re-queued %d plate(s) of job %s after re-slicing", requeued, job_pk)
         logger.info(
             "Background slicing completed for job %s (%d plates)",
             job_pk,
             len(result.plates),
         )
 
-        # Back-fill Part estimates with per-copy values.
-        job_parts_list = list(job.job_parts.select_related("part"))
-        total_copies = sum(jp.quantity for jp in job_parts_list)
-        if total_copies > 0:
-            total_g = result.total_filament_grams
-            total_mm = result.total_filament_mm
-            total_time = result.total_print_time_seconds
-
-            per_copy_g = total_g / total_copies if total_g else None
-            per_copy_mm = total_mm / total_copies if total_mm else None
-            per_copy_time = total_time / total_copies if total_time else None
-
-            for jp in job_parts_list:
-                part = jp.part
-                updated: list[str] = []
-                if per_copy_g is not None and not part.filament_used_grams:
-                    part.filament_used_grams = round(per_copy_g, 2)
-                    updated.append("filament_used_grams")
-                if per_copy_mm is not None and not part.filament_used_meters:
-                    part.filament_used_meters = round(per_copy_mm / 1000.0, 4)
-                    updated.append("filament_used_meters")
-                if per_copy_time is not None and not part.estimated_print_time:
-                    part.estimated_print_time = timedelta(seconds=per_copy_time)
-                    updated.append("estimated_print_time")
-                if updated:
-                    part.save(update_fields=updated)
+        # Back-fill Part estimates with per-copy values.  Best effort: the job is
+        # already sliced (and maybe re-queued), so a failure here must not mark it failed.
+        try:
+            _backfill_part_estimates(job, result)
+        except Exception:
+            logger.exception("Back-filling part estimates failed for job %s", job_pk)
 
     except (OrcaSlicerError, ThreeMFError, FileNotFoundError) as exc:
         logger.exception("Background slicing failed for job %s", job_pk)
@@ -585,7 +605,9 @@ def _slice_job_in_background(job_pk: int) -> None:
             job = PrintJob.objects.get(pk=job_pk)
             job.status = PrintJob.STATUS_FAILED
             job.slicing_error = str(exc)
-            job.save(update_fields=["status", "slicing_error", "updated_at"])
+            with transaction.atomic():
+                job.save(update_fields=["status", "slicing_error", "updated_at"])
+                job.abandon_requeue()
         except PrintJob.DoesNotExist:
             pass
     except PrintJob.DoesNotExist:
@@ -596,6 +618,8 @@ def _slice_job_in_background(job_pk: int) -> None:
             job = PrintJob.objects.get(pk=job_pk)
             job.status = PrintJob.STATUS_FAILED
             job.slicing_error = f"Unexpected error: {exc}"
-            job.save(update_fields=["status", "slicing_error", "updated_at"])
+            with transaction.atomic():
+                job.save(update_fields=["status", "slicing_error", "updated_at"])
+                job.abandon_requeue()
         except PrintJob.DoesNotExist:
             pass

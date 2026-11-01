@@ -51,6 +51,7 @@ __all__ = [
     "RemovePartFromJobView",
     "CreateJobsFromProjectView",
     "PrintJobSliceView",
+    "PrintJobResliceRequeueView",
     "SliceJobStatusView",
 ]
 
@@ -335,7 +336,7 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
     context_object_name = "job"
 
     def get_queryset(self):
-        return PrintJob.objects.select_related("machine_profile").prefetch_related(
+        return PrintJob.objects.select_related("machine_profile", "requeue_printer").prefetch_related(
             "job_parts__part__project",
             Prefetch(
                 "plates",
@@ -354,7 +355,6 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
         for plate in plates:
             plate.part_labels = part_labels
         context["plates"] = plates
-        context["first_queueable_plate"] = next((plate for plate in plates if plate.is_queueable), None)
         context["bed_dimensions"] = job.bed_dimensions
         context["job_started_at"] = job.started_at
         context["job_completed_at"] = job.completed_at
@@ -370,6 +370,10 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
             and has_machine
             and parts_valid
         )
+        context["can_reslice_requeue"] = job.can_reslice_and_requeue and has_machine and parts_valid
+        context["requeue_error"] = "" if job.print_started else job.requeue_error
+        context["requeue_pending"] = job.requeue_printer_id is not None and job.status in PrintJob.SLICING_IN_PROGRESS
+        context["queueable_plate_count"] = sum(1 for plate in plates if plate.is_queueable)
         context["missing_machine_profile"] = job.status == PrintJob.STATUS_DRAFT and not has_machine
 
         # Resolve effective print preset and filament profile from first part
@@ -804,6 +808,26 @@ class CreateJobsFromProjectView(RoleRequiredMixin, View):
         return redirect("core:project_detail", pk=project.pk)
 
 
+def _slice_problem(job: PrintJob) -> str | None:
+    """Return why ``job`` cannot be sliced (machine profile, parts, model files), or ``None``.
+
+    Args:
+        job: The job to check.
+
+    Returns:
+        A user-facing error message, or ``None`` if the job can be sliced.
+    """
+    if not job.machine_profile:
+        return "Please set a machine profile on the job before slicing."
+    job_parts = job.job_parts.select_related("part")
+    if not job_parts.exists():
+        return "Job has no parts to slice."
+    missing_files = [jp.part.name for jp in job_parts if not jp.part.stl_file]
+    if missing_files:
+        return f"Parts without model files: {', '.join(missing_files)}"
+    return None
+
+
 class PrintJobSliceView(RoleRequiredMixin, View):
     """Trigger slicing for a draft print job.
 
@@ -829,25 +853,9 @@ class PrintJobSliceView(RoleRequiredMixin, View):
             messages.error(request, "This job cannot be (re-)sliced right now.")
             return redirect("core:printjob_detail", pk=pk)
 
-        if not job.machine_profile:
-            messages.error(
-                request,
-                "Please set a machine profile on the job before slicing.",
-            )
-            return redirect("core:printjob_detail", pk=pk)
-
-        job_parts = job.job_parts.select_related("part")
-        if not job_parts.exists():
-            messages.error(request, "Job has no parts to slice.")
-            return redirect("core:printjob_detail", pk=pk)
-
-        # Validate all parts have model files
-        missing_files = [jp.part.name for jp in job_parts if not jp.part.stl_file]
-        if missing_files:
-            messages.error(
-                request,
-                f"Parts without model files: {', '.join(missing_files)}",
-            )
+        problem = _slice_problem(job)
+        if problem:
+            messages.error(request, problem)
             return redirect("core:printjob_detail", pk=pk)
 
         with transaction.atomic():
@@ -857,10 +865,13 @@ class PrintJobSliceView(RoleRequiredMixin, View):
                 messages.error(request, "This job has print attempts and cannot be re-sliced.")
                 return redirect("core:printjob_detail", pk=pk)
 
-            # Queue for slicing via the unified OrcaSlicer worker
+            # Queue for slicing via the unified OrcaSlicer worker; a plain slice
+            # never re-queues (and drops the hint of an earlier re-queue).
             job.status = PrintJob.STATUS_PENDING
             job.slicing_error = ""
-            job.save(update_fields=["status", "slicing_error"])
+            job.requeue_printer = None
+            job.requeue_error = ""
+            job.save(update_fields=["status", "slicing_error", "requeue_printer", "requeue_error", "updated_at"])
 
             # Delete any existing plates from a previous slice attempt
             job.plates.all().delete()
@@ -871,6 +882,58 @@ class PrintJobSliceView(RoleRequiredMixin, View):
         messages.info(
             request,
             f"Slicing queued for job '{job}' ({job.total_part_count} parts).",
+        )
+        return redirect("core:printjob_detail", pk=pk)
+
+
+class PrintJobResliceRequeueView(RoleRequiredMixin, View):
+    """Re-slice a queued job and queue its new plates again ("Re-slice & re-queue", POST only).
+
+    Allowed while every print attempt of the job is still waiting
+    (:attr:`PrintJob.can_reslice_and_requeue`).  The waiting attempts are removed,
+    the job is sliced again, and once slicing succeeds the worker queues all new
+    plates on the printer of the removed attempts (see
+    :meth:`PrintJob.start_reslice_and_requeue`).
+
+    Needs ``change_printjob`` (re-slice) plus the queue permissions to remove the
+    waiting attempts and add the new ones.
+    """
+
+    permission_required = ("core.change_printjob", "core.can_dequeue_job", "core.can_manage_print_queue")
+    http_method_names = ["post"]
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Validate the job, remove its waiting attempts and queue it for slicing.
+
+        Args:
+            request: The POST request.
+            pk: Primary key of the print job.
+
+        Returns:
+            A redirect to the job page.
+        """
+        job = get_object_or_404(PrintJob, pk=pk)
+        problem = _slice_problem(job)
+        if problem:
+            messages.error(request, problem)
+            return redirect("core:printjob_detail", pk=pk)
+        try:
+            printer = job.start_reslice_and_requeue()
+        except ValueError:
+            messages.error(
+                request,
+                "This job cannot be re-sliced and re-queued: it is not sliced and queued, one of its "
+                "plates has been started, is being started or has no printer, or none of its printers "
+                "is active with the job's machine profile.",
+            )
+            return redirect("core:printjob_detail", pk=pk)
+
+        _start_orcaslicer_worker()
+        logger.info("Queued re-slice & re-queue for job %s on printer %s", job.pk, printer.pk)
+        messages.info(
+            request,
+            f"Re-slicing '{job}': its plates were removed from the queue and all new plates will be "
+            f"appended to the queue of {printer.name} once slicing succeeds.",
         )
         return redirect("core:printjob_detail", pk=pk)
 

@@ -11,12 +11,13 @@ plate and the display status of a job are **derived** from the print attempts
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 from django.conf import settings
 from django.core.validators import MinValueValidator
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.db.models import (
     Case,
     CharField,
@@ -36,6 +37,8 @@ from django.db.models import (
 )
 from django.db.models.functions import Coalesce
 from django.utils import timezone
+
+from core.models.queue import PRIORITY_CHOICES
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -251,6 +254,28 @@ class PrintJob(models.Model):
         ),
     )
 
+    # Re-queue wish of a "Re-slice & re-queue" (see start_reslice_and_requeue)
+    # ``PROTECT``: the printer must not vanish while a re-queue is pending (the
+    # wish would be lost silently); it is cleared once slicing ends.
+    requeue_printer = models.ForeignKey(
+        "core.PrinterProfile",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="requeue_jobs",
+        help_text="Printer to queue all plates on once the running re-slice succeeds",
+    )
+    requeue_priority = models.IntegerField(
+        choices=PRIORITY_CHOICES,
+        default=2,
+        help_text="Queue priority for the re-queued plates",
+    )
+    requeue_error = models.TextField(
+        blank=True,
+        default="",
+        help_text="Why the plates of the last re-slice were not re-queued",
+    )
+
     notes = models.TextField(blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -383,6 +408,42 @@ class PrintJob(models.Model):
     def can_delete(self) -> bool:
         """Return True while the job has no print attempt (deleting it keeps every print history)."""
         return not self.print_started
+
+    @property
+    def can_reslice_and_requeue(self) -> bool:
+        """Return True while "Re-slice & re-queue" may replace the plates.
+
+        The job is sliced and queued, but every print attempt is still waiting
+        on a printer (never started, no history, no print start in progress) —
+        removing the attempts loses nothing.  Jobs without attempts use the
+        plain re-slice.  Uses the prefetched attempts when available.
+        """
+        from core.models.queue import PrintQueue
+
+        if self.status != self.STATUS_SLICED:
+            return False
+        plates = self._prefetched_plates()
+        if plates is not None and all(plate.attempts_prefetched for plate in plates):
+            attempts = [attempt for plate in plates for attempt in plate.attempts()]
+        else:
+            attempts = list(PrintQueue.objects.filter(plate__print_job=self))
+        return bool(attempts) and all(
+            not attempt.is_history and not attempt.has_active_start_claim and attempt.printer_id is not None
+            for attempt in attempts
+        )
+
+    def compatible_printers(self) -> models.QuerySet[PrinterProfile]:
+        """Return the active printers the job's G-code may be printed on.
+
+        Printers must use the job's machine profile; a job without one fits every
+        active printer.
+        """
+        from core.models.printers import PrinterProfile
+
+        printers = PrinterProfile.objects.active()
+        if self.machine_profile_id is not None:
+            printers = printers.filter(orca_machine_profile_id=self.machine_profile_id)
+        return printers
 
     def _prefetched_plates(self) -> list[PrintJobPlate] | None:
         """Return the prefetched plates, or ``None`` if they are not in the instance cache."""
@@ -558,6 +619,7 @@ class PrintJob(models.Model):
             self.plates.all().delete()
             self.status = self.STATUS_DRAFT
             self.slicing_error = ""
+            self.requeue_error = ""
             self.slicing_started_at = None
             self.filament_used_grams = None
             self.print_time_estimate = None
@@ -565,12 +627,169 @@ class PrintJob(models.Model):
                 update_fields=[
                     "status",
                     "slicing_error",
+                    "requeue_error",
                     "slicing_started_at",
                     "filament_used_grams",
                     "print_time_estimate",
                     "updated_at",
                 ]
             )
+
+    # ── Queueing and re-slice & re-queue ────────────────────────────────
+
+    def enqueue_plates(self, *, printer: PrinterProfile, priority: int = 2) -> list[PrintQueue]:
+        """Queue every queueable plate of the job on ``printer``, in plate order.
+
+        Plates that are waiting, printing, awaiting review or completed are
+        skipped (see :meth:`PrintJobPlateQuerySet.queueable`); a plate queued
+        concurrently is skipped as well.  Each plate is appended at the end of
+        the printer's queue.
+
+        Args:
+            printer: The printer to queue on (must be one of :meth:`compatible_printers`).
+            priority: Queue priority (1-4).
+
+        Returns:
+            The new attempts (empty if no plate is queueable).
+
+        Raises:
+            ValueError: If the printer is deactivated or uses another machine profile.
+        """
+        from core.models.queue import PrintQueue
+
+        entries: list[PrintQueue] = []
+        with transaction.atomic():
+            if not self.compatible_printers().filter(pk=printer.pk).exists():
+                raise ValueError(f"Printer '{printer.name}' is deactivated or does not fit job {self.pk}.")
+            for plate in self.plates.queueable().order_by("plate_number", "pk"):
+                try:
+                    with transaction.atomic():
+                        entries.append(PrintQueue.enqueue(plate=plate, printer=printer, priority=priority))
+                except IntegrityError:
+                    # Queued concurrently (one open attempt per plate): nothing to add.
+                    continue
+            if entries and self.requeue_error:
+                # The plates are queued now: an old "not re-queued" hint is obsolete.
+                PrintJob.objects.filter(pk=self.pk).update(requeue_error="")
+                self.requeue_error = ""
+        return entries
+
+    def start_reslice_and_requeue(self) -> PrinterProfile:
+        """Remove the job's waiting attempts and queue it for slicing, remembering the printer.
+
+        Allowed only while :attr:`can_reslice_and_requeue` holds (checked again on
+        the locked rows).  The waiting attempts are deleted, the plates are deleted
+        (as for a plain re-slice) and the job goes to ``pending``.  Once slicing
+        succeeds the worker calls :meth:`requeue_after_slicing`, which queues all
+        new plates on the remembered printer.
+
+        Attempts on several printers: among the printers that can still print the
+        job (:meth:`compatible_printers`), the one with the most attempts is used
+        (a tie goes to the printer of the earliest attempt) with the highest
+        priority among its attempts.  The caller starts the slicing worker.
+
+        Returns:
+            The printer the new plates will be queued on.
+
+        Raises:
+            ValueError: If the job is not sliced, has no attempts, or an attempt
+                was started / resolved / is being started / has no printer, or
+                none of the attempts' printers can print the job any more.
+        """
+        from core.models.queue import PrintQueue
+
+        with transaction.atomic():
+            job = PrintJob.objects.select_for_update().filter(pk=self.pk).first()
+            if job is None or job.status != self.STATUS_SLICED:
+                raise ValueError(f"Job {self.pk} is not sliced.")
+            entries = list(
+                PrintQueue.objects.select_for_update()
+                .filter(plate__print_job=job)
+                .select_related("printer")
+                .order_by("pk")
+            )
+            if not entries or any(
+                entry.is_history or entry.has_active_start_claim or entry.printer is None for entry in entries
+            ):
+                raise ValueError(f"Job {self.pk} has no attempts or an attempt that is not waiting on a printer.")
+            # Only printers the new plates can be queued on take part in the vote.
+            compatible = set(job.compatible_printers().values_list("pk", flat=True))
+            candidates = [entry for entry in entries if entry.printer_id in compatible]
+            if not candidates:
+                raise ValueError(f"No printer of job {self.pk}'s attempts can print it any more.")
+            counts = Counter(entry.printer_id for entry in candidates)
+            # ``candidates`` is in pk order, so a tie keeps the printer seen first.
+            printer = max((entry.printer for entry in candidates), key=lambda p: counts[p.pk])
+            priority = max(entry.priority for entry in candidates if entry.printer_id == printer.pk)
+
+            for entry in entries:
+                entry.remove()
+            job.plates.all().delete()
+            job.status = self.STATUS_PENDING
+            job.slicing_error = ""
+            job.requeue_printer = printer
+            job.requeue_priority = priority
+            job.requeue_error = ""
+            job.save(
+                update_fields=[
+                    "status",
+                    "slicing_error",
+                    "requeue_printer",
+                    "requeue_priority",
+                    "requeue_error",
+                    "updated_at",
+                ]
+            )
+        for field in ("status", "slicing_error", "requeue_printer", "requeue_priority", "requeue_error"):
+            setattr(self, field, getattr(job, field))
+        return printer
+
+    def requeue_after_slicing(self) -> int:
+        """Queue the new plates on the remembered printer after a successful re-slice.
+
+        Does nothing without a re-queue wish (``requeue_printer`` unset; the printer
+        cannot be deleted while the wish is pending, see ``PROTECT``).  A printer that was deactivated or no
+        longer fits the job is not used; ``requeue_error`` tells the user instead.
+        The wish is cleared either way.
+
+        Returns:
+            The number of plates queued.
+        """
+        error = ""
+        count = 0
+        with transaction.atomic():
+            job = PrintJob.objects.select_for_update().select_related("requeue_printer").filter(pk=self.pk).first()
+            if job is None or job.requeue_printer is None:
+                return 0
+            printer = job.requeue_printer
+            try:
+                count = len(job.enqueue_plates(printer=printer, priority=job.requeue_priority))
+            except ValueError:
+                error = (
+                    f"The plates were not re-queued: printer '{printer.name}' is deactivated "
+                    "or no longer uses the job's machine profile. Add them to the queue manually."
+                )
+            job.requeue_printer = None
+            job.requeue_error = error
+            job.save(update_fields=["requeue_printer", "requeue_error", "updated_at"])
+        self.requeue_printer = None
+        self.requeue_error = error
+        return count
+
+    def abandon_requeue(self) -> None:
+        """Drop the re-queue wish after a failed re-slice and leave a hint for the user."""
+        with transaction.atomic():
+            job = PrintJob.objects.select_for_update().select_related("requeue_printer").filter(pk=self.pk).first()
+            if job is None or job.requeue_printer is None:
+                return
+            job.requeue_error = (
+                f"Slicing failed, so the plates were not re-queued on '{job.requeue_printer.name}'. "
+                "Fix the problem, slice again and add the plates to the queue."
+            )
+            job.requeue_printer = None
+            job.save(update_fields=["requeue_printer", "requeue_error", "updated_at"])
+        self.requeue_printer = None
+        self.requeue_error = job.requeue_error
 
 
 class PrintJobPart(models.Model):

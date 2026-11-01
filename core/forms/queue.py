@@ -5,10 +5,11 @@ from typing import Any
 from django import forms
 from django.utils import timezone
 
-from core.models import PrintQueue
+from core.models import PrinterProfile, PrintJob, PrintQueue
 from core.services.scheduled_start import MAX_SCHEDULE_AHEAD
 
 __all__ = [
+    "EnqueueAllPlatesForm",
     "PrintQueueForm",
     "ScheduledStartForm",
 ]
@@ -48,6 +49,28 @@ class PrintQueueForm(forms.ModelForm):
                     f"'{job_mp.name}'. Please select a compatible printer."
                 )
         return cleaned
+
+
+class EnqueueAllPlatesForm(forms.Form):
+    """Form for queueing every remaining plate of one job on a printer.
+
+    Only active printers with the job's machine profile are offered (see
+    :meth:`PrintJob.compatible_printers`).
+    """
+
+    printer = forms.ModelChoiceField(queryset=PrinterProfile.objects.none())
+    priority = forms.TypedChoiceField(choices=PrintQueue.PRIORITY_CHOICES, coerce=int, initial=2)
+
+    def __init__(self, *args: Any, job: PrintJob, **kwargs: Any) -> None:
+        """Limit the printer choices to the printers compatible with ``job``.
+
+        Args:
+            *args: Positional form arguments.
+            job: The print job whose plates are queued.
+            **kwargs: Keyword form arguments.
+        """
+        super().__init__(*args, **kwargs)
+        self.fields["printer"].queryset = job.compatible_printers()
 
 
 class ScheduledStartForm(forms.Form):

@@ -251,7 +251,13 @@ class PrintedQuantityTests(TestCase):
 
 
 class KeepCountsMigrationTests(TransactionTestCase):
-    """``0042_keep_counts_of_completed_jobs`` keeps completed jobs at their legacy count."""
+    """``0042_keep_counts_of_completed_jobs`` keeps completed jobs at their legacy count.
+
+    The fixtures use the current models, so they are created (and read) on the
+    current schema: :meth:`_run_migration` rolls back to ``0041``, applies ``0042``
+    and migrates forward again.  Creating them at ``0041`` would break as soon as
+    a later migration adds a column to one of these models.
+    """
 
     BEFORE = [("core", "0041_printed_part_records")]
     AFTER = [("core", "0042_keep_counts_of_completed_jobs")]
@@ -267,8 +273,15 @@ class KeepCountsMigrationTests(TransactionTestCase):
         executor.loader.build_graph()
         executor.migrate(target)
 
-    def test_completed_job_with_unplaced_copies_keeps_legacy_count(self) -> None:
+    def _run_migration(self) -> None:
+        """Roll back to ``BEFORE``, apply ``AFTER`` and return to the current schema."""
         self._migrate(self.BEFORE)
+        self._migrate(self.AFTER)
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
+    def test_completed_job_with_unplaced_copies_keeps_legacy_count(self) -> None:
         project = Project.objects.create(name="P")
         part = Part.objects.create(name="R11", project=project, quantity=4)
         other = Part.objects.create(name="R10", project=project, quantity=4)
@@ -302,7 +315,7 @@ class KeepCountsMigrationTests(TransactionTestCase):
         PrintJobPart.objects.create(print_job=done_complete, part=absent, quantity=1)  # on no plate at all
 
         legacy = {p.pk: _legacy_printed(p) for p in (part, other, multi, absent)}
-        self._migrate(self.AFTER)
+        self._run_migration()
 
         self.assertFalse(PrintJob.objects.get(pk=done_unplaced.pk).plate_parts_known)
         self.assertTrue(PrintJob.objects.get(pk=open_unplaced.pk).plate_parts_known)
@@ -317,7 +330,6 @@ class KeepCountsMigrationTests(TransactionTestCase):
             self.assertGreaterEqual(Part.objects.get(pk=pk).printed_quantity, count)
 
     def test_fully_placed_completed_job_keeps_plate_rule(self) -> None:
-        self._migrate(self.BEFORE)
         project = Project.objects.create(name="P")
         part = Part.objects.create(name="R10", project=project, quantity=4)
         job = make_sliced_job("done", plates=2)
@@ -329,7 +341,7 @@ class KeepCountsMigrationTests(TransactionTestCase):
         add_attempt(p2, None, "passed", is_retry=True, max_retries=3)
         complete_plate(p1)
 
-        self._migrate(self.AFTER)
+        self._run_migration()
 
         self.assertTrue(PrintJob.objects.get(pk=job.pk).plate_parts_known)
         self.assertEqual(Part.objects.get(pk=part.pk).printed_quantity, 2)

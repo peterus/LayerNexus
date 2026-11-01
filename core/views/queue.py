@@ -19,13 +19,15 @@ from django.http import (
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.utils import timezone
+from django.utils.functional import cached_property
 from django.views import View
-from django.views.generic import CreateView, DeleteView, ListView
+from django.views.generic import CreateView, DeleteView, FormView, ListView
 
-from core.forms import PrintQueueForm, ScheduledStartForm
+from core.forms import EnqueueAllPlatesForm, PrintQueueForm, ScheduledStartForm
 from core.mixins import PrinterControlMixin, QueueDequeueMixin, QueueManageMixin
 from core.models import (
     PrinterProfile,
+    PrintJob,
     PrintJobPlate,
     PrintQueue,
     ScheduledQueueStart,
@@ -51,6 +53,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "PrintQueueListView",
     "PrintQueueCreateView",
+    "PrintJobEnqueueAllView",
     "PrintQueueDeleteView",
     "PrintQueueMoveView",
     "RunNextQueueView",
@@ -226,6 +229,8 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
             # Queued concurrently since the form was validated (one open attempt per plate).
             messages.error(self.request, f"Plate {plate.plate_number} of '{plate.print_job}' is already queued.")
             return redirect(self.success_url)
+        # A plate of the job is queued again: an old "not re-queued" hint is obsolete.
+        PrintJob.objects.filter(pk=plate.print_job_id).exclude(requeue_error="").update(requeue_error="")
 
         messages.success(
             self.request,
@@ -234,6 +239,74 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
         if "_save_and_add_another" in self.request.POST:
             return redirect(reverse("core:printqueue_create"))
         return redirect(self.success_url)
+
+
+class PrintJobEnqueueAllView(QueueManageMixin, FormView):
+    """Add every remaining plate of one print job to the queue of a printer.
+
+    Plates that are waiting, printing, awaiting review or completed are skipped
+    (see :meth:`PrintJob.enqueue_plates`); the rest are appended in plate order.
+    Only active printers with the job's machine profile are offered.  Single
+    plates are still queued via :class:`PrintQueueCreateView`.
+    """
+
+    form_class = EnqueueAllPlatesForm
+    template_name = "core/printjob_enqueue_all.html"
+
+    @cached_property
+    def job(self) -> PrintJob:
+        """The print job (404 if missing); loaded lazily, i.e. after the permission check."""
+        return get_object_or_404(PrintJob.objects.select_related("machine_profile"), pk=self.kwargs["pk"])
+
+    @cached_property
+    def plates(self) -> list[PrintJobPlate]:
+        """The job's queueable plates in plate order (computed once per request)."""
+        return list(self.job.plates.queueable().order_by("plate_number", "pk"))
+
+    def _detail_url(self) -> str:
+        return reverse("core:printjob_detail", kwargs={"pk": self.job.pk})
+
+    def get(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+        """Show the form, or go back to the job if no plate is left to queue."""
+        if not self.plates:
+            messages.info(request, f"No plates of '{self.job}' are left to queue.")
+            return redirect(self._detail_url())
+        if not self.job.compatible_printers().exists():
+            messages.error(request, f"No active printer uses the machine profile of '{self.job}'.")
+            return redirect(self._detail_url())
+        return super().get(request, *args, **kwargs)
+
+    def get_form_kwargs(self) -> dict[str, Any]:
+        """Pass the job to the form (it limits the printer choices)."""
+        kwargs = super().get_form_kwargs()
+        kwargs["job"] = self.job
+        return kwargs
+
+    def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
+        """Add the job and the plates that will be queued."""
+        context = super().get_context_data(**kwargs)
+        context["job"] = self.job
+        context["plates"] = self.plates
+        return context
+
+    def form_valid(self, form: EnqueueAllPlatesForm) -> HttpResponse:
+        """Queue the remaining plates and go back to the job."""
+        printer = form.cleaned_data["printer"]
+        try:
+            entries = self.job.enqueue_plates(printer=printer, priority=form.cleaned_data["priority"])
+        except ValueError:
+            # Deactivated or re-profiled since the form was validated.
+            messages.error(self.request, f"Printer '{printer.name}' cannot print this job.")
+            return redirect(self._detail_url())
+        if entries:
+            numbers = ", ".join(str(entry.plate.plate_number) for entry in entries)
+            messages.success(
+                self.request,
+                f"Added {len(entries)} plate(s) of '{self.job}' to the queue on {printer.name}: plate {numbers}.",
+            )
+        else:
+            messages.info(self.request, f"No plates of '{self.job}' were left to queue.")
+        return redirect(self._detail_url())
 
 
 class PrintQueueDeleteView(QueueDequeueMixin, DeleteView):
