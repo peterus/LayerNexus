@@ -92,6 +92,11 @@ class PlatePartsBackfillTests(TransactionTestCase):
         executor.loader.build_graph()
         executor.migrate(target)
 
+    def _migrate_to_leaf(self) -> None:
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
     def _part(self, name: str, *, data: bytes | None = None, suffix: str = "stl", need: int = 50):
         part = self.Part.objects.create(name=name, project=self.project, quantity=need)
         path = self.media / "stl_files" / f"{name}.{suffix}"
@@ -294,6 +299,8 @@ class PlatePartsBackfillTests(TransactionTestCase):
         self.assertTrue(self._known(job))
         self.assertEqual(len(self._entries(job)), 23)
 
+        # The current models need the current schema.
+        self._migrate_to_leaf()
         from core.models import PrintJob
 
         current = PrintJob.objects.get(pk=job.pk)
@@ -309,6 +316,8 @@ class PlatePartsBackfillTests(TransactionTestCase):
         self.assertFalse(self._known(job))
         self.assertEqual(len(self._entries(job)), 23)
 
+        # The current models need the current schema.
+        self._migrate_to_leaf()
         from core.models import PrintJob
 
         self.assertEqual(PrintJob.objects.get(pk=job.pk).plate_assignment_warnings(), ["2× R11 on no plate"])

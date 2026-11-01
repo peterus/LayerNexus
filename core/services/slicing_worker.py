@@ -591,8 +591,9 @@ def _slice_job_in_background(job_pk: int) -> None:
             job = PrintJob.objects.get(pk=job_pk)
             job.status = PrintJob.STATUS_FAILED
             job.slicing_error = str(exc)
-            job.save(update_fields=["status", "slicing_error", "updated_at"])
-            job.abandon_requeue()
+            with transaction.atomic():
+                job.save(update_fields=["status", "slicing_error", "updated_at"])
+                job.abandon_requeue()
         except PrintJob.DoesNotExist:
             pass
     except PrintJob.DoesNotExist:
@@ -603,7 +604,8 @@ def _slice_job_in_background(job_pk: int) -> None:
             job = PrintJob.objects.get(pk=job_pk)
             job.status = PrintJob.STATUS_FAILED
             job.slicing_error = f"Unexpected error: {exc}"
-            job.save(update_fields=["status", "slicing_error", "updated_at"])
-            job.abandon_requeue()
+            with transaction.atomic():
+                job.save(update_fields=["status", "slicing_error", "updated_at"])
+                job.abandon_requeue()
         except PrintJob.DoesNotExist:
             pass

@@ -371,6 +371,7 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
             and parts_valid
         )
         context["can_reslice_requeue"] = job.can_reslice_and_requeue and has_machine and parts_valid
+        context["requeue_error"] = "" if job.print_started else job.requeue_error
         context["requeue_pending"] = job.requeue_printer_id is not None and job.status in PrintJob.SLICING_IN_PROGRESS
         context["queueable_plate_count"] = sum(1 for plate in plates if plate.is_queueable)
         context["missing_machine_profile"] = job.status == PrintJob.STATUS_DRAFT and not has_machine
@@ -870,7 +871,7 @@ class PrintJobSliceView(RoleRequiredMixin, View):
             job.slicing_error = ""
             job.requeue_printer = None
             job.requeue_error = ""
-            job.save(update_fields=["status", "slicing_error", "requeue_printer", "requeue_error"])
+            job.save(update_fields=["status", "slicing_error", "requeue_printer", "requeue_error", "updated_at"])
 
             # Delete any existing plates from a previous slice attempt
             job.plates.all().delete()
@@ -921,8 +922,8 @@ class PrintJobResliceRequeueView(RoleRequiredMixin, View):
         except ValueError:
             messages.error(
                 request,
-                "This job cannot be re-sliced and re-queued: a plate has been started, "
-                "is being started or the job is not sliced and queued.",
+                "This job cannot be re-sliced and re-queued: it is not sliced and queued, or one of its "
+                "plates has been started, is being started or has no printer.",
             )
             return redirect("core:printjob_detail", pk=pk)
 
@@ -930,8 +931,8 @@ class PrintJobResliceRequeueView(RoleRequiredMixin, View):
         logger.info("Queued re-slice & re-queue for job %s on printer %s", job.pk, printer.pk)
         messages.info(
             request,
-            f"Re-slicing '{job}': its plates were removed from the queue and will be re-queued "
-            f"on {printer.name} once slicing succeeds.",
+            f"Re-slicing '{job}': its plates were removed from the queue and all new plates will be "
+            f"appended to the queue of {printer.name} once slicing succeeds.",
         )
         return redirect("core:printjob_detail", pk=pk)
 

@@ -144,7 +144,7 @@ class PrinterProfileDeleteView(PrinterManageMixin, DeleteView):
         except (ProtectedError, IntegrityError):
             messages.error(
                 self.request,
-                f"Cannot delete printer '{name}': it has print history. Deactivate it instead.",
+                f"Cannot delete printer '{name}': it has print history or a pending re-queue. Deactivate it instead.",
             )
             return redirect("core:printerprofile_delete", pk=self.object.pk)
         messages.success(self.request, "Printer profile deleted.")

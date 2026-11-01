@@ -19,6 +19,7 @@ from django.http import (
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.utils import timezone
+from django.utils.functional import cached_property
 from django.views import View
 from django.views.generic import CreateView, DeleteView, FormView, ListView
 
@@ -250,20 +251,22 @@ class PrintJobEnqueueAllView(QueueManageMixin, FormView):
     form_class = EnqueueAllPlatesForm
     template_name = "core/printjob_enqueue_all.html"
 
-    def dispatch(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
-        """Load the job (404 if missing) before the form is built."""
-        self.job = get_object_or_404(PrintJob.objects.select_related("machine_profile"), pk=kwargs["pk"])
-        return super().dispatch(request, *args, **kwargs)
+    @cached_property
+    def job(self) -> PrintJob:
+        """The print job (404 if missing); loaded lazily, i.e. after the permission check."""
+        return get_object_or_404(PrintJob.objects.select_related("machine_profile"), pk=self.kwargs["pk"])
+
+    @cached_property
+    def plates(self) -> list[PrintJobPlate]:
+        """The job's queueable plates in plate order (computed once per request)."""
+        return list(self.job.plates.queueable().order_by("plate_number", "pk"))
 
     def _detail_url(self) -> str:
         return reverse("core:printjob_detail", kwargs={"pk": self.job.pk})
 
-    def _plates(self) -> list[PrintJobPlate]:
-        return list(self.job.plates.queueable().order_by("plate_number", "pk"))
-
     def get(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
         """Show the form, or go back to the job if no plate is left to queue."""
-        if not self._plates():
+        if not self.plates:
             messages.info(request, f"No plates of '{self.job}' are left to queue.")
             return redirect(self._detail_url())
         return super().get(request, *args, **kwargs)
@@ -278,7 +281,7 @@ class PrintJobEnqueueAllView(QueueManageMixin, FormView):
         """Add the job and the plates that will be queued."""
         context = super().get_context_data(**kwargs)
         context["job"] = self.job
-        context["plates"] = self._plates()
+        context["plates"] = self.plates
         return context
 
     def form_valid(self, form: EnqueueAllPlatesForm) -> HttpResponse:

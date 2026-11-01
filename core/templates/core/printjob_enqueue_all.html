@@ -31,7 +31,6 @@
         <select name="{{ field.html_name }}" id="{{ field.id_for_label }}" class="form-select {% if field.errors %}is-invalid{% endif %}">
           {% for choice in field.field.choices %}<option value="{{ choice.0 }}" {% if field.value|stringformat:"s" == choice.0|stringformat:"s" %}selected{% endif %}>{{ choice.1 }}</option>{% endfor %}
         </select>
-        {% if field.name == "printer" and not field.field.queryset.exists %}<div class="form-text">No active printer uses this job's machine profile.</div>{% endif %}
         {% for error in field.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
       </div>
       {% endfor %}

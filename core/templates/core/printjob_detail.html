@@ -54,10 +54,10 @@
   <i class="bi bi-arrow-repeat me-1"></i>
   Once slicing succeeds, all plates will be re-queued on {{ job.requeue_printer.name }}.
 </div>
-{% elif job.requeue_error %}
+{% elif requeue_error %}
 <div class="alert alert-warning requeue-error">
   <i class="bi bi-exclamation-triangle me-1"></i>
-  {{ job.requeue_error }}
+  {{ requeue_error }}
 </div>
 {% endif %}
 
@@ -289,7 +289,7 @@
         {% if can_reslice_requeue and perms.core.change_printjob and perms.core.can_dequeue_job and perms.core.can_manage_print_queue %}
         <form method="post" action="{% url 'core:printjob_reslice_requeue' job.pk %}">
           {% csrf_token %}
-          <button type="submit" class="btn btn-outline-primary w-100" onclick="return confirm('Re-slice this job? Its waiting plates are removed from the queue and the new plates are queued again once slicing succeeds.')">
+          <button type="submit" class="btn btn-outline-primary w-100" onclick="return confirm('Re-slice this job? Its waiting plates are removed from the queue. Once slicing succeeds, all new plates are appended to the end of one printer\'s queue (the printer with most of its plates); queue positions and retry settings are not kept.')">
             <i class="bi bi-arrow-repeat me-1"></i>Re-slice &amp; re-queue
           </button>
         </form>

@@ -448,3 +448,87 @@ class ResliceRequeueViewTests(_JobFixture):
         self.assertEqual(self.job.status, PrintJob.STATUS_PENDING)
         self.assertIsNone(self.job.requeue_printer)
         self.assertEqual(self.job.requeue_error, "")
+
+
+# ── Review round 1 ─────────────────────────────────────────────────────────
+
+
+class ResliceRequeueEdgeCaseTests(_JobFixture):
+    """Edge cases: hints, printer deletion, entries without printer, concurrent queueing."""
+
+    def test_enqueue_plates_clears_old_requeue_hint(self) -> None:
+        PrintJob.objects.filter(pk=self.job.pk).update(requeue_error="not re-queued")
+        self.job.refresh_from_db()
+        self.job.enqueue_plates(printer=self.printer)
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.requeue_error, "")
+
+    def test_requeue_printer_cannot_be_deleted_while_pending(self) -> None:
+        from django.db.models import ProtectedError
+
+        add_attempt(self.plates[0], self.printer2)
+        self.job.start_reslice_and_requeue()
+        with self.assertRaises(ProtectedError):
+            self.printer2.delete()
+
+    def test_waiting_entry_without_printer_blocks_reslice_and_requeue(self) -> None:
+        add_attempt(self.plates[0], self.printer)
+        add_attempt(self.plates[1], None)
+        self.assertFalse(PrintJob.objects.get(pk=self.job.pk).can_reslice_and_requeue)
+        with self.assertRaises(ValueError):
+            self.job.start_reslice_and_requeue()
+        self.assertEqual(PrintQueue.objects.count(), 2)
+
+    def test_can_reslice_and_requeue_uses_prefetched_attempts(self) -> None:
+        from django.db.models import Prefetch
+
+        add_attempt(self.plates[0], self.printer)
+        job = PrintJob.objects.prefetch_related(
+            Prefetch("plates", queryset=PrintJobPlate.objects.prefetch_related("queue_entries"))
+        ).get(pk=self.job.pk)
+        with self.assertNumQueries(0):
+            self.assertTrue(job.can_reslice_and_requeue)
+
+    def test_enqueue_plates_skips_plate_queued_concurrently(self) -> None:
+        from django.db import IntegrityError
+
+        real_enqueue = PrintQueue.enqueue
+
+        def flaky(**kwargs):
+            if kwargs["plate"] == self.plates[1]:
+                raise IntegrityError("one open attempt per plate")
+            return real_enqueue(**kwargs)
+
+        with mock.patch.object(PrintQueue, "enqueue", side_effect=flaky):
+            entries = self.job.enqueue_plates(printer=self.printer)
+        self.assertEqual([entry.plate for entry in entries], [self.plates[0], self.plates[2]])
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class SlicingWorkerUnexpectedErrorTests(SlicingWorkerRequeueTests):
+    """An unexpected slicer error also drops the wish and leaves a hint."""
+
+    def test_unexpected_error_does_not_requeue(self) -> None:
+        self._slice(error=RuntimeError("kaput"))
+        self.assertEqual(self.job.status, PrintJob.STATUS_FAILED)
+        self.assertIsNone(self.job.requeue_printer)
+        self.assertIn("P1", self.job.requeue_error)
+        self.assertFalse(PrintQueue.objects.exists())
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class ResliceRequeueViewEdgeCaseTests(_JobFixture):
+    """View-level edge cases from review round 1."""
+
+    def test_anonymous_enqueue_all_is_refused_before_the_job_lookup(self) -> None:
+        """A missing job is not revealed (404) before the permission check."""
+        response = Client().get(reverse("core:printjob_enqueue_all", kwargs={"pk": 999999}))
+        self.assertEqual(response.status_code, 403)
+
+    def test_requeue_hint_hidden_once_plates_are_queued(self) -> None:
+        PrintJob.objects.filter(pk=self.job.pk).update(requeue_error="Plates were not re-queued.")
+        client = self._client()
+        detail = reverse("core:printjob_detail", kwargs={"pk": self.job.pk})
+        self.assertContains(client.get(detail), "Plates were not re-queued.")
+        add_attempt(self.plates[0], self.printer)
+        self.assertNotContains(client.get(detail), "Plates were not re-queued.")
