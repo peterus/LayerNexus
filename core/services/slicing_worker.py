@@ -22,7 +22,7 @@ from core.models import (
     SpoolmanFilamentMapping,
 )
 from core.services.gcode_objects import PlateCopyShare, assign_plate_objects, parse_gcode_object_ids
-from core.services.orcaslicer import OrcaSlicerAPIClient, OrcaSlicerError
+from core.services.orcaslicer import MultiPlateSliceResult, OrcaSlicerAPIClient, OrcaSlicerError
 from core.services.slicing import _build_slicer_kwargs, _find_compatible_machine
 from core.services.threemf import ThreeMFError, create_3mf_bundle
 
@@ -422,6 +422,40 @@ def _record_plate_parts(
     )
 
 
+def _backfill_part_estimates(job: PrintJob, result: MultiPlateSliceResult) -> None:
+    """Fill missing Part estimates with the per-copy share of a job's slicing result.
+
+    Args:
+        job: The sliced job.
+        result: The slicer result of the job.
+    """
+    job_parts_list = list(job.job_parts.select_related("part"))
+    total_copies = sum(jp.quantity for jp in job_parts_list)
+    if total_copies > 0:
+        total_g = result.total_filament_grams
+        total_mm = result.total_filament_mm
+        total_time = result.total_print_time_seconds
+
+        per_copy_g = total_g / total_copies if total_g else None
+        per_copy_mm = total_mm / total_copies if total_mm else None
+        per_copy_time = total_time / total_copies if total_time else None
+
+        for jp in job_parts_list:
+            part = jp.part
+            updated: list[str] = []
+            if per_copy_g is not None and not part.filament_used_grams:
+                part.filament_used_grams = round(per_copy_g, 2)
+                updated.append("filament_used_grams")
+            if per_copy_mm is not None and not part.filament_used_meters:
+                part.filament_used_meters = round(per_copy_mm / 1000.0, 4)
+                updated.append("filament_used_meters")
+            if per_copy_time is not None and not part.estimated_print_time:
+                part.estimated_print_time = timedelta(seconds=per_copy_time)
+                updated.append("estimated_print_time")
+            if updated:
+                part.save(update_fields=updated)
+
+
 def _slice_job_in_background(job_pk: int) -> None:
     """Slice a PrintJob via OrcaSlicer API.
 
@@ -558,32 +592,12 @@ def _slice_job_in_background(job_pk: int) -> None:
             len(result.plates),
         )
 
-        # Back-fill Part estimates with per-copy values.
-        job_parts_list = list(job.job_parts.select_related("part"))
-        total_copies = sum(jp.quantity for jp in job_parts_list)
-        if total_copies > 0:
-            total_g = result.total_filament_grams
-            total_mm = result.total_filament_mm
-            total_time = result.total_print_time_seconds
-
-            per_copy_g = total_g / total_copies if total_g else None
-            per_copy_mm = total_mm / total_copies if total_mm else None
-            per_copy_time = total_time / total_copies if total_time else None
-
-            for jp in job_parts_list:
-                part = jp.part
-                updated: list[str] = []
-                if per_copy_g is not None and not part.filament_used_grams:
-                    part.filament_used_grams = round(per_copy_g, 2)
-                    updated.append("filament_used_grams")
-                if per_copy_mm is not None and not part.filament_used_meters:
-                    part.filament_used_meters = round(per_copy_mm / 1000.0, 4)
-                    updated.append("filament_used_meters")
-                if per_copy_time is not None and not part.estimated_print_time:
-                    part.estimated_print_time = timedelta(seconds=per_copy_time)
-                    updated.append("estimated_print_time")
-                if updated:
-                    part.save(update_fields=updated)
+        # Back-fill Part estimates with per-copy values.  Best effort: the job is
+        # already sliced (and maybe re-queued), so a failure here must not mark it failed.
+        try:
+            _backfill_part_estimates(job, result)
+        except Exception:
+            logger.exception("Back-filling part estimates failed for job %s", job_pk)
 
     except (OrcaSlicerError, ThreeMFError, FileNotFoundError) as exc:
         logger.exception("Background slicing failed for job %s", job_pk)

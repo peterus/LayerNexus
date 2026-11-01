@@ -619,6 +619,7 @@ class PrintJob(models.Model):
             self.plates.all().delete()
             self.status = self.STATUS_DRAFT
             self.slicing_error = ""
+            self.requeue_error = ""
             self.slicing_started_at = None
             self.filament_used_grams = None
             self.print_time_estimate = None
@@ -626,6 +627,7 @@ class PrintJob(models.Model):
                 update_fields=[
                     "status",
                     "slicing_error",
+                    "requeue_error",
                     "slicing_started_at",
                     "filament_used_grams",
                     "print_time_estimate",

@@ -589,3 +589,29 @@ class ResliceRequeueRound2ViewTests(_JobFixture):
         PrinterProfile.objects.filter(orca_machine_profile=self.machine).update(is_active=False)
         response = self._client().get(reverse("core:printjob_enqueue_all", kwargs={"pk": self.job.pk}))
         self.assertRedirects(response, reverse("core:printjob_detail", kwargs={"pk": self.job.pk}))
+
+
+# ── Review round 3 ─────────────────────────────────────────────────────────
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+class SlicingWorkerBackfillErrorTests(SlicingWorkerRequeueTests):
+    """A failing part back-fill after the commit keeps the job sliced and re-queued."""
+
+    def test_backfill_error_keeps_job_sliced(self) -> None:
+        with mock.patch.object(Part, "save", side_effect=RuntimeError("db locked")):
+            self._slice(plates=2)
+        self.assertEqual(self.job.status, PrintJob.STATUS_SLICED)
+        self.assertEqual(PrintQueue.objects.filter(plate__print_job=self.job).count(), 2)
+
+
+class DiscardSlicingClearsHintTests(_JobFixture):
+    """``discard_slicing()`` drops an obsolete re-queue hint with the plates."""
+
+    def test_discard_slicing_clears_requeue_error(self) -> None:
+        PrintJob.objects.filter(pk=self.job.pk).update(requeue_error="not re-queued")
+        self.job.refresh_from_db()
+        self.job.discard_slicing()
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.status, PrintJob.STATUS_DRAFT)
+        self.assertEqual(self.job.requeue_error, "")
