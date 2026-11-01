@@ -80,6 +80,10 @@ services:
 
   orcaslicer:
     image: ghcr.io/afkfelix/orca-slicer-api:latest-orca2.3.1
+    environment:
+      - ORCASLICER_PATH=/usr/local/bin/orcaslicer-cli
+    volumes:
+      - ./docker/orcaslicer-cli.sh:/usr/local/bin/orcaslicer-cli:ro
     restart: unless-stopped
 
   spoolman:
@@ -95,6 +99,9 @@ volumes:
   layernexus_media:
   spoolman_data:
 ```
+
+!!! warning "Keep the OrcaSlicer CLI wrapper"
+    `docker/orcaslicer-cli.sh` (from this repository) adds `--allow-rotations=0` to every OrcaSlicer call. Without it the OrcaSlicer CLI rotates parts in 45° steps while auto-arranging plates, unlike the OrcaSlicer desktop app. Copy the script next to your compose file and keep it executable.
 
 !!! info "Sensible Defaults"
     The Docker image already sets `ORCASLICER_API_URL=http://orcaslicer:3000` and `SPOOLMAN_URL=http://spoolman:8000` by default. As long as you name your services `orcaslicer` and `spoolman`, no extra configuration is needed.

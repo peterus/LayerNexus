@@ -49,3 +49,6 @@ coverage.xml
 # OS
 .DS_Store
 Thumbs.db
+
+# OrcaSlicer CLI wrapper (mounted into the orcaslicer container, not part of the web image)
+docker/

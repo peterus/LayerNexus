@@ -58,8 +58,12 @@ services:
     image: ghcr.io/afkfelix/orca-slicer-api:latest-orca2.3.1
     ports:
       - "3000:3000"
+    environment:
+      # Wrapper disables arrange rotation (OrcaSlicer CLI default rotates parts in 45° steps)
+      - ORCASLICER_PATH=/usr/local/bin/orcaslicer-cli
     volumes:
       - orcaslicer_data:/app/data
+      - ./docker/orcaslicer-cli.sh:/usr/local/bin/orcaslicer-cli:ro
     restart: unless-stopped
 
   spoolman:

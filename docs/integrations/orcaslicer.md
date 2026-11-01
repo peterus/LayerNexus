@@ -65,6 +65,10 @@ If it's not running, restart it:
 docker compose restart orcaslicer
 ```
 
+### Parts are rotated on the plate
+
+LayerNexus lets OrcaSlicer auto-arrange all parts of a print job. The OrcaSlicer CLI allows rotations while arranging by default (the desktop app does not), so parts can end up turned in 45° steps. The bundled compose file prevents this with the wrapper `docker/orcaslicer-cli.sh` (`ORCASLICER_PATH` points to it). If you run your own compose file, mount the wrapper and set `ORCASLICER_PATH` as shown in the [Docker guide](../advanced/docker.md). Jobs sliced before the fix keep their rotation until they are re-sliced.
+
 ---
 
 ## Next Steps
