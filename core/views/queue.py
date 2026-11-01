@@ -229,6 +229,8 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
             # Queued concurrently since the form was validated (one open attempt per plate).
             messages.error(self.request, f"Plate {plate.plate_number} of '{plate.print_job}' is already queued.")
             return redirect(self.success_url)
+        # A plate of the job is queued again: an old "not re-queued" hint is obsolete.
+        PrintJob.objects.filter(pk=plate.print_job_id).exclude(requeue_error="").update(requeue_error="")
 
         messages.success(
             self.request,
@@ -268,6 +270,9 @@ class PrintJobEnqueueAllView(QueueManageMixin, FormView):
         """Show the form, or go back to the job if no plate is left to queue."""
         if not self.plates:
             messages.info(request, f"No plates of '{self.job}' are left to queue.")
+            return redirect(self._detail_url())
+        if not self.job.compatible_printers().exists():
+            messages.error(request, f"No active printer uses the machine profile of '{self.job}'.")
             return redirect(self._detail_url())
         return super().get(request, *args, **kwargs)
 

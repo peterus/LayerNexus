@@ -681,7 +681,8 @@ class PrintJob(models.Model):
         succeeds the worker calls :meth:`requeue_after_slicing`, which queues all
         new plates on the remembered printer.
 
-        Attempts on several printers: the printer with the most attempts is used
+        Attempts on several printers: among the printers that can still print the
+        job (:meth:`compatible_printers`), the one with the most attempts is used
         (a tie goes to the printer of the earliest attempt) with the highest
         priority among its attempts.  The caller starts the slicing worker.
 
@@ -690,7 +691,8 @@ class PrintJob(models.Model):
 
         Raises:
             ValueError: If the job is not sliced, has no attempts, or an attempt
-                was started / resolved / is being started / has no printer.
+                was started / resolved / is being started / has no printer, or
+                none of the attempts' printers can print the job any more.
         """
         from core.models.queue import PrintQueue
 
@@ -708,10 +710,15 @@ class PrintJob(models.Model):
                 entry.is_history or entry.has_active_start_claim or entry.printer is None for entry in entries
             ):
                 raise ValueError(f"Job {self.pk} has no attempts or an attempt that is not waiting on a printer.")
-            counts = Counter(entry.printer_id for entry in entries)
-            # ``entries`` is in pk order, so a tie keeps the printer seen first.
-            printer = max((entry.printer for entry in entries), key=lambda p: counts[p.pk])
-            priority = max(entry.priority for entry in entries if entry.printer_id == printer.pk)
+            # Only printers the new plates can be queued on take part in the vote.
+            compatible = set(job.compatible_printers().values_list("pk", flat=True))
+            candidates = [entry for entry in entries if entry.printer_id in compatible]
+            if not candidates:
+                raise ValueError(f"No printer of job {self.pk}'s attempts can print it any more.")
+            counts = Counter(entry.printer_id for entry in candidates)
+            # ``candidates`` is in pk order, so a tie keeps the printer seen first.
+            printer = max((entry.printer for entry in candidates), key=lambda p: counts[p.pk])
+            priority = max(entry.priority for entry in candidates if entry.printer_id == printer.pk)
 
             for entry in entries:
                 entry.remove()

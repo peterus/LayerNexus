@@ -922,8 +922,9 @@ class PrintJobResliceRequeueView(RoleRequiredMixin, View):
         except ValueError:
             messages.error(
                 request,
-                "This job cannot be re-sliced and re-queued: it is not sliced and queued, or one of its "
-                "plates has been started, is being started or has no printer.",
+                "This job cannot be re-sliced and re-queued: it is not sliced and queued, one of its "
+                "plates has been started, is being started or has no printer, or none of its printers "
+                "is active with the job's machine profile.",
             )
             return redirect("core:printjob_detail", pk=pk)
 

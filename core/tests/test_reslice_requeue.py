@@ -124,41 +124,53 @@ class EnqueuePlatesTests(_JobFixture):
 class CanResliceAndRequeueTests(_JobFixture):
     """``can_reslice_and_requeue``: queued, and every attempt is a never-started waiting one."""
 
-    def _fresh(self) -> PrintJob:
-        return PrintJob.objects.get(pk=self.job.pk)
+    def _value(self) -> bool:
+        """Return ``can_reslice_and_requeue``; the query and the prefetched path must agree."""
+        from django.db.models import Prefetch
+
+        queried = PrintJob.objects.get(pk=self.job.pk).can_reslice_and_requeue
+        prefetched = (
+            PrintJob.objects.prefetch_related(
+                Prefetch("plates", queryset=PrintJobPlate.objects.prefetch_related("queue_entries"))
+            )
+            .get(pk=self.job.pk)
+            .can_reslice_and_requeue
+        )
+        self.assertEqual(queried, prefetched)
+        return queried
 
     def test_no_attempts_is_false(self) -> None:
         """Without queue entries the plain re-slice applies instead."""
-        self.assertFalse(self._fresh().can_reslice_and_requeue)
+        self.assertFalse(self._value())
 
     def test_only_waiting_attempts_is_true(self) -> None:
         add_attempt(self.plates[0], self.printer)
         add_attempt(self.plates[1], self.printer)
-        self.assertTrue(self._fresh().can_reslice_and_requeue)
+        self.assertTrue(self._value())
 
     def test_printing_attempt_is_false(self) -> None:
         add_attempt(self.plates[0], self.printer)
         add_attempt(self.plates[1], self.printer, "printing")
-        self.assertFalse(self._fresh().can_reslice_and_requeue)
+        self.assertFalse(self._value())
 
     def test_history_is_false(self) -> None:
         add_attempt(self.plates[0], self.printer)
         add_attempt(self.plates[1], self.printer, PrintQueue.RESULT_CANCELLED)
-        self.assertFalse(self._fresh().can_reslice_and_requeue)
+        self.assertFalse(self._value())
 
     def test_active_start_claim_is_false(self) -> None:
         add_attempt(self.plates[0], self.printer, start_claimed_at=timezone.now())
-        self.assertFalse(self._fresh().can_reslice_and_requeue)
+        self.assertFalse(self._value())
 
     def test_expired_start_claim_is_true(self) -> None:
         add_attempt(self.plates[0], self.printer, start_claimed_at=timezone.now() - timedelta(hours=1))
-        self.assertTrue(self._fresh().can_reslice_and_requeue)
+        self.assertTrue(self._value())
 
     def test_slicing_job_is_false(self) -> None:
         add_attempt(self.plates[0], self.printer)
         self.job.status = PrintJob.STATUS_SLICING
         self.job.save(update_fields=["status"])
-        self.assertFalse(self._fresh().can_reslice_and_requeue)
+        self.assertFalse(self._value())
 
 
 class StartResliceAndRequeueTests(_JobFixture):
@@ -532,3 +544,48 @@ class ResliceRequeueViewEdgeCaseTests(_JobFixture):
         self.assertContains(client.get(detail), "Plates were not re-queued.")
         add_attempt(self.plates[0], self.printer)
         self.assertNotContains(client.get(detail), "Plates were not re-queued.")
+
+
+# ── Review round 2 ─────────────────────────────────────────────────────────
+
+
+class ResliceRequeueRound2Tests(_JobFixture):
+    """Printer vote ignores printers that cannot print the job; hints and dead ends."""
+
+    def test_inactive_majority_printer_is_skipped(self) -> None:
+        add_attempt(self.plates[0], self.printer2)
+        add_attempt(self.plates[1], self.printer)
+        add_attempt(self.plates[2], self.printer)
+        PrinterProfile.objects.filter(pk=self.printer.pk).update(is_active=False)
+        self.assertEqual(self.job.start_reslice_and_requeue(), self.printer2)
+
+    def test_incompatible_majority_printer_is_skipped(self) -> None:
+        add_attempt(self.plates[0], self.printer2)
+        add_attempt(self.plates[1], self.incompatible)
+        add_attempt(self.plates[2], self.incompatible)
+        self.assertEqual(self.job.start_reslice_and_requeue(), self.printer2)
+
+    def test_no_compatible_printer_refuses_and_keeps_entries(self) -> None:
+        add_attempt(self.plates[0], self.incompatible)
+        with self.assertRaises(ValueError):
+            self.job.start_reslice_and_requeue()
+        self.assertEqual(PrintQueue.objects.count(), 1)
+        self.assertEqual(PrintJob.objects.get(pk=self.job.pk).status, PrintJob.STATUS_SLICED)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver"])
+class ResliceRequeueRound2ViewTests(_JobFixture):
+    """View-level fixes from review round 2."""
+
+    def test_single_plate_enqueue_clears_requeue_hint(self) -> None:
+        PrintJob.objects.filter(pk=self.job.pk).update(requeue_error="not re-queued")
+        self._client().post(
+            reverse("core:printqueue_create"), {"plate": self.plates[0].pk, "printer": self.printer.pk, "priority": 2}
+        )
+        self.assertTrue(PrintQueue.objects.filter(plate=self.plates[0]).exists())
+        self.assertEqual(PrintJob.objects.get(pk=self.job.pk).requeue_error, "")
+
+    def test_enqueue_all_without_compatible_printer_redirects(self) -> None:
+        PrinterProfile.objects.filter(orca_machine_profile=self.machine).update(is_active=False)
+        response = self._client().get(reverse("core:printjob_enqueue_all", kwargs={"pk": self.job.pk}))
+        self.assertRedirects(response, reverse("core:printjob_detail", kwargs={"pk": self.job.pk}))
