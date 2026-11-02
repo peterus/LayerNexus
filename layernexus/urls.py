@@ -94,8 +94,8 @@ def authenticated_media(request, path, document_root=None):
 
 
 def health_check(request):
-    """Return a simple health status for Docker HEALTHCHECK."""
-    return JsonResponse({"status": "ok"})
+    """Return a simple health status (and the running app version) for Docker HEALTHCHECK."""
+    return JsonResponse({"status": "ok", "version": settings.APP_VERSION})
 
 
 urlpatterns = [
