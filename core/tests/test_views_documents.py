@@ -142,6 +142,13 @@ class MediaSecurityHeaderTests(TestDataMixin, TestCase):
         resp = self._serve(authenticated_media)
         self.assertEqual(resp.get("X-Content-Type-Options", ""), "nosniff")
 
+    def test_authenticated_media_requires_revalidation(self):
+        """Re-sliced G-code keeps its file name, so browsers must revalidate instead of reusing a stale copy."""
+        from layernexus.urls import authenticated_media
+
+        resp = self._serve(authenticated_media)
+        self.assertEqual(resp.get("Cache-Control", ""), "private, no-cache")
+
     def test_debug_serve_media_hardens(self):
         """The DEBUG serve path (no auth) still hardens the response."""
         from layernexus.urls import serve_media

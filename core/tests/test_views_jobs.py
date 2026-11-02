@@ -924,6 +924,15 @@ class JobBedDimensionsTests(TestDataMixin, TestCase):
         add_attempt(plate, large, "printing")
         self.assertEqual(job.bed_dimensions, (300.0, 300.0, 400.0))
 
+    def test_gcode_urls_carry_version_of_last_slice(self):
+        """Re-slicing overwrites job_<pk>_plate_<n>.gcode, so the URL must change with each slice."""
+        job = self._job_with_plate()
+        url = job.plates.get().gcode_file.url
+        version = int(job.updated_at.timestamp())
+        resp = self.client.get(reverse("core:printjob_detail", args=[job.pk]))
+        self.assertContains(resp, f'data-gcode-url="{url}?v={version}"')
+        self.assertContains(resp, f'href="{url}?v={version}"')
+
     def test_bed_dimensions_without_profile_is_none(self):
         job = self._job_with_plate()
         self.assertIsNone(job.bed_dimensions)

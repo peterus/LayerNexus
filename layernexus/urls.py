@@ -61,6 +61,10 @@ def _harden_media_response(response, path):
     keep rendering; ``nosniff`` still guards against MIME confusion.
     """
     response["X-Content-Type-Options"] = "nosniff"
+    # Some uploads are overwritten in place (re-sliced G-code keeps its file name),
+    # so browsers must revalidate rather than reuse a heuristically cached copy.
+    # Unchanged files still cost only a 304 thanks to ``Last-Modified``.
+    response["Cache-Control"] = "private, no-cache"
     if PurePosixPath(path).suffix.lower() in INLINE_IMAGE_EXTENSIONS:
         # Served inline so cover images keep rendering.  ``nosniff`` forces the
         # browser to honour the image content type, and ``script-src 'none'``

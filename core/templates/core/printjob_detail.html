@@ -127,7 +127,7 @@
             <div class="card h-100 border{% if plate.state == 'completed' %}-success{% elif plate.state == 'failed' %}-danger{% elif plate.state == 'printing' %}-primary{% elif plate.state == 'awaiting_review' %}-warning{% endif %}" data-plate-state="{{ plate.state }}">
               {% if plate.gcode_file %}
               <div class="card-img-top position-relative" style="height: 320px; background: var(--bs-tertiary-bg);">
-                <canvas class="gcode-preview-canvas w-100 h-100" data-gcode-url="{{ plate.gcode_file.url }}"{% if bed_dimensions %} data-bed-x="{{ bed_dimensions.0|floatformat:"-2" }}" data-bed-y="{{ bed_dimensions.1|floatformat:"-2" }}" data-bed-z="{{ bed_dimensions.2|floatformat:"-2" }}"{% endif %} style="display:block;"></canvas>
+                <canvas class="gcode-preview-canvas w-100 h-100" data-gcode-url="{{ plate.gcode_file.url }}?v={{ job.updated_at|date:"U" }}"{% if bed_dimensions %} data-bed-x="{{ bed_dimensions.0|floatformat:"-2" }}" data-bed-y="{{ bed_dimensions.1|floatformat:"-2" }}" data-bed-z="{{ bed_dimensions.2|floatformat:"-2" }}"{% endif %} style="display:block;"></canvas>
                 <div class="gcode-loading position-absolute top-50 start-50 translate-middle text-body-secondary">
                   <div class="spinner-border spinner-border-sm me-1" role="status"></div>
                   <small>Loading preview…</small>
@@ -160,7 +160,7 @@
               </div>
               <div class="card-footer p-2 d-flex gap-1">
                 {% if plate.gcode_file %}
-                <a href="{{ plate.gcode_file.url }}" class="btn btn-sm btn-outline-secondary flex-fill" title="Download G-code"><i class="bi bi-download me-1"></i>G-code</a>
+                <a href="{{ plate.gcode_file.url }}?v={{ job.updated_at|date:"U" }}" class="btn btn-sm btn-outline-secondary flex-fill" title="Download G-code"><i class="bi bi-download me-1"></i>G-code</a>
                 {% endif %}
                 {% if plate.is_queueable and perms.core.can_manage_print_queue %}
                 <a href="{% url 'core:printqueue_create' %}?plate={{ plate.pk }}" class="btn btn-sm btn-outline-success flex-fill plate-queue-button" title="Add to Queue"><i class="bi bi-list-ol me-1"></i>Queue</a>
