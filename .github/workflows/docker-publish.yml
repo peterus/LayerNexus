@@ -8,7 +8,9 @@
 #     vX.Y.Z + GitHub release with notes grouped from the PR titles.
 #   - anything else (chore/docs/ci/build/refactor/test ...): no release.
 #     Image tags :main and :sha-<sha7> only, APP_VERSION "<last>+<sha7>".
-#     :latest moves only on releases.
+#     :latest moves only on releases - including Dependabot "build(deps)"
+#     bumps: to ship a security update to :latest, merge it with a "fix(deps):"
+#     title (or wait for the next feat/fix).
 # Without any vX.Y.Z tag the base is 0.1.0.
 #
 # Release and image build share this one workflow on purpose: tags created
@@ -25,12 +27,6 @@ on:
 
 permissions: {}
 
-# One release at a time, never cancelled half-way (a tag without an image or
-# the other way round). A newer pending run replaces an older pending one.
-concurrency:
-  group: release-main
-  cancel-in-progress: false
-
 jobs:
   release:
     name: Release & Push Docker Image
@@ -42,6 +38,13 @@ jobs:
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
+    # One release at a time, never cancelled half-way (a tag without an image
+    # or the other way round). A newer pending run replaces an older pending
+    # one. Job level, not workflow level: runs skipped by the "if" above (red
+    # CI, PR runs) must not enter the group and displace a pending release.
+    concurrency:
+      group: release-main
+      cancel-in-progress: false
     permissions:
       contents: write   # tag + GitHub release
       packages: write   # push to ghcr.io
@@ -57,8 +60,10 @@ jobs:
 
       - name: Skip superseded commits
         # CI runs of two quick merges can finish out of order. Only the
-        # current tip of main is released/published; its own run covers the
-        # older commit too.
+        # current tip of main is released/published; the tip's own run covers
+        # the older commit too - once the tip's CI is green. If it fails,
+        # nothing is published until main is green again (fix forward, or
+        # re-run this workflow once the older commit is the tip again).
         id: tip
         run: |
           set -euo pipefail
@@ -70,7 +75,7 @@ jobs:
           if [ "$TIP" = "$HEAD_SHA" ]; then
             echo "current=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::${HEAD_SHA} is no longer the tip of main (${TIP}) - skipping, the newer run publishes."
+            echo "::notice::${HEAD_SHA} is no longer the tip of main (${TIP}) - skipping, the tip's run publishes once its CI is green."
             echo "current=false" >> "$GITHUB_OUTPUT"
           fi
 

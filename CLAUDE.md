@@ -208,7 +208,8 @@ PR titles) since the highest `vX.Y.Z` tag: `feat` → minor, `fix` → patch, `t
 `BREAKING CHANGE:` footer → major; every other type → no release. Release = image
 `:X.Y.Z` + `:X.Y` + `:latest` (+ `:main`, `:sha-<sha7>`), then tag + GitHub release with
 grouped notes. No release = image `:main` + `:sha-<sha7>` only, `APP_VERSION`
-`<last>+<sha7>`. So **the PR title decides the release** — pick its type deliberately.
+`<last>+<sha7>`. So **the PR title decides the release** — pick its type deliberately
+(e.g. a Dependabot security bump only reaches `:latest`/prod if merged as `fix(deps): …`).
 The version is baked in via build-arg `APP_VERSION` (footer + `GET /health/`).
 Rollback: pin the previous image tag in compose (restore the DB backup if the newer
 version ran migrations). Prod pulls `:latest`.
