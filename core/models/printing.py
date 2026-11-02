@@ -29,6 +29,7 @@ from django.db.models import (
     Max,
     Min,
     OuterRef,
+    Prefetch,
     Q,
     Subquery,
     Sum,
@@ -91,6 +92,7 @@ class PrintJobQuerySet(models.QuerySet):
         queryset = self.annotate(
             job_has_attempts=Exists(attempts),
             job_has_active_attempt=Exists(attempts.filter(PrintQueue.active_q())),
+            job_delete_blocked=Exists(attempts.filter(PrintQueue.printing_or_starting_q())),
             job_plate_count=_count_subquery(plates, "print_job"),
             # Completed = has a passed attempt: a cheap EXISTS instead of the full plate-state CASE.
             job_completed_plates=_count_subquery(
@@ -380,10 +382,11 @@ class PrintJob(models.Model):
     def print_started(self) -> bool:
         """Return True once any print attempt exists for one of the job's plates.
 
-        From then on the job's contents (parts, machine profile) are fixed, it
-        cannot be re-sliced and it cannot be deleted — that would lose the print
-        history.  A waiting attempt counts too; removing it from the queue (it
-        is deleted when never started) makes the job editable again.
+        From then on the job's contents (parts, machine profile) are fixed and it
+        cannot be re-sliced — that would lose the print history.  A waiting
+        attempt counts too; removing it from the queue (it is deleted when never
+        started) makes the job editable again.  Deleting the whole job (with its
+        history) stays possible, see :attr:`can_delete`.
         """
         if "job_has_attempts" in self.__dict__:
             return bool(self.job_has_attempts)
@@ -406,8 +409,46 @@ class PrintJob(models.Model):
 
     @property
     def can_delete(self) -> bool:
-        """Return True while the job has no print attempt (deleting it keeps every print history)."""
-        return not self.print_started
+        """Return True unless a printer is printing or starting one of the job's plates right now.
+
+        A job with print history may be deleted: its attempts (waiting, awaiting
+        review or resolved) go with it and the copies it printed stop counting
+        (see :meth:`printed_copies`).  Only a running print or a print start in
+        progress blocks — deleting then would let the print run untracked.
+        Reads the ``job_delete_blocked`` annotation of
+        :meth:`PrintJobQuerySet.with_display_status` or the prefetched attempts
+        when available.
+        """
+        if "job_delete_blocked" in self.__dict__:
+            return not self.job_delete_blocked
+        plates = self._prefetched_plates()
+        if plates is not None and all(plate.attempts_prefetched for plate in plates):
+            return not any(attempt.is_printing_or_starting for plate in plates for attempt in plate.attempts())
+        from core.models.queue import PrintQueue
+
+        return not PrintQueue.objects.filter(PrintQueue.printing_or_starting_q(), plate__print_job=self).exists()
+
+    def attempt_count(self) -> int:
+        """Return the number of print attempts of the job's plates (deleted with the job)."""
+        from core.models.queue import PrintQueue
+
+        return PrintQueue.objects.filter(plate__print_job=self).count()
+
+    def printed_copies(self) -> int:
+        """Return how many part copies this job printed (they stop counting once the job is deleted).
+
+        The job's share of :attr:`Part.printed_quantity`, summed over its parts;
+        a constant number of queries.
+        """
+        from core.models.parts import _counting_plate_parts, _printed_in_job
+
+        plates = list(
+            PrintJobPlate.objects.with_state()
+            .filter(print_job=self)
+            .prefetch_related(Prefetch("plate_parts", queryset=_counting_plate_parts()))
+        )
+        entries = self.job_parts.select_related("print_job")
+        return sum(_printed_in_job(entry.part_id, entry, plates) for entry in entries)
 
     @property
     def can_reslice_and_requeue(self) -> bool:

@@ -137,7 +137,7 @@
               {% if perms.core.change_printjob %}
               <a href="{% url 'core:printjob_update' job.pk %}" class="btn btn-sm btn-outline-secondary" title="Edit"><i class="bi bi-pencil"></i></a>
               {% endif %}
-              {% if perms.core.delete_printjob %}
+              {% if perms.core.delete_printjob and job.can_delete %}
               <a href="{% url 'core:printjob_delete' job.pk %}" class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash"></i></a>
               {% endif %}
             </div>

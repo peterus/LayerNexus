@@ -317,6 +317,19 @@ class PrintQueue(models.Model):
             start_claimed_at__gte=timezone.now() - START_CLAIM_TIMEOUT,
         )
 
+    @classmethod
+    def printing_or_starting_q(cls) -> Q:
+        """Return a filter for attempts a printer is working on right now (printing or print start in progress).
+
+        Such an attempt blocks deleting its print job (see :attr:`PrintJob.can_delete`).
+        """
+        return Q(result="", started_at__isnull=False, completed_at__isnull=True) | cls.active_start_claim_q()
+
+    @property
+    def is_printing_or_starting(self) -> bool:
+        """Return True while the printer prints this attempt or its print start is in progress."""
+        return self.is_printing or (self.is_waiting and self.has_active_start_claim)
+
     @property
     def is_printer_busy(self) -> bool:
         """Return True if this entry's printer has an active or unreviewed job, or a start in progress."""
