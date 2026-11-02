@@ -516,14 +516,29 @@ class PrintJobDeleteView(RoleRequiredMixin, DeleteView):
         context["delete_blocked"] = not self.object.can_delete
         context["attempt_count"] = self.object.attempt_count()
         context["printed_copies"] = self.object.printed_copies() if context["attempt_count"] else 0
+        # Deleting an attempt that awaits review frees its printer although the bed may not be cleared yet.
+        context["awaiting_review_printers"] = (
+            sorted(
+                {
+                    attempt.printer.name
+                    for attempt in PrintQueue.objects.awaiting_review()
+                    .filter(plate__print_job=self.object, printer__isnull=False)
+                    .select_related("printer")
+                }
+            )
+            if context["attempt_count"]
+            else []
+        )
         return context
 
     def form_valid(self, form: Form) -> HttpResponse:
         """Delete the job unless a print of it runs or starts (re-checked under lock in the delete transaction)."""
         job = self.object
         with transaction.atomic():
-            # Live check on the locked attempts (not the annotation loaded with the page): a print
-            # start claims or starts an attempt row, so it cannot slip in between check and delete.
+            # Live check (not the annotation loaded with the page).  On SQLite the IMMEDIATE
+            # transaction mode (settings) takes the write lock up front, so a print start cannot
+            # claim or start an attempt between check and delete; select_for_update() does the
+            # same on row-locking backends (it is a no-op on SQLite).
             attempts = list(PrintQueue.objects.select_for_update().filter(plate__print_job=job))
             if any(attempt.is_printing_or_starting for attempt in attempts):
                 messages.error(

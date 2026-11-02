@@ -38,6 +38,12 @@
           This cannot be undone.
         </div>
         {% endif %}
+        {% if awaiting_review_printers %}
+        <div class="alert alert-warning mb-3">
+          <i class="bi bi-exclamation-octagon me-1"></i>
+          <strong>Clear the bed first:</strong> a plate of this job awaits review on {{ awaiting_review_printers|join:", " }}. Deleting the job frees the printer{{ awaiting_review_printers|pluralize }} — the next queued or scheduled print can start right away.
+        </div>
+        {% endif %}
         {% if object.plates.exists %}
         <div class="alert alert-warning mb-3">
           <i class="bi bi-exclamation-triangle me-1"></i>

@@ -94,6 +94,25 @@ class HistorySummaryTests(_JobWithHistoryBase):
         self.assertEqual(job.attempt_count(), 3)
         self.assertEqual(job.printed_copies(), 2)
 
+    def test_printed_copies_legacy_rule_without_plate_parts(self) -> None:
+        """Unknown plate assignment: the job counts its full quantity only once every plate passed."""
+        PrintJob.objects.filter(pk=self.job.pk).update(plate_parts_known=False)
+        complete_plate(self.plate1, self.printer)
+        self.assertEqual(PrintJob.objects.get(pk=self.job.pk).printed_copies(), 0)
+        complete_plate(self.plate2, self.printer)
+        self.assertEqual(PrintJob.objects.get(pk=self.job.pk).printed_copies(), 3)
+        self.assertEqual(Part.objects.get(pk=self.part.pk).printed_quantity, 3)
+
+    def test_confirmation_page_warns_to_clear_bed_when_awaiting_review(self) -> None:
+        add_attempt(self.plate1, self.printer, "awaiting_review")
+        response = self.client.get(self.url)
+        self.assertContains(response, "Clear the bed first")
+        self.assertContains(response, self.printer.name)
+
+    def test_confirmation_page_without_awaiting_review_has_no_bed_warning(self) -> None:
+        complete_plate(self.plate1, self.printer)
+        self.assertNotContains(self.client.get(self.url), "Clear the bed first")
+
     def test_no_history(self) -> None:
         job = PrintJob.objects.get(pk=self.job.pk)
         self.assertEqual(job.attempt_count(), 0)
@@ -186,7 +205,9 @@ class DeleteJobWithHistoryTests(_JobWithHistoryBase):
         waiting = add_attempt(self.plate1, self.printer, "waiting")
         self.assertNotContains(self.client.get(self.url), "Cannot delete this print job")
         PrintQueue.objects.filter(pk=waiting.pk).update(started_at=timezone.now())
-        self.client.post(self.url)
+        response = self.client.post(self.url, follow=True)
+        self.assertRedirects(response, reverse("core:printjob_detail", args=[self.job.pk]))
+        self.assertIn("is printing", self.messages_of(response))
         self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
         self.assertTrue(PrintQueue.objects.filter(pk=waiting.pk).exists())
 
