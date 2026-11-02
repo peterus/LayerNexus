@@ -434,6 +434,12 @@ class PrintJob(models.Model):
 
         return PrintQueue.objects.filter(plate__print_job=self).count()
 
+    def history_attempt_count(self) -> int:
+        """Return the number of the job's attempts that are print history (started or resolved)."""
+        from core.models.queue import PrintQueue
+
+        return PrintQueue.objects.filter(PrintQueue.history_q(), plate__print_job=self).count()
+
     def printed_copies(self) -> int:
         """Return how many part copies this job printed (they stop counting once the job is deleted).
 

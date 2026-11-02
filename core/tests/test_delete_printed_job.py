@@ -128,6 +128,13 @@ class HistorySummaryTests(_JobWithHistoryBase):
         self.assertContains(response, "2 printed parts")
         self.assertContains(response, '<button type="submit" class="btn btn-danger">')
 
+    def test_confirmation_page_with_only_waiting_attempts_has_no_history_warning(self) -> None:
+        add_attempt(self.plate1, self.printer, "waiting")
+        response = self.client.get(self.url)
+        self.assertNotContains(response, "This job has print history")
+        self.assertContains(response, "1 waiting queue entry")
+        self.assertEqual(PrintJob.objects.get(pk=self.job.pk).history_attempt_count(), 0)
+
     def test_confirmation_page_without_history_has_no_history_warning(self) -> None:
         response = self.client.get(self.url)
         self.assertNotContains(response, "print attempt")

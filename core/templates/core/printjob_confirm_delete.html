@@ -30,12 +30,18 @@
         </div>
         <a href="{% url 'core:printjob_detail' object.pk %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back to Job</a>
         {% else %}
-        {% if attempt_count %}
+        {% if history_count %}
         <div class="alert alert-danger mb-3">
           <i class="bi bi-clock-history me-1"></i>
           <strong>This job has print history.</strong>
-          Deleting it also deletes its <strong>{{ attempt_count }} print attempt{{ attempt_count|pluralize }}</strong>{% if printed_copies %}, and the <strong>{{ printed_copies }} printed part{{ printed_copies|pluralize }}</strong> it produced no longer count{{ printed_copies|pluralize:"s," }} towards the parts' printed quantities{% endif %}.
+          Deleting it also deletes its <strong>{{ history_count }} print attempt{{ history_count|pluralize }}</strong>{% if printed_copies %}, and the <strong>{{ printed_copies }} printed part{{ printed_copies|pluralize }}</strong> it produced no longer count{{ printed_copies|pluralize:"s," }} towards the parts' printed quantities{% endif %}.
           This cannot be undone.
+        </div>
+        {% endif %}
+        {% if waiting_count %}
+        <div class="alert alert-info mb-3">
+          <i class="bi bi-list-ol me-1"></i>
+          {{ waiting_count }} waiting queue entr{{ waiting_count|pluralize:"y,ies" }} of this job will be removed from the queue.
         </div>
         {% endif %}
         {% if awaiting_review_printers %}

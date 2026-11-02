@@ -157,7 +157,8 @@ raw `request.user.is_staff` check.
   cannot be re-sliced; before that a contents change on a sliced job calls
   `discard_slicing()` (back to draft). The whole job may still be deleted with its history
   (attempts cascade, its printed copies stop counting) unless a plate is printing or starting
-  (`PrintJob.can_delete`, `PrintQueue.printing_or_starting_q()`). Parts in any print job are not deletable
+  (`PrintJob.can_delete`, `PrintQueue.printing_or_starting_q()`); the Django admin deliberately stays
+  stricter and refuses deleting jobs/plates with history. Parts in any print job are not deletable
   (`PrintJobPart.part` is `PROTECT`; guards: `blocking_jobs()`, `has_print_history()`,
   `Project.history_blocking_parts()`).
 - **Plate parts:** a plate knows its part copies (`PrintJobPlatePart`: plate, part, `copy_index`,

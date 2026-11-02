@@ -515,7 +515,9 @@ class PrintJobDeleteView(RoleRequiredMixin, DeleteView):
         context = super().get_context_data(**kwargs)
         context["delete_blocked"] = not self.object.can_delete
         context["attempt_count"] = self.object.attempt_count()
-        context["printed_copies"] = self.object.printed_copies() if context["attempt_count"] else 0
+        context["history_count"] = self.object.history_attempt_count() if context["attempt_count"] else 0
+        context["waiting_count"] = context["attempt_count"] - context["history_count"]
+        context["printed_copies"] = self.object.printed_copies() if context["history_count"] else 0
         # Deleting an attempt that awaits review frees its printer although the bed may not be cleared yet.
         context["awaiting_review_printers"] = (
             sorted(
