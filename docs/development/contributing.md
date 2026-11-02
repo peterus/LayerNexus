@@ -63,7 +63,7 @@ The debug image includes:
 
 | Argument | Description | Default |
 |---|---|---|
-| `APP_VERSION` | Version string baked into the image | `dev` |
+| `APP_VERSION` | Version string baked into the image (set by the release workflow) | `dev` |
 
 ---
 

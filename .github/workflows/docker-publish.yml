@@ -1,60 +1,146 @@
-name: Docker Publish
+# Release & Docker publish for main.
+#
+# Runs after the "CI" workflow finished green for a push to main (never for
+# PRs). scripts/next_version.py reads the Conventional Commit PR titles since
+# the latest vX.Y.Z tag and decides:
+#   - feat -> minor, fix -> patch, "type!:" / "BREAKING CHANGE:" -> major:
+#     release. Image tags :X.Y.Z, :X.Y, :latest, :main, :sha-<sha7>; then tag
+#     vX.Y.Z + GitHub release with notes grouped from the PR titles.
+#   - anything else (chore/docs/ci/build/refactor/test ...): no release.
+#     Image tags :main and :sha-<sha7> only, APP_VERSION "<last>+<sha7>".
+#     :latest moves only on releases.
+# Without any vX.Y.Z tag the base is 0.1.0.
+#
+# Release and image build share this one workflow on purpose: tags created
+# with GITHUB_TOKEN do not trigger other workflows (and there is no PAT).
+# The image is pushed before the tag/release is created, so a failed run can
+# simply be re-run: the version is recomputed from the same tags.
+name: Release & Docker Publish
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
-    tags: ["v*"]
 
-permissions:
-  contents: read
-  packages: write
+permissions: {}
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+# One release at a time, never cancelled half-way (a tag without an image or
+# the other way round). A newer pending run replaces an older pending one.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Build & Push Docker Image
+  release:
+    name: Release & Push Docker Image
+    # Green CI of a push to main in this repo only (a fork PR from a branch
+    # called "main" also reports head_branch "main", hence the extra checks).
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # tag + GitHub release
+      packages: write   # push to ghcr.io
+    env:
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          # Full history + tags: the version is derived from them.
+          fetch-depth: 0
+          fetch-tags: true
 
-      - name: Read version from VERSION file
+      - name: Skip superseded commits
+        # CI runs of two quick merges can finish out of order. Only the
+        # current tip of main is released/published; its own run covers the
+        # older commit too.
+        id: tip
+        run: |
+          set -euo pipefail
+          TIP=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ -z "$TIP" ]; then
+            echo "::error::Could not resolve the tip of main."
+            exit 1
+          fi
+          if [ "$TIP" = "$HEAD_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::${HEAD_SHA} is no longer the tip of main (${TIP}) - skipping, the newer run publishes."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute version
         id: version
-        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+        if: steps.tip.outputs.current == 'true'
+        run: python3 scripts/next_version.py --github-output "$GITHUB_OUTPUT" --notes-file "$RUNNER_TEMP/release-notes.md"
+
+      - name: Compute image tags
+        id: image
+        if: steps.tip.outputs.current == 'true'
+        env:
+          RELEASE: ${{ steps.version.outputs.release }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:main"
+            echo "${IMAGE}:sha-${HEAD_SHA:0:7}"
+            if [ "$RELEASE" = "true" ]; then
+              echo "${IMAGE}:${VERSION}"
+              echo "${IMAGE}:${VERSION%.*}"
+              echo "${IMAGE}:latest"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### LayerNexus ${VERSION}"
+            echo
+            if [ "$RELEASE" = "true" ]; then echo "Release: yes"; else echo "Release: no (no feat/fix since the last tag)"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Log in to GitHub Container Registry
+        if: steps.tip.outputs.current == 'true'
         uses: docker/login-action@v4
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=sha-
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-
       - name: Set up Docker Buildx
+        if: steps.tip.outputs.current == 'true'
         uses: docker/setup-buildx-action@v4
 
       - name: Build and push Docker image
+        if: steps.tip.outputs.current == 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
           target: release
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.image.outputs.tags }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
           build-args: |
             APP_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Create tag and GitHub release
+        if: steps.tip.outputs.current == 'true' && steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$HEAD_SHA" \
+            --title "$TAG" \
+            --notes-file "$RUNNER_TEMP/release-notes.md"

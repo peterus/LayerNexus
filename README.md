@@ -127,7 +127,7 @@ LayerNexus/
 ├── .env.example            # sample environment configuration
 ├── CLAUDE.md               # Contributor & AI-assistant guide (structure, commands, RBAC, gotchas)
 ├── .github/
-│   └── workflows/          # ci.yml, docker-publish.yml, docs.yml, pr-cleanup.yml
+│   └── workflows/          # ci.yml, docker-publish.yml (release + image), docs.yml, pr-cleanup.yml
 ├── layernexus/             # Django project settings
 │   ├── settings.py
 │   ├── urls.py

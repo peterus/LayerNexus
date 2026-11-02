@@ -4,7 +4,8 @@ Django 6.1 web app to manage large-scale 3D printing. Core workflow:
 **STL upload → OrcaSlicer slicing → G-code to Klipper/Moonraker → print-job & queue tracking.**
 Filament inventory via Spoolman. Python 3.12+ (Django 6 requires ≥3.12; CI + Docker: 3.14),
 SQLite. Dependencies managed with **uv** (`pyproject.toml` + committed `uv.lock`).
-App version in `VERSION` (keep `[project].version` in `pyproject.toml` in sync).
+Versions come from git tags (see **Releases**) — `VERSION` and `[project].version` are a
+`0.0.0` placeholder; never bump them by hand.
 
 This is the single source of truth for working in this repo (it replaces the former
 `.github/copilot-instructions.md`).
@@ -197,6 +198,20 @@ raw `request.user.is_staff` check.
 - **`DJANGO_SECRET_KEY` is required when `DEBUG=0`** (raises at startup). Only when
   `DEBUG=1` does it fall back to an insecure dev key.
 - `entrypoint.sh` runs `migrate` + `collectstatic` on container start.
+
+## Releases
+
+Automatic, from Conventional Commits. `.github/workflows/docker-publish.yml` runs after
+green CI on `main` (`workflow_run`) and calls `scripts/next_version.py` (tests:
+`core/tests/test_next_version.py`), which reads the first-parent commits (= squash-merged
+PR titles) since the highest `vX.Y.Z` tag: `feat` → minor, `fix` → patch, `type!:` /
+`BREAKING CHANGE:` footer → major; every other type → no release. Release = image
+`:X.Y.Z` + `:X.Y` + `:latest` (+ `:main`, `:sha-<sha7>`), then tag + GitHub release with
+grouped notes. No release = image `:main` + `:sha-<sha7>` only, `APP_VERSION`
+`<last>+<sha7>`. So **the PR title decides the release** — pick its type deliberately.
+The version is baked in via build-arg `APP_VERSION` (footer + `GET /health/`).
+Rollback: pin the previous image tag in compose (restore the DB backup if the newer
+version ran migrations). Prod pulls `:latest`.
 
 ## Environment variables
 

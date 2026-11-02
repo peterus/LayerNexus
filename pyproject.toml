@@ -1,7 +1,8 @@
 [project]
 name = "layernexus"
-# Keep in sync with the VERSION file (VERSION is what the Docker image is tagged with).
-version = "0.1.0"
+# Placeholder - the real version comes from the git tag (vX.Y.Z), computed by
+# scripts/next_version.py in the release workflow. Do not bump by hand.
+version = "0.0.0"
 description = "The control center for your 3D print workflow"
 license = "GPL-3.0-only"
 requires-python = ">=3.12"

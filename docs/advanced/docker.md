@@ -16,15 +16,44 @@ ghcr.io/peterus/layernexus
 
 | Tag | What It Is |
 |---|---|
-| `latest` | The most recent stable release — this is what most people should use |
-| `<version>` | A specific version (e.g., `0.1.0`) — use this to pin a known-good version |
-| `sha-<commit>` | A build from a specific commit — for advanced users or testing |
+| `latest` | The most recent release — this is what most people should use |
+| `<version>` | A specific release (e.g., `0.2.0`) — use this to pin a known-good version |
+| `<major>.<minor>` | The newest patch release of a minor line (e.g., `0.2`) |
+| `main` | The newest build of `main`, released or not |
+| `sha-<commit>` | A build from a specific commit (first 7 characters) — for advanced users or testing |
 
 To use a specific version:
 
 ```yaml
-image: ghcr.io/peterus/layernexus:0.1.0
+image: ghcr.io/peterus/layernexus:0.2.0
 ```
+
+### How Releases Are Made
+
+Releases are automatic. After CI is green on `main`, the release workflow reads the
+pull request titles (Conventional Commits) merged since the last `vX.Y.Z` tag:
+
+| PR title | Effect |
+|---|---|
+| `feat: …` / `feat(scope): …` | new minor release (`0.2.0` → `0.3.0`) |
+| `fix: …` | new patch release (`0.2.0` → `0.2.1`) |
+| `feat!: …` or a `BREAKING CHANGE:` footer | new major release (`0.2.0` → `1.0.0`) |
+| anything else (`chore`, `docs`, `ci`, `build`, `refactor`, `test`, …) | no release |
+
+A release gets a git tag, a [GitHub release](https://github.com/peterus/LayerNexus/releases)
+with notes grouped into breaking changes, new features and fixes, and the image tags
+`<version>`, `<major>.<minor>`, `latest`, `main` and `sha-<commit>`. A build without a
+release only updates `main` and `sha-<commit>` — `latest` moves only on releases.
+
+The running version is shown in the page footer and returned by `GET /health/`
+(`{"status": "ok", "version": "0.2.0"}`). Builds between releases report
+`<last release>+<commit>`, e.g. `0.2.0+abc1234`.
+
+### Rolling Back
+
+Pin the previous release instead of `latest` (e.g. `image: ghcr.io/peterus/layernexus:0.2.0`)
+and recreate the containers. Migrations only run forward: if the newer version migrated the
+database, restore the database backup taken before the upgrade as well.
 
 ---
 
