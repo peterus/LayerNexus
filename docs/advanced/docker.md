@@ -31,13 +31,14 @@ image: ghcr.io/peterus/layernexus:0.2.0
 ### How Releases Are Made
 
 Releases are automatic. After CI is green on `main`, the release workflow reads the
-pull request titles (Conventional Commits) merged since the last `vX.Y.Z` tag:
+pull request titles (Conventional Commits) merged since the last `vX.Y.Z` tag. PRs are
+squash-merged with the PR title as commit subject (merge/rebase merges never release):
 
 | PR title | Effect |
 |---|---|
 | `feat: …` / `feat(scope): …` | new minor release (`0.2.0` → `0.3.0`) |
 | `fix: …` | new patch release (`0.2.0` → `0.2.1`) |
-| `feat!: …` or a `BREAKING CHANGE:` footer | new major release (`0.2.0` → `1.0.0`) |
+| `feat!: …` or a `BREAKING CHANGE:` footer in the squash commit message | new major release (`0.2.0` → `1.0.0`) |
 | anything else (`chore`, `docs`, `ci`, `build`, `refactor`, `test`, …) | no release |
 
 A release gets a git tag, a [GitHub release](https://github.com/peterus/LayerNexus/releases)

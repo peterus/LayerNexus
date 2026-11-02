@@ -210,6 +210,10 @@ PR titles) since the highest `vX.Y.Z` tag: `feat` → minor, `fix` → patch, `t
 grouped notes. No release = image `:main` + `:sha-<sha7>` only, `APP_VERSION`
 `<last>+<sha7>`. So **the PR title decides the release** — pick its type deliberately
 (e.g. a Dependabot security bump only reaches `:latest`/prod if merged as `fix(deps): …`).
+This only holds for **squash merges whose commit subject is the PR title** — check the
+squash title before confirming (GitHub prefills the commit title for single-commit PRs);
+merge/rebase merges (`Merge pull request …`) never release. A `BREAKING CHANGE:` footer
+counts only if it ends up in the squash commit body (not the PR description).
 The version is baked in via build-arg `APP_VERSION` (footer + `GET /health/`).
 Rollback: pin the previous image tag in compose (restore the DB backup if the newer
 version ran migrations). Prod pulls `:latest`.
