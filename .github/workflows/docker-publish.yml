@@ -8,9 +8,11 @@
 #     vX.Y.Z + GitHub release with notes grouped from the PR titles.
 #   - anything else (chore/docs/ci/build/refactor/test ...): no release.
 #     Image tags :main and :sha-<sha7> only, APP_VERSION "<last>+<sha7>".
-#     :latest moves only on releases - including Dependabot "build(deps)"
+#     :latest moves only on releases - including Dependabot "chore(deps)"
 #     bumps: to ship a security update to :latest, merge it with a "fix(deps):"
-#     title (or wait for the next feat/fix).
+#     title (or wait for the next feat/fix). Auto-merged Dependabot PRs do not
+#     trigger CI on main at all (GITHUB_TOKEN merge), so they are only built
+#     with the next regular merge.
 # Without any vX.Y.Z tag the base is 0.1.0.
 #
 # Release and image build share this one workflow on purpose: tags created
@@ -28,8 +30,8 @@ on:
 permissions: {}
 
 jobs:
-  release:
-    name: Release & Push Docker Image
+  tip:
+    name: Check commit is the tip of main
     # Green CI of a push to main in this repo only (a fork PR from a branch
     # called "main" also reports head_branch "main", hence the extra checks).
     if: >-
@@ -38,10 +40,39 @@ jobs:
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      current: ${{ steps.tip.outputs.current }}
+    steps:
+      - name: Compare with the tip of main
+        # Outside the concurrency group on purpose: CI runs of two quick
+        # merges can finish out of order, and a superseded commit must not
+        # even queue - as the newest pending run it would replace (cancel) the
+        # pending run of the tip and then skip, leaving the tip unpublished.
+        id: tip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          TIP=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)
+          if [ "$TIP" = "$HEAD_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::${HEAD_SHA} is no longer the tip of main (${TIP}) - skipping, the tip's run publishes once its CI is green."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    name: Release & Push Docker Image
+    needs: tip
+    if: needs.tip.outputs.current == 'true'
+    runs-on: ubuntu-latest
     # One release at a time, never cancelled half-way (a tag without an image
     # or the other way round). A newer pending run replaces an older pending
-    # one. Job level, not workflow level: runs skipped by the "if" above (red
-    # CI, PR runs) must not enter the group and displace a pending release.
+    # one. Job level, not workflow level, and behind the "tip" job: only runs
+    # for the current tip of main ever enter the group.
     concurrency:
       group: release-main
       cancel-in-progress: false
@@ -59,11 +90,12 @@ jobs:
           fetch-tags: true
 
       - name: Skip superseded commits
-        # CI runs of two quick merges can finish out of order. Only the
-        # current tip of main is released/published; the tip's own run covers
-        # the older commit too - once the tip's CI is green. If it fails,
-        # nothing is published until main is green again (fix forward, or
-        # re-run this workflow once the older commit is the tip again).
+        # Re-check inside the group: main may have moved while this run
+        # waited. Only the current tip of main is released/published; the
+        # tip's own run covers the older commit too - once the tip's CI is
+        # green. If it fails, nothing is published until main is green again
+        # (fix forward, or re-run this workflow once the older commit is the
+        # tip again).
         id: tip
         run: |
           set -euo pipefail

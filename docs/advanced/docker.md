@@ -44,8 +44,9 @@ A release gets a git tag, a [GitHub release](https://github.com/peterus/LayerNex
 with notes grouped into breaking changes, new features and fixes, and the image tags
 `<version>`, `<major>.<minor>`, `latest`, `main` and `sha-<commit>`. A build without a
 release only updates `main` and `sha-<commit>` — `latest` moves only on releases. Dependency
-bumps (`build(deps): …`) therefore reach `latest` with the next release — or right away if
-merged with a `fix(deps): …` title.
+bumps (`chore(deps): …`) therefore reach `latest` with the next release — or right away if
+merged with a `fix(deps): …` title. Auto-merged Dependabot PRs are not built on their own;
+they ship with the next regular merge to `main`.
 
 The running version is shown in the page footer and returned by `GET /health/`
 (`{"status": "ok", "version": "0.2.0"}`). Builds between releases report
