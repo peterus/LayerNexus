@@ -23,13 +23,38 @@
           <dt class="col-sm-4">Plates</dt>
           <dd class="col-sm-8">{{ object.plate_count }}</dd>
         </dl>
-        {% if has_print_history %}
+        {% if delete_blocked %}
         <div class="alert alert-danger mb-3">
           <i class="bi bi-x-circle-fill me-1"></i>
-          <strong>Cannot delete this print job:</strong> it has print attempts. Print history must be kept; a waiting attempt that never started can be removed from the queue first.
+          <strong>Cannot delete this print job:</strong>
+          <ul class="mb-0 mt-1">
+            {% for attempt in blocking_attempts %}
+            {% if attempt.is_awaiting_review %}
+            <li>Plate {{ attempt.plate.plate_number }} is waiting for review{% if attempt.printer %} on {{ attempt.printer.name }}{% endif %}. Confirm the print result first (ok/failed), then the job can be deleted.</li>
+            {% elif attempt.is_printing %}
+            <li>Plate {{ attempt.plate.plate_number }} is printing{% if attempt.printer %} on {{ attempt.printer.name }}{% endif %}. Wait until the print has finished and confirm its result.</li>
+            {% else %}
+            <li>Plate {{ attempt.plate.plate_number }} is starting{% if attempt.printer %} on {{ attempt.printer.name }}{% endif %}. Wait until the print has finished and confirm its result.</li>
+            {% endif %}
+            {% endfor %}
+          </ul>
         </div>
         <a href="{% url 'core:printjob_detail' object.pk %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back to Job</a>
         {% else %}
+        {% if history_count %}
+        <div class="alert alert-danger mb-3">
+          <i class="bi bi-clock-history me-1"></i>
+          <strong>This job has print history.</strong>
+          Deleting it also deletes its <strong>{{ history_count }} print attempt{{ history_count|pluralize }}</strong>{% if printed_copies %}, and the <strong>{{ printed_copies }} printed part{{ printed_copies|pluralize }}</strong> it produced no longer count{{ printed_copies|pluralize:"s," }} towards the parts' printed quantities{% endif %}.
+          This cannot be undone.
+        </div>
+        {% endif %}
+        {% if waiting_count %}
+        <div class="alert alert-info mb-3">
+          <i class="bi bi-list-ol me-1"></i>
+          {{ waiting_count }} waiting queue entr{{ waiting_count|pluralize:"y,ies" }} of this job will be removed from the queue.
+        </div>
+        {% endif %}
         {% if object.plates.exists %}
         <div class="alert alert-warning mb-3">
           <i class="bi bi-exclamation-triangle me-1"></i>

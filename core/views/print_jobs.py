@@ -492,11 +492,12 @@ class PrintJobUpdateView(RoleRequiredMixin, UpdateView):
 
 
 class PrintJobDeleteView(RoleRequiredMixin, DeleteView):
-    """Delete a print job.
+    """Delete a print job, including its print history.
 
-    Only while :attr:`PrintJob.can_delete`: a job with any print attempt is not
-    deletable — its history must be kept.  A waiting, never started attempt
-    must be removed from the queue first (it is deleted then).
+    The plates, their print attempts and plate parts go with the job; the copies
+    the job printed stop counting in :attr:`Part.printed_quantity`.  Refused only
+    while :attr:`PrintJob.can_delete` is false (a plate is printing, starting or
+    awaiting review).
     """
 
     permission_required = "core.delete_printjob"
@@ -510,25 +511,49 @@ class PrintJobDeleteView(RoleRequiredMixin, DeleteView):
         return PrintJob.objects.with_display_status()
 
     def get_context_data(self, **kwargs: Any) -> dict[str, Any]:
-        """Add whether the job has print attempts (deletion refused)."""
+        """Add whether the delete is refused and what print history it would remove."""
         context = super().get_context_data(**kwargs)
-        context["has_print_history"] = not self.object.can_delete
+        context["delete_blocked"] = not self.object.can_delete
+        context["attempt_count"] = self.object.attempt_count()
+        context["history_count"] = self.object.history_attempt_count() if context["attempt_count"] else 0
+        context["waiting_count"] = context["attempt_count"] - context["history_count"]
+        context["printed_copies"] = self.object.printed_copies() if context["history_count"] else 0
+        context["blocking_attempts"] = (
+            list(
+                PrintQueue.objects.filter(PrintQueue.blocks_job_delete_q(), plate__print_job=self.object)
+                .select_related("plate", "printer")
+                .order_by("plate__plate_number")
+            )
+            if context["delete_blocked"]
+            else []
+        )
         return context
 
     def form_valid(self, form: Form) -> HttpResponse:
-        """Delete the job unless it has print attempts (re-checked in the delete transaction)."""
+        """Delete the job unless a plate prints, starts or awaits review (re-checked in the delete transaction)."""
         job = self.object
         with transaction.atomic():
-            # Live check (not the annotation loaded with the page): an attempt may have appeared since.
-            if PrintQueue.objects.filter(plate__print_job=job).exists():
+            # Live check (not the annotation loaded with the page).  On SQLite the IMMEDIATE
+            # transaction mode (settings) takes the write lock up front, so a print start cannot
+            # claim or start an attempt between check and delete; select_for_update() does the
+            # same on row-locking backends (it is a no-op on SQLite).
+            attempts = list(PrintQueue.objects.select_for_update().filter(plate__print_job=job))
+            if any(attempt.blocks_job_delete for attempt in attempts):
                 messages.error(
                     self.request,
-                    f"Cannot delete print job '{job}': it has print attempts. "
-                    "Remove waiting attempts from the queue first; print history is kept.",
+                    f"Cannot delete print job '{job}': a plate is printing, starting or awaiting review. "
+                    "Wait until the print has finished and confirm its result (ok/failed) first.",
                 )
                 return redirect("core:printjob_detail", pk=job.pk)
             response = super().form_valid(form)
-        messages.success(self.request, f"Print job '{job}' deleted (including plates).")
+        if attempts:
+            messages.success(
+                self.request,
+                f"Print job '{job}' deleted (including plates and {len(attempts)} "
+                f"print attempt{'s' if len(attempts) != 1 else ''}).",
+            )
+        else:
+            messages.success(self.request, f"Print job '{job}' deleted (including plates).")
         return response
 
 

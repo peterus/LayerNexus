@@ -29,7 +29,13 @@
     <a href="{% url 'core:printjob_update' job.pk %}" class="btn btn-outline-secondary"><i class="bi bi-pencil me-1"></i>Edit</a>
     {% endif %}
     {% if perms.core.delete_printjob %}
+    {% if job.can_delete %}
     <a href="{% url 'core:printjob_delete' job.pk %}" class="btn btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</a>
+    {% else %}
+    <span class="d-inline-block" tabindex="0" title="A plate is printing, starting or waiting for review. Confirm the print result first (ok/failed), then the job can be deleted.">
+      <button type="button" class="btn btn-outline-danger" disabled><i class="bi bi-trash me-1"></i>Delete</button>
+    </span>
+    {% endif %}
     {% endif %}
   </div>
 </div>

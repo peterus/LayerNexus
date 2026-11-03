@@ -155,8 +155,11 @@ raw `request.user.is_staff` check.
   partially_failed …) are computed from the attempts — in lists use the annotations
   `PrintJobPlate.objects.with_state()` / `PrintJob.objects.with_display_status()` (no N+1).
   Once any attempt exists (`PrintJob.print_started`) a job's parts/machine profile are fixed and it
-  cannot be re-sliced or deleted; before that a contents change on a sliced job calls
-  `discard_slicing()` (back to draft). Parts in any print job are not deletable
+  cannot be re-sliced; before that a contents change on a sliced job calls
+  `discard_slicing()` (back to draft). The whole job may still be deleted with its history
+  (attempts cascade, its printed copies stop counting) unless a plate is printing, starting or
+  awaiting review (`PrintJob.can_delete`, `PrintQueue.blocks_job_delete_q()`); the Django admin deliberately stays
+  stricter and refuses deleting jobs/plates with history. Parts in any print job are not deletable
   (`PrintJobPart.part` is `PROTECT`; guards: `blocking_jobs()`, `has_print_history()`,
   `Project.history_blocking_parts()`).
 - **Plate parts:** a plate knows its part copies (`PrintJobPlatePart`: plate, part, `copy_index`,

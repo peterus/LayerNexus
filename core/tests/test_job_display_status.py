@@ -223,7 +223,7 @@ class DashboardDisplayStatusTests(_JobStatusBase):
 
 
 class JobEditRuleTests(TestDataMixin, TestCase):
-    """Edit, re-slice and delete rules follow ``print_started`` (Spec §3, Task B3)."""
+    """Edit and re-slice rules follow ``print_started``; delete is refused only while printing (Spec §3, Task B3)."""
 
     def setUp(self):
         super().setUp()
@@ -339,8 +339,8 @@ class JobEditRuleTests(TestDataMixin, TestCase):
         self.assertEqual(job.plates.count(), 2)
         self.assertFalse(self.client.get(reverse("core:printjob_detail", args=[self.job.pk])).context["can_reslice"])
 
-    def test_delete_refused_after_first_attempt(self):
-        add_attempt(self.job.plates.first(), self.printer, "waiting")
+    def test_delete_refused_while_printing(self):
+        add_attempt(self.job.plates.first(), self.printer, "printing")
         self.client.post(reverse("core:printjob_delete", args=[self.job.pk]))
         self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
 

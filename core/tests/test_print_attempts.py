@@ -372,14 +372,18 @@ class RetryCountConsistencyTests(_AttemptTestBase):
 
 
 class PrintHistoryDeleteGuardTests(_AttemptTestBase):
-    """Jobs and plates with print attempts (history) are not deleted or re-sliced by any path."""
+    """Print history is not re-sliced away, and a job is not deleted while one of its plates prints.
+
+    Deleting a whole job with its history is allowed in the web UI (see
+    ``test_delete_printed_job``); the admin still refuses it.
+    """
 
     def setUp(self):
         super().setUp()
         self.client.login(username="testuser", password="testpass123")
         self.attempt = self._attempt(state="printing")
 
-    def test_job_with_history_not_deletable(self):
+    def test_job_with_printing_attempt_not_deletable(self):
         from django.urls import reverse
 
         url = reverse("core:printjob_delete", args=[self.job.pk])
@@ -387,20 +391,18 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
         resp = self.client.post(url, follow=True)
         self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
         self.assertTrue(PrintQueue.objects.filter(pk=self.attempt.pk).exists())
-        self.assertIn("it has print attempts", " ".join(str(m) for m in resp.context["messages"]))
+        self.assertIn("is printing, starting or awaiting review", " ".join(str(m) for m in resp.context["messages"]))
 
-    def test_job_with_only_waiting_attempt_not_deletable(self):
-        """Any attempt — even a waiting one that never started — blocks deleting the job."""
+    def test_job_with_only_waiting_attempt_deleted_with_it(self):
+        """A waiting attempt that never started does not block; it is deleted with the job."""
         from django.urls import reverse
 
         self.attempt.delete()
         waiting = self._attempt()
-        url = reverse("core:printjob_delete", args=[self.job.pk])
-        self.assertContains(self.client.get(url), "Cannot delete this print job")
-        resp = self.client.post(url, follow=True)
-        self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
-        self.assertTrue(PrintQueue.objects.filter(pk=waiting.pk).exists())
-        self.assertIn("it has print attempts", " ".join(str(m) for m in resp.context["messages"]))
+        resp = self.client.post(reverse("core:printjob_delete", args=[self.job.pk]))
+        self.assertEqual(resp.status_code, 302)
+        self.assertFalse(PrintJob.objects.filter(pk=self.job.pk).exists())
+        self.assertFalse(PrintQueue.objects.filter(pk=waiting.pk).exists())
 
     def test_job_deletable_after_waiting_attempt_removed(self):
         """Removing the only (never started) attempt from the queue makes the job deletable again."""

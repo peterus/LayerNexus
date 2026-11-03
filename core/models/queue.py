@@ -317,6 +317,26 @@ class PrintQueue(models.Model):
             start_claimed_at__gte=timezone.now() - START_CLAIM_TIMEOUT,
         )
 
+    @classmethod
+    def blocks_job_delete_q(cls) -> Q:
+        """Return a filter for attempts that block deleting their print job (see :attr:`PrintJob.can_delete`).
+
+        That is an attempt keeping its printer busy (printing, or finished and
+        awaiting review — the parts may still be on the bed) or a print start in
+        progress.  Deleting the job would free the printer, and the next queued
+        or scheduled print could start onto a full bed.
+        """
+        return cls.active_q() | cls.active_start_claim_q()
+
+    @property
+    def blocks_job_delete(self) -> bool:
+        """Return True while this attempt blocks deleting its job (same rule as :meth:`blocks_job_delete_q`)."""
+        if self.result:
+            return False
+        if self.started_at is not None or self.completed_at is not None:
+            return True
+        return self.has_active_start_claim
+
     @property
     def is_printer_busy(self) -> bool:
         """Return True if this entry's printer has an active or unreviewed job, or a start in progress."""
