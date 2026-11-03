@@ -126,9 +126,10 @@ def snapshot_event(result: dict[str, Any]) -> dict[str, Any] | None:
     Moonraker answers ``printer.objects.subscribe`` with the current
     status of all subscribed objects. Forwarding it writes progress
     right after every (re)subscribe. ``print_stats.state`` is dropped:
-    right after a Klippy restart it reads ``standby``/``error``, which
-    :mod:`core.services.printer_status_sync` treats as terminal — the
-    snapshot must never end a print. Completion keeps coming from live
+    right after a Klippy restart it reads ``error`` (or a stale
+    ``complete``/``cancelled`` from an earlier print), which
+    :mod:`core.services.printer_status_sync` treats as the end of a print —
+    the snapshot must never end a print. Completion keeps coming from live
     state changes and ``notify_history_changed``.
 
     Args:

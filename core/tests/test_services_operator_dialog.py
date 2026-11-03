@@ -191,8 +191,7 @@ class HandleActionTests(_DialogTestBase):
     def test_handle_start_next_started(self, mock_get_backend):
         entry = self._entry(self.plate2, PrintQueue.STATE_WAITING)
         dialog = handle_action(self.printer, StartNext(entry.pk))
-        self.assertEqual(dialog.lines, ("Started: Bracket, plate 2",))
-        self.assertEqual(_actions(dialog), [Dismiss()])
+        self.assertIsNone(dialog)
         mock_get_backend.return_value.start_print.assert_called_once()
         entry.refresh_from_db()
         self.assertEqual(entry.state, PrintQueue.STATE_PRINTING)
