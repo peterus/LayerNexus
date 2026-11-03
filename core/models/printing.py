@@ -92,7 +92,7 @@ class PrintJobQuerySet(models.QuerySet):
         queryset = self.annotate(
             job_has_attempts=Exists(attempts),
             job_has_active_attempt=Exists(attempts.filter(PrintQueue.active_q())),
-            job_delete_blocked=Exists(attempts.filter(PrintQueue.printing_or_starting_q())),
+            job_delete_blocked=Exists(attempts.filter(PrintQueue.blocks_job_delete_q())),
             job_plate_count=_count_subquery(plates, "print_job"),
             # Completed = has a passed attempt: a cheap EXISTS instead of the full plate-state CASE.
             job_completed_plates=_count_subquery(
@@ -409,12 +409,13 @@ class PrintJob(models.Model):
 
     @property
     def can_delete(self) -> bool:
-        """Return True unless a printer is printing or starting one of the job's plates right now.
+        """Return True unless one of the job's plates is printing, starting or awaiting review.
 
-        A job with print history may be deleted: its attempts (waiting, awaiting
-        review or resolved) go with it and the copies it printed stop counting
-        (see :meth:`printed_copies`).  Only a running print or a print start in
-        progress blocks — deleting then would let the print run untracked.
+        A job with print history may be deleted: its attempts (waiting or
+        resolved) go with it and the copies it printed stop counting (see
+        :meth:`printed_copies`).  An attempt that keeps a printer busy blocks
+        (see :meth:`PrintQueue.blocks_job_delete_q`): a running print would run
+        untracked, and an unreviewed one may still have its parts on the bed.
         Reads the ``job_delete_blocked`` annotation of
         :meth:`PrintJobQuerySet.with_display_status` or the prefetched attempts
         when available.
@@ -423,10 +424,10 @@ class PrintJob(models.Model):
             return not self.job_delete_blocked
         plates = self._prefetched_plates()
         if plates is not None and all(plate.attempts_prefetched for plate in plates):
-            return not any(attempt.is_printing_or_starting for plate in plates for attempt in plate.attempts())
+            return not any(attempt.blocks_job_delete for plate in plates for attempt in plate.attempts())
         from core.models.queue import PrintQueue
 
-        return not PrintQueue.objects.filter(PrintQueue.printing_or_starting_q(), plate__print_job=self).exists()
+        return not PrintQueue.objects.filter(PrintQueue.blocks_job_delete_q(), plate__print_job=self).exists()
 
     def attempt_count(self) -> int:
         """Return the number of print attempts of the job's plates (deleted with the job)."""

@@ -391,7 +391,7 @@ class PrintHistoryDeleteGuardTests(_AttemptTestBase):
         resp = self.client.post(url, follow=True)
         self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
         self.assertTrue(PrintQueue.objects.filter(pk=self.attempt.pk).exists())
-        self.assertIn("is printing or starting", " ".join(str(m) for m in resp.context["messages"]))
+        self.assertIn("is printing, starting or awaiting review", " ".join(str(m) for m in resp.context["messages"]))
 
     def test_job_with_only_waiting_attempt_deleted_with_it(self):
         """A waiting attempt that never started does not block; it is deleted with the job."""

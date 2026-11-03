@@ -318,17 +318,24 @@ class PrintQueue(models.Model):
         )
 
     @classmethod
-    def printing_or_starting_q(cls) -> Q:
-        """Return a filter for attempts a printer is working on right now (printing or print start in progress).
+    def blocks_job_delete_q(cls) -> Q:
+        """Return a filter for attempts that block deleting their print job (see :attr:`PrintJob.can_delete`).
 
-        Such an attempt blocks deleting its print job (see :attr:`PrintJob.can_delete`).
+        That is an attempt keeping its printer busy (printing, or finished and
+        awaiting review — the parts may still be on the bed) or a print start in
+        progress.  Deleting the job would free the printer, and the next queued
+        or scheduled print could start onto a full bed.
         """
-        return Q(result="", started_at__isnull=False, completed_at__isnull=True) | cls.active_start_claim_q()
+        return cls.active_q() | cls.active_start_claim_q()
 
     @property
-    def is_printing_or_starting(self) -> bool:
-        """Return True while the printer prints this attempt or its print start is in progress."""
-        return self.is_printing or (self.is_waiting and self.has_active_start_claim)
+    def blocks_job_delete(self) -> bool:
+        """Return True while this attempt blocks deleting its job (same rule as :meth:`blocks_job_delete_q`)."""
+        if self.result:
+            return False
+        if self.started_at is not None or self.completed_at is not None:
+            return True
+        return self.has_active_start_claim
 
     @property
     def is_printer_busy(self) -> bool:

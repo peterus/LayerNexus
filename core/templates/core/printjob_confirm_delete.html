@@ -26,7 +26,18 @@
         {% if delete_blocked %}
         <div class="alert alert-danger mb-3">
           <i class="bi bi-x-circle-fill me-1"></i>
-          <strong>Cannot delete this print job:</strong> a printer is printing or starting one of its plates. Wait until the print has finished.
+          <strong>Cannot delete this print job:</strong>
+          <ul class="mb-0 mt-1">
+            {% for attempt in blocking_attempts %}
+            {% if attempt.is_awaiting_review %}
+            <li>Plate {{ attempt.plate.plate_number }} is waiting for review{% if attempt.printer %} on {{ attempt.printer.name }}{% endif %}. Confirm the print result first (ok/failed), then the job can be deleted.</li>
+            {% elif attempt.is_printing %}
+            <li>Plate {{ attempt.plate.plate_number }} is printing{% if attempt.printer %} on {{ attempt.printer.name }}{% endif %}. Wait until the print has finished and confirm its result.</li>
+            {% else %}
+            <li>Plate {{ attempt.plate.plate_number }} is starting{% if attempt.printer %} on {{ attempt.printer.name }}{% endif %}. Wait until the print has finished and confirm its result.</li>
+            {% endif %}
+            {% endfor %}
+          </ul>
         </div>
         <a href="{% url 'core:printjob_detail' object.pk %}" class="btn btn-outline-secondary"><i class="bi bi-arrow-left me-1"></i>Back to Job</a>
         {% else %}
@@ -42,12 +53,6 @@
         <div class="alert alert-info mb-3">
           <i class="bi bi-list-ol me-1"></i>
           {{ waiting_count }} waiting queue entr{{ waiting_count|pluralize:"y,ies" }} of this job will be removed from the queue.
-        </div>
-        {% endif %}
-        {% if awaiting_review_printers %}
-        <div class="alert alert-warning mb-3">
-          <i class="bi bi-exclamation-octagon me-1"></i>
-          <strong>Clear the bed first:</strong> a plate of this job awaits review on {{ awaiting_review_printers|join:", " }}. Deleting the job frees the printer{{ awaiting_review_printers|pluralize }} — the next queued or scheduled print can start right away.
         </div>
         {% endif %}
         {% if object.plates.exists %}

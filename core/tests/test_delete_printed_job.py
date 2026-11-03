@@ -1,8 +1,8 @@
 """Tests for deleting print jobs that have print history.
 
-A job may be deleted with its attempts (waiting, awaiting review or resolved);
-only an attempt that is printing right now or whose print start is in progress
-blocks the delete.  The copies the job printed stop counting afterwards.
+A job may be deleted with its attempts (waiting or resolved); an attempt that is
+printing, starting or awaiting review (parts may still be on the bed) blocks the
+delete.  The copies the job printed stop counting afterwards.
 """
 
 import shutil
@@ -61,8 +61,13 @@ class CanDeleteTests(_JobWithHistoryBase):
         add_attempt(self.plate1, self.printer, "waiting")
         self.assert_can_delete(True)
 
-    def test_awaiting_review_attempt_does_not_block(self) -> None:
+    def test_awaiting_review_attempt_blocks(self) -> None:
         add_attempt(self.plate1, self.printer, "awaiting_review")
+        self.assert_can_delete(False)
+
+    def test_resolved_review_unblocks(self) -> None:
+        attempt = add_attempt(self.plate1, self.printer, "awaiting_review")
+        attempt.resolve(passed=True)
         self.assert_can_delete(True)
 
     def test_expired_start_claim_does_not_block(self) -> None:
@@ -103,15 +108,21 @@ class HistorySummaryTests(_JobWithHistoryBase):
         self.assertEqual(PrintJob.objects.get(pk=self.job.pk).printed_copies(), 3)
         self.assertEqual(Part.objects.get(pk=self.part.pk).printed_quantity, 3)
 
-    def test_confirmation_page_warns_to_clear_bed_when_awaiting_review(self) -> None:
-        add_attempt(self.plate1, self.printer, "awaiting_review")
-        response = self.client.get(self.url)
-        self.assertContains(response, "Clear the bed first")
-        self.assertContains(response, self.printer.name)
-
-    def test_confirmation_page_without_awaiting_review_has_no_bed_warning(self) -> None:
+    def test_confirmation_page_explains_awaiting_review_block(self) -> None:
         complete_plate(self.plate1, self.printer)
-        self.assertNotContains(self.client.get(self.url), "Clear the bed first")
+        add_attempt(self.plate2, self.printer, "awaiting_review")
+        response = self.client.get(self.url)
+        self.assertContains(response, "Cannot delete this print job")
+        self.assertContains(response, "Plate 2 is waiting for review on Test Printer")
+        self.assertContains(response, "Confirm the print result first (ok/failed), then the job can be deleted.")
+        self.assertNotContains(response, '<button type="submit" class="btn btn-danger">')
+
+    def test_confirmation_page_explains_printing_and_starting_block(self) -> None:
+        add_attempt(self.plate1, self.printer, "printing")
+        add_attempt(self.plate2, self.printer, "waiting", start_claimed_at=timezone.now())
+        response = self.client.get(self.url)
+        self.assertContains(response, "Plate 1 is printing on Test Printer")
+        self.assertContains(response, "Plate 2 is starting on Test Printer")
 
     def test_no_history(self) -> None:
         job = PrintJob.objects.get(pk=self.job.pk)
@@ -177,13 +188,39 @@ class DeleteJobWithHistoryTests(_JobWithHistoryBase):
         self.assertTrue(Part.objects.filter(pk=self.part.pk).exists())
         self.assertEqual(Part.objects.get(pk=self.part.pk).printed_quantity, 0)
 
-    def test_delete_with_waiting_and_awaiting_review_attempts(self) -> None:
-        review = add_attempt(self.plate1, self.printer, "awaiting_review")
+    def test_delete_with_waiting_attempts(self) -> None:
         waiting = add_attempt(self.plate2, self.printer, "waiting")
         response = self.client.post(self.url)
         self.assertEqual(response.status_code, 302)
         self.assertFalse(PrintJob.objects.filter(pk=self.job.pk).exists())
-        self.assertFalse(PrintQueue.objects.filter(pk__in=[review.pk, waiting.pk]).exists())
+        self.assertFalse(PrintQueue.objects.filter(pk=waiting.pk).exists())
+
+    def test_awaiting_review_attempt_blocks_delete(self) -> None:
+        review = add_attempt(self.plate1, self.printer, "awaiting_review")
+        response = self.client.post(self.url, follow=True)
+        self.assertRedirects(response, reverse("core:printjob_detail", args=[self.job.pk]))
+        self.assertIn("awaiting review", self.messages_of(response))
+        self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
+        self.assertTrue(PrintQueue.objects.filter(pk=review.pk).exists())
+
+    def test_deletable_after_review_resolved(self) -> None:
+        review = add_attempt(self.plate1, self.printer, "awaiting_review")
+        review.resolve(passed=True)
+        response = self.client.post(self.url)
+        self.assertRedirects(response, reverse("core:printjob_list"), fetch_redirect_response=False)
+        self.assertFalse(PrintJob.objects.filter(pk=self.job.pk).exists())
+
+    def test_print_finished_after_confirmation_page_blocks_delete(self) -> None:
+        """The POST re-checks the live attempts: a plate that finished (awaiting review) since the page wins."""
+        waiting = add_attempt(self.plate1, self.printer, "waiting")
+        self.assertNotContains(self.client.get(self.url), "Cannot delete this print job")
+        now = timezone.now()
+        PrintQueue.objects.filter(pk=waiting.pk).update(started_at=now, completed_at=now)
+        response = self.client.post(self.url, follow=True)
+        self.assertRedirects(response, reverse("core:printjob_detail", args=[self.job.pk]))
+        self.assertIn("awaiting review", self.messages_of(response))
+        self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
+        self.assertTrue(PrintQueue.objects.filter(pk=waiting.pk).exists())
 
     def test_printing_attempt_blocks_delete(self) -> None:
         complete_plate(self.plate1, self.printer)
@@ -195,7 +232,7 @@ class DeleteJobWithHistoryTests(_JobWithHistoryBase):
         response = self.client.post(self.url, follow=True)
 
         self.assertRedirects(response, reverse("core:printjob_detail", args=[self.job.pk]))
-        self.assertIn("is printing", self.messages_of(response))
+        self.assertIn("is printing, starting or awaiting review", self.messages_of(response))
         self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
         self.assertTrue(PrintQueue.objects.filter(pk=printing.pk).exists())
 
@@ -203,7 +240,7 @@ class DeleteJobWithHistoryTests(_JobWithHistoryBase):
         claimed = add_attempt(self.plate1, self.printer, "waiting", start_claimed_at=timezone.now())
         self.assertContains(self.client.get(self.url), "Cannot delete this print job")
         response = self.client.post(self.url, follow=True)
-        self.assertIn("is printing", self.messages_of(response))
+        self.assertIn("is printing, starting or awaiting review", self.messages_of(response))
         self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
         self.assertTrue(PrintQueue.objects.filter(pk=claimed.pk).exists())
 
@@ -214,7 +251,7 @@ class DeleteJobWithHistoryTests(_JobWithHistoryBase):
         PrintQueue.objects.filter(pk=waiting.pk).update(started_at=timezone.now())
         response = self.client.post(self.url, follow=True)
         self.assertRedirects(response, reverse("core:printjob_detail", args=[self.job.pk]))
-        self.assertIn("is printing", self.messages_of(response))
+        self.assertIn("is printing, starting or awaiting review", self.messages_of(response))
         self.assertTrue(PrintJob.objects.filter(pk=self.job.pk).exists())
         self.assertTrue(PrintQueue.objects.filter(pk=waiting.pk).exists())
 
@@ -251,11 +288,15 @@ class DeleteButtonVisibilityTests(_JobWithHistoryBase):
         self.assertContains(detail, self.delete_link())
         self.assertContains(self.client.get(reverse("core:printjob_list")), self.delete_link())
 
-    def test_buttons_hidden_while_printing(self) -> None:
-        add_attempt(self.plate1, self.printer, "printing")
-        detail = self.client.get(reverse("core:printjob_detail", args=[self.job.pk]))
-        self.assertNotContains(detail, self.delete_link())
-        self.assertNotContains(self.client.get(reverse("core:printjob_list")), self.delete_link())
+    def test_buttons_hidden_while_printing_or_awaiting_review(self) -> None:
+        for state in ("printing", "awaiting_review"):
+            with self.subTest(state=state):
+                attempt = add_attempt(self.plate1, self.printer, state)
+                detail = self.client.get(reverse("core:printjob_detail", args=[self.job.pk]))
+                self.assertNotContains(detail, self.delete_link())
+                self.assertContains(detail, "Confirm the print result first (ok/failed)")
+                self.assertNotContains(self.client.get(reverse("core:printjob_list")), self.delete_link())
+                attempt.delete()
 
 
 class DeleteJobWithHistoryFilesTests(_JobWithHistoryBase):
