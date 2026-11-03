@@ -328,7 +328,8 @@ class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
         entry = await self._refresh(entry)
         self.assertEqual(entry.state, PrintQueue.STATE_PRINTING)
         mock_get_backend.return_value.start_print.assert_called_once()
-        self.assertIn("Started: Bracket, plate 1", self._scripts()[-1])
+        # The prompt just closes after a successful start: no info dialog is sent.
+        self.assertEqual(self._scripts(), [])
 
     @patch("core.services.queue.get_printer_backend")
     async def test_double_start_press_starts_once(self, mock_get_backend):
