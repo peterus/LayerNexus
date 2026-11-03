@@ -39,16 +39,19 @@ _HISTORY_STATUS_MAP = {
     "error": NormalizedJobStatus.STATE_ERROR,
     "interrupted": NormalizedJobStatus.STATE_ERROR,
     "klippy_shutdown": NormalizedJobStatus.STATE_ERROR,
+    "klippy_disconnect": NormalizedJobStatus.STATE_ERROR,
     "server_exit": NormalizedJobStatus.STATE_ERROR,
 }
 
-#: ``print_stats.state`` values that end a running attempt.  ``standby`` is
-#: deliberately missing: Klipper resets ``print_stats`` (-> ``standby``) when
+#: ``print_stats.state`` values that always end a running attempt.  ``standby``
+#: is deliberately missing: Klipper resets ``print_stats`` (-> ``standby``) when
 #: ``SDCARD_PRINT_FILE`` loads a file, *before* the print starts, so every
 #: start briefly broadcasts ``standby``.  Treating it as an end marked fresh
-#: attempts as finished while the printer was printing.  Real ends arrive as
-#: ``complete``/``cancelled``/``error`` or via ``notify_history_changed``
-#: (which also covers ``klippy_shutdown``/``interrupted``).
+#: attempts as finished while the printer was printing.  ``standby`` only ends
+#: an attempt that already recorded progress (see :func:`_ends_attempt`), which
+#: covers prints aborted by ``FIRMWARE_RESTART``/``SDCARD_RESET_FILE`` even
+#: without Moonraker's ``[history]``.  Other ends arrive via
+#: ``notify_history_changed`` (incl. ``klippy_shutdown``/``interrupted``).
 PRINT_END_STATES = frozenset(
     {
         NormalizedJobStatus.STATE_COMPLETE,
@@ -69,8 +72,9 @@ def apply_status_event(entry: PrintQueue, event: dict[str, Any]) -> bool:
       checked when both file names are known).
     * ``notify_status_update``: reads ``print_stats.state`` and
       ``virtual_sdcard.progress`` and either updates the progress
-      (throttled) or, if the state ends a print (:data:`PRINT_END_STATES`,
-      not ``standby``), triggers the same transition as above.
+      (throttled) or, if the state ends the print (:data:`PRINT_END_STATES`;
+      ``standby`` only after recorded progress), triggers the same transition
+      as above.
 
     Args:
         entry: The PrintQueue entry currently associated with the
@@ -133,7 +137,7 @@ def _handle_status_update(entry: PrintQueue, params: list[Any]) -> bool:
     raw_state = print_stats.get("state")
     if raw_state:
         normalized = map_klipper_state(raw_state)
-        if normalized in PRINT_END_STATES:
+        if _ends_attempt(entry, normalized):
             return _transition_to_review(entry, normalized, raw_state)
 
     # Otherwise update progress (throttled).
@@ -181,6 +185,27 @@ def _handle_status_update(entry: PrintQueue, params: list[Any]) -> bool:
     return True
 
 
+def _ends_attempt(entry: PrintQueue, normalized_state: str) -> bool:
+    """Return whether a ``print_stats.state`` ends the running attempt.
+
+    ``standby`` is ambiguous: Klipper reports it right before every print
+    starts, but also after a print was aborted without a ``cancelled`` /
+    ``error`` state.  It only counts as an end once the attempt recorded real
+    progress — ``mark_started`` clears the progress of earlier attempts, so a
+    start-up ``standby`` never qualifies.
+
+    Args:
+        entry: The printing queue entry (freshly loaded by the worker).
+        normalized_state: The normalized ``print_stats.state``.
+
+    Returns:
+        True if the attempt should move to "awaiting review".
+    """
+    if normalized_state in PRINT_END_STATES:
+        return True
+    return normalized_state == NormalizedJobStatus.STATE_STANDBY and bool(entry.progress)
+
+
 def _is_attempt_file(entry: PrintQueue, job_filename: Any) -> bool:
     """Return whether a finished Moonraker job belongs to this attempt.
 
@@ -213,6 +238,7 @@ def _transition_to_review(entry: PrintQueue, normalized_state: str, raw_state: s
     if normalized_state in (
         NormalizedJobStatus.STATE_ERROR,
         NormalizedJobStatus.STATE_CANCELLED,
+        NormalizedJobStatus.STATE_STANDBY,
     ):
         error = f"Printer reported: {raw_state}"
     else:

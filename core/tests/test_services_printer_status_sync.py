@@ -166,6 +166,15 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         self.assertEqual(self.entry.state, PrintQueue.STATE_AWAITING_REVIEW)
         self.assertIn("klippy_shutdown", self.entry.last_error)
 
+    def test_history_finished_klippy_disconnect_sets_last_error(self):
+        event = {
+            "method": "notify_history_changed",
+            "params": [{"action": "finished", "job": {"status": "klippy_disconnect"}}],
+        }
+        self.assertTrue(apply_status_event(self.entry, event))
+        self.entry.refresh_from_db()
+        self.assertIn("klippy_disconnect", self.entry.last_error)
+
     # ----- notify_status_update: terminal state ----------------------------
 
     def test_status_update_terminal_state_triggers_transition(self):
@@ -226,6 +235,24 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         entry.refresh_from_db()
         self.assertEqual(entry.state, PrintQueue.STATE_AWAITING_REVIEW)
         self.assertEqual(entry.last_error, "")
+
+    def test_standby_after_real_progress_ends_attempt_with_error(self):
+        """``standby`` after the print made progress (e.g. FIRMWARE_RESTART, SDCARD_RESET_FILE) ends it."""
+        PrintQueue.objects.filter(pk=self.entry.pk).update(progress=0.42)
+        self.entry.refresh_from_db()
+        event = {"method": "notify_status_update", "params": [{"print_stats": {"state": "standby"}}]}
+        self.assertTrue(apply_status_event(self.entry, event))
+        self.entry.refresh_from_db()
+        self.assertEqual(self.entry.state, PrintQueue.STATE_AWAITING_REVIEW)
+        self.assertIn("standby", self.entry.last_error)
+
+    def test_standby_with_zero_progress_does_not_end_attempt(self):
+        PrintQueue.objects.filter(pk=self.entry.pk).update(progress=0.0)
+        self.entry.refresh_from_db()
+        event = {"method": "notify_status_update", "params": [{"print_stats": {"state": "standby"}}]}
+        self.assertFalse(apply_status_event(self.entry, event))
+        self.entry.refresh_from_db()
+        self.assertEqual(self.entry.state, PrintQueue.STATE_PRINTING)
 
     def test_status_update_standby_with_progress_still_writes_progress(self):
         event = {
