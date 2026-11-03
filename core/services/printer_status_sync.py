@@ -49,7 +49,8 @@ _HISTORY_STATUS_MAP = {
 #: start briefly broadcasts ``standby``.  Treating it as an end marked fresh
 #: attempts as finished while the printer was printing.  ``standby`` only ends
 #: an attempt that already recorded progress (see :func:`_ends_attempt`), which
-#: covers prints aborted by ``FIRMWARE_RESTART``/``SDCARD_RESET_FILE`` even
+#: covers prints aborted by ``FIRMWARE_RESTART`` (seen in the resubscribe
+#: snapshot) or ``SDCARD_RESET_FILE`` even
 #: without Moonraker's ``[history]``.  Other ends arrive via
 #: ``notify_history_changed`` (incl. ``klippy_shutdown``/``interrupted``).
 PRINT_END_STATES = frozenset(

@@ -6,6 +6,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from core.models import PrintJob, PrintJobPlate, PrintQueue
+from core.services.moonraker_ws import snapshot_event
 from core.services.printer_status_sync import (
     PROGRESS_WRITE_INTERVAL,
     apply_status_event,
@@ -242,6 +243,18 @@ class ApplyStatusEventTests(TestDataMixin, TestCase):
         self.entry.refresh_from_db()
         event = {"method": "notify_status_update", "params": [{"print_stats": {"state": "standby"}}]}
         self.assertTrue(apply_status_event(self.entry, event))
+        self.entry.refresh_from_db()
+        self.assertEqual(self.entry.state, PrintQueue.STATE_AWAITING_REVIEW)
+        self.assertIn("standby", self.entry.last_error)
+
+    def test_firmware_restart_snapshot_ends_attempt_with_progress(self):
+        """After FIRMWARE_RESTART mid-print, the resubscribe snapshot (standby, progress 0) ends the attempt."""
+        PrintQueue.objects.filter(pk=self.entry.pk).update(progress=0.42)
+        self.entry.refresh_from_db()
+        snapshot = snapshot_event(
+            {"eventtime": 9.0, "status": {"print_stats": {"state": "standby"}, "virtual_sdcard": {"progress": 0.0}}}
+        )
+        self.assertTrue(apply_status_event(self.entry, snapshot))
         self.entry.refresh_from_db()
         self.assertEqual(self.entry.state, PrintQueue.STATE_AWAITING_REVIEW)
         self.assertIn("standby", self.entry.last_error)
