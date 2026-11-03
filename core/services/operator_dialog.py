@@ -259,11 +259,11 @@ def _handle_review(printer: PrinterProfile, action: Review) -> OperatorDialog:
     return next_job_dialog(printer, (line,))
 
 
-def _handle_start(printer: PrinterProfile, action: StartNext) -> OperatorDialog:
+def _handle_start(printer: PrinterProfile, action: StartNext) -> OperatorDialog | None:
     result = start_next_for_printer(printer, expected_entry_pk=action.entry_pk)
     if result.outcome == "started":
-        plate = result.entry.plate
-        return _info_dialog(f"Started: {_job_label(plate.print_job)}, plate {plate.plate_number}")
+        # The running print speaks for itself: just close the dialog.
+        return None
     if result.outcome == "busy":
         return _info_dialog(ALREADY_HANDLED, "Printer busy", _busy_line(result.busy_entry), buttons=STALE_BUTTONS)
     if result.outcome == "empty":
