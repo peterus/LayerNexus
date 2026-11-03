@@ -7,8 +7,12 @@ object ID assigned by :func:`core.services.threemf.create_3mf_bundle`.  Together
 with the bundle's :class:`~core.services.threemf.BundleObject` list this tells
 which part copies (and which of their meshes) ended up on which plate.
 
+Klipper upper-cases the names it reads from ``EXCLUDE_OBJECT_DEFINE``, so the
+objects it reports as excluded look like ``OBJECT_<N>_ID_<i>_COPY_0`` —
+:func:`parse_klipper_object_id` maps them back to the object ID ``<N>``.
+
 These are pure functions without database access; the plate-parts data
-migration uses them as well, so keep them backwards compatible.
+migrations use them as well, so keep them backwards compatible.
 """
 
 import logging
@@ -23,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 _EXCLUDE_OBJECT_RE = re.compile(rb"^\s*EXCLUDE_OBJECT_DEFINE\b[^\n]*?\bNAME=['\"]?Object_(\d+)(?![0-9])", re.MULTILINE)
 _PRINTING_OBJECT_RE = re.compile(rb"^\s*;\s*printing object\s+['\"]?Object_(\d+)(?![0-9])", re.MULTILINE)
+_KLIPPER_OBJECT_RE = re.compile(r"^\s*['\"]?OBJECT_(\d+)(?![0-9])", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -34,12 +39,33 @@ class PlateCopyShare:
         copy_index: Copy of that part (0-based).
         meshes_on_plate: Number of the copy's meshes on this plate.
         mesh_count: Total number of meshes of the copy.
+        object_ids: Bundle object IDs of the copy's meshes on this plate (sorted).
     """
 
     part_index: int
     copy_index: int
     meshes_on_plate: int
     mesh_count: int
+    object_ids: tuple[int, ...] = ()
+
+
+def parse_klipper_object_id(name: object) -> int | None:
+    """Return the bundle object ID of an object name reported by Klipper.
+
+    Klipper upper-cases the ``EXCLUDE_OBJECT_DEFINE`` names, so OrcaSlicer's
+    ``Object_<N>_id_<i>_copy_0`` comes back as ``OBJECT_<N>_ID_<i>_COPY_0``;
+    the match is case-insensitive and tolerates surrounding quotes.
+
+    Args:
+        name: An object name (anything else yields ``None``).
+
+    Returns:
+        The object ID ``<N>``, or ``None`` if the name is not a bundle object.
+    """
+    if not isinstance(name, str):
+        return None
+    match = _KLIPPER_OBJECT_RE.match(name)
+    return int(match.group(1)) if match else None
 
 
 def parse_gcode_object_ids(gcode: bytes | mmap.mmap) -> list[int]:
@@ -98,6 +124,7 @@ def assign_plate_objects(
     for plate_number, ids in plate_ids.items():
         meshes: Counter[tuple[int, int]] = Counter()
         mesh_counts: dict[tuple[int, int], int] = {}
+        copy_ids: dict[tuple[int, int], list[int]] = {}
         for object_id in ids:
             obj = by_id.get(object_id)
             if obj is None or object_id in seen:
@@ -111,12 +138,14 @@ def assign_plate_objects(
             key = (obj.part_index, obj.copy_index)
             meshes[key] += 1
             mesh_counts[key] = obj.mesh_count
+            copy_ids.setdefault(key, []).append(object_id)
         result[plate_number] = [
             PlateCopyShare(
                 part_index=part_index,
                 copy_index=copy_index,
                 meshes_on_plate=count,
                 mesh_count=mesh_counts[(part_index, copy_index)],
+                object_ids=tuple(sorted(copy_ids[(part_index, copy_index)])),
             )
             for (part_index, copy_index), count in sorted(meshes.items())
         ]

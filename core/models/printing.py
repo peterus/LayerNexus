@@ -1168,6 +1168,14 @@ class PrintJobPlatePart(models.Model):
         validators=[MinValueValidator(1)],
         help_text="Total number of meshes of the copy",
     )
+    object_ids = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "Bundle object IDs (G-code label Object_<N>) of this copy's meshes on the plate; "
+            "maps the objects Klipper excludes to the copy (empty = unknown)"
+        ),
+    )
 
     class Meta:
         ordering = ["plate", "part", "copy_index"]

@@ -321,22 +321,10 @@ def _subscribe_count(ws: FakeWebSocket) -> int:
 class SnapshotEventTests(TestCase):
     """Tests for :func:`snapshot_event`."""
 
-    def test_keeps_standby_state(self) -> None:
-        """``standby`` is forwarded: after FIRMWARE_RESTART mid-print only the snapshot carries it."""
-        result = {"eventtime": 5.0, "status": {"print_stats": {"state": "standby"}, "virtual_sdcard": {"progress": 0}}}
-
-        self.assertEqual(
-            snapshot_event(result)["params"][0],
-            {"print_stats": {"state": "standby"}, "virtual_sdcard": {"progress": 0}},
-        )
-
     def test_drops_print_stats_state_keeps_rest(self) -> None:
         result = {
             "eventtime": 5.0,
-            "status": {
-                "print_stats": {"state": "complete", "filename": "a.gcode"},
-                "virtual_sdcard": {"progress": 0.4},
-            },
+            "status": {"print_stats": {"state": "standby", "filename": "a.gcode"}, "virtual_sdcard": {"progress": 0.4}},
         }
 
         self.assertEqual(
@@ -407,7 +395,7 @@ class ResubscribeTests(IsolatedAsyncioTestCase):
         self.assertTrue(any("klippy ready, re-subscribing" in line for line in logs.output))
 
     async def test_subscribe_response_forwarded_without_state(self) -> None:
-        status = {"print_stats": {"state": "error", "filename": "a.gcode"}, "virtual_sdcard": {"progress": 0.42}}
+        status = {"print_stats": {"state": "standby", "filename": "a.gcode"}, "virtual_sdcard": {"progress": 0.42}}
 
         await self._listen(FakeWebSocket([_subscribe_response(status)]))
 

@@ -27,6 +27,9 @@ def _printed_in_job(part_id: int, entry: PrintJobPart, plates: list[PrintJobPlat
       a copy counts once the ``meshes_on_plate`` over all plates with a passed
       attempt add up to its ``mesh_count`` (a partly printed job counts its passed
       plates; a multi-mesh copy counts only once all its meshes are printed).
+      A plate part excluded in the passed attempt (``PrintAttemptExclusion``,
+      annotated ``excluded`` by :func:`_counting_plate_parts`) adds no meshes,
+      so its copy is not printed.
     * Otherwise (plate assignment unknown, or no plate parts recorded) the legacy
       rule: all plates completed → the part's job ``quantity``, else nothing.
 
@@ -52,7 +55,7 @@ def _printed_in_job(part_id: int, entry: PrintJobPart, plates: list[PrintJobPlat
         if not passed:
             continue
         for row in rows:
-            if row.part_id == part_id:
+            if row.part_id == part_id and not row.excluded:
                 printed_meshes[row.copy_index] = printed_meshes.get(row.copy_index, 0) + row.meshes_on_plate
                 mesh_counts[row.copy_index] = row.mesh_count
     complete = sum(1 for copy, meshes in printed_meshes.items() if meshes >= mesh_counts[copy])
@@ -68,12 +71,20 @@ def _finished_later(plate: PrintJobPlate, other: PrintJobPlate) -> bool:
 
 
 def _counting_plate_parts() -> QuerySet:
-    """Return plate parts with only the columns the printed count needs (no ordering, no other fields)."""
-    from core.models.printing import PrintJobPlatePart
+    """Return plate parts with only the columns the printed count needs (no ordering, no other fields).
 
-    return PrintJobPlatePart.objects.only(
-        "id", "plate_id", "part_id", "copy_index", "meshes_on_plate", "mesh_count"
-    ).order_by()
+    Annotates ``excluded``: the copy was excluded in a passed attempt of its
+    plate (Klipper ``EXCLUDE_OBJECT`` or marked by an operator), so it does not count.
+    """
+    from core.models.printing import PrintJobPlatePart
+    from core.models.queue import PrintAttemptExclusion, PrintQueue
+
+    excluded = PrintAttemptExclusion.objects.filter(plate_part=OuterRef("pk"), attempt__result=PrintQueue.RESULT_PASSED)
+    return (
+        PrintJobPlatePart.objects.only("id", "plate_id", "part_id", "copy_index", "meshes_on_plate", "mesh_count")
+        .annotate(excluded=Exists(excluded))
+        .order_by()
+    )
 
 
 class Part(models.Model):
@@ -488,7 +499,8 @@ class Part(models.Model):
             Dicts with ``job``, ``plate`` (or ``None``), ``copies`` (copies completed
             by this plate — a multi-mesh copy split over plates is listed on the one
             that passed last — or counted for the whole job), ``partial`` (meshes of copies that
-            are not complete yet) and ``date`` (when the plate passed), newest first.
+            are not complete yet), ``excluded`` (copies on this plate excluded in its passed
+            attempt; they never count) and ``date`` (when the plate passed), newest first.
         """
         from core.models.printing import PrintJobPlate
 
@@ -507,7 +519,9 @@ class Part(models.Model):
                 if _printed_in_job(self.pk, entry, plates):
                     dates = [plate.completed_at for plate in plates if plate.completed_at is not None]
                     date = max(dates, default=None)
-                    rows.append({"job": job, "plate": None, "copies": entry.quantity, "partial": 0, "date": date})
+                    rows.append(
+                        {"job": job, "plate": None, "copies": entry.quantity, "partial": 0, "excluded": 0, "date": date}
+                    )
                 continue
             passed_plates = [plate for plate in plates if plate.state == PrintJobPlate.STATE_COMPLETED]
             # Same completion rule as ``_printed_in_job``; a complete copy is listed on the
@@ -515,22 +529,36 @@ class Part(models.Model):
             meshes: dict[int, int] = {}
             mesh_counts: dict[int, int] = {}
             finished_on: dict[int, PrintJobPlate] = {}
+            # Copies with an excluded mesh are never complete; their other meshes are not "partial" either.
+            excluded_copies: set[int] = set()
             for plate in passed_plates:
                 for row in plate.plate_parts.all():
-                    if row.part_id == self.pk:
+                    if row.part_id == self.pk and row.excluded:
+                        excluded_copies.add(row.copy_index)
+                    elif row.part_id == self.pk:
                         meshes[row.copy_index] = meshes.get(row.copy_index, 0) + row.meshes_on_plate
                         mesh_counts[row.copy_index] = row.mesh_count
                         current = finished_on.get(row.copy_index)
                         if current is None or _finished_later(plate, current):
                             finished_on[row.copy_index] = plate
-            complete = {copy for copy, count in meshes.items() if count >= mesh_counts[copy]}
+            complete = {
+                copy for copy, count in meshes.items() if count >= mesh_counts[copy] and copy not in excluded_copies
+            }
             for plate in passed_plates:
                 mine = [row for row in plate.plate_parts.all() if row.part_id == self.pk]
                 copies = sum(1 for copy in complete if finished_on[copy] is plate)
-                partial = sum(1 for row in mine if row.copy_index not in complete)
-                if copies or partial:
+                excluded = sum(1 for row in mine if row.excluded)
+                partial = sum(1 for row in mine if row.copy_index not in complete | excluded_copies)
+                if copies or partial or excluded:
                     rows.append(
-                        {"job": job, "plate": plate, "copies": copies, "partial": partial, "date": plate.completed_at}
+                        {
+                            "job": job,
+                            "plate": plate,
+                            "copies": copies,
+                            "partial": partial,
+                            "excluded": excluded,
+                            "date": plate.completed_at,
+                        }
                     )
         rows.sort(key=lambda row: row["date"].timestamp() if row["date"] is not None else 0.0, reverse=True)
         return rows

@@ -414,6 +414,7 @@ def _record_plate_parts(
                 copy_index=share.copy_index,
                 meshes_on_plate=share.meshes_on_plate,
                 mesh_count=share.mesh_count,
+                object_ids=list(share.object_ids),
             )
             for plate_number, shares in plate_shares.items()
             if plate_number in plates

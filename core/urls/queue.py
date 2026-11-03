@@ -5,6 +5,7 @@ from django.urls import path
 from core.views import (
     CancelQueueEntryView,
     CancelScheduledStartView,
+    PrintAttemptExclusionsView,
     PrintQueueCreateView,
     PrintQueueDeleteView,
     PrintQueueListView,
@@ -43,6 +44,11 @@ urlpatterns = [
         "queue/<int:pk>/review/",
         QueueEntryReviewView.as_view(),
         name="printqueue_review",
+    ),
+    path(
+        "queue/<int:pk>/excluded/",
+        PrintAttemptExclusionsView.as_view(),
+        name="printqueue_exclusions",
     ),
     path(
         "api/queue/<int:pk>/check-status/",

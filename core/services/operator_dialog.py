@@ -162,6 +162,9 @@ def review_dialog(entry: PrintQueue) -> OperatorDialog:
     lines = [_job_label(job), f"Plate {plate.plate_number} of {job.plate_count}"]
     if entry.last_error:
         lines.append(f"Ended: {entry.last_error}")
+    excluded = entry.excluded_summary()
+    if excluded:
+        lines.append(excluded)
     return _info_dialog(
         *lines,
         buttons=(
@@ -259,11 +262,11 @@ def _handle_review(printer: PrinterProfile, action: Review) -> OperatorDialog:
     return next_job_dialog(printer, (line,))
 
 
-def _handle_start(printer: PrinterProfile, action: StartNext) -> OperatorDialog | None:
+def _handle_start(printer: PrinterProfile, action: StartNext) -> OperatorDialog:
     result = start_next_for_printer(printer, expected_entry_pk=action.entry_pk)
     if result.outcome == "started":
-        # The running print speaks for itself: just close the dialog.
-        return None
+        plate = result.entry.plate
+        return _info_dialog(f"Started: {_job_label(plate.print_job)}, plate {plate.plate_number}")
     if result.outcome == "busy":
         return _info_dialog(ALREADY_HANDLED, "Printer busy", _busy_line(result.busy_entry), buttons=STALE_BUTTONS)
     if result.outcome == "empty":

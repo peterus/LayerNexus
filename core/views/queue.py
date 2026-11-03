@@ -104,6 +104,7 @@ class PrintQueueListView(LoginRequiredMixin, ListView):
         return (
             PrintQueue.objects.open()
             .with_retry_count()
+            .with_exclusion_count()
             .select_related("plate__print_job", "printer")
             .annotate(
                 waiting_last=Case(
@@ -522,6 +523,55 @@ class RunAllQueuesView(PrinterControlMixin, View):
         return redirect("core:printqueue_list")
 
 
+def _exclusion_choices(entry: PrintQueue) -> list[dict[str, Any]]:
+    """Return the plate's part copies with their exclusion in ``entry`` (for the mark-as-not-ok checkboxes).
+
+    Args:
+        entry: The attempt (``plate__print_job`` loaded).
+
+    Returns:
+        Dicts with ``pk`` (plate part), ``label`` (``"<part> #<copy>"``, partial
+        copies marked), ``excluded`` and ``source`` (display text of the exclusion
+        source, ``""`` if not excluded), ordered by part label and copy.
+    """
+    plate_parts = list(entry.plate.plate_parts.select_related("part")) if entry.plate else []
+    exclusions = {row.plate_part_id: row for row in entry.exclusions.all()}
+    labels = entry.plate.print_job.part_labels() if entry.plate else {}
+    choices = []
+    for plate_part in plate_parts:
+        exclusion = exclusions.get(plate_part.pk)
+        partial = " (partial)" if plate_part.meshes_on_plate < plate_part.mesh_count else ""
+        name = labels.get(plate_part.part_id, plate_part.part.name)
+        choices.append(
+            {
+                "pk": plate_part.pk,
+                "label": f"{name} #{plate_part.copy_index + 1}{partial}",
+                "excluded": exclusion is not None,
+                "source": exclusion.get_source_display() if exclusion is not None else "",
+            }
+        )
+    choices.sort(key=lambda choice: choice["label"])
+    return choices
+
+
+def _posted_exclusions(request: HttpRequest, entry: PrintQueue) -> list[int] | None:
+    """Return the plate part IDs ticked as not ok, or ``None`` if invalid (not of the entry's plate).
+
+    Args:
+        request: The POST request (checkbox field ``excluded``).
+        entry: The attempt being edited.
+
+    Returns:
+        The selected plate part primary keys, or ``None`` on invalid input.
+    """
+    try:
+        wanted = {int(value) for value in request.POST.getlist("excluded")}
+    except ValueError:
+        return None
+    valid = set(entry.plate.plate_parts.values_list("pk", flat=True)) if entry.plate else set()
+    return sorted(wanted) if wanted <= valid else None
+
+
 class QueueEntryReviewView(PrinterControlMixin, View):
     """Confirm a finished print as Pass (success) or Fail (retry/discard).
 
@@ -544,23 +594,35 @@ class QueueEntryReviewView(PrinterControlMixin, View):
         )
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
-        """Show the review confirmation page."""
+        """Show the review confirmation page (with the plate's copies to mark as not ok)."""
         from django.template.response import TemplateResponse
 
         entry = self._get_entry(request, pk)
         return TemplateResponse(
             request,
             "core/printqueue_review.html",
-            {"entry": entry},
+            {"entry": entry, "exclusion_choices": _exclusion_choices(entry)},
         )
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
-        """Process pass or fail action."""
+        """Process pass or fail action.
+
+        A Pass from the review page also stores the copies ticked as not ok
+        (only when the form carries ``exclusions_submitted``, so a bare Pass
+        keeps the exclusions reported by the printer).
+        """
         entry = self._get_entry(request, pk)
         action = request.POST.get("action", "")
         if action not in ("pass", "fail"):
             messages.error(request, "Invalid action.")
             return redirect("core:printqueue_list")
+
+        excluded = None
+        if action == "pass" and request.POST.get("exclusions_submitted"):
+            excluded = _posted_exclusions(request, entry)
+            if excluded is None:
+                messages.error(request, "Invalid selection of parts.")
+                return redirect("core:printqueue_review", pk=entry.pk)
 
         try:
             result = review_queue_entry(entry.pk, action == "pass")
@@ -568,6 +630,10 @@ class QueueEntryReviewView(PrinterControlMixin, View):
             # Reviewed concurrently (e.g. on the printer) since the page loaded.
             messages.warning(request, "This queue entry has already been reviewed.")
             return redirect("core:printqueue_list")
+
+        if excluded is not None and result.outcome == "passed":
+            entry.refresh_from_db()
+            entry.set_excluded_plate_parts(excluded, user=request.user)
 
         if result.outcome == "passed":
             messages.success(
@@ -586,6 +652,59 @@ class QueueEntryReviewView(PrinterControlMixin, View):
             )
 
         return redirect("core:printqueue_list")
+
+
+class PrintAttemptExclusionsView(PrinterControlMixin, View):
+    """Mark part copies of a print attempt as not ok (also after the review).
+
+    Corrects the exclusions of an attempt awaiting review or passed — e.g. a
+    part that broke off after the review.  Excluded copies of a passed attempt
+    do not count as printed.
+
+    GET  -- renders the plate's copies as checkboxes.
+    POST -- stores the ticked copies (``excluded``) as the attempt's exclusions.
+    """
+
+    def _get_entry(self, pk: int) -> PrintQueue:
+        """Fetch an attempt whose exclusions may be edited, or 404."""
+        entry = get_object_or_404(PrintQueue.objects.select_related("plate__print_job", "printer"), pk=pk)
+        if entry.plate is None or not entry.can_edit_exclusions:
+            raise Http404("This attempt is neither awaiting review nor passed.")
+        return entry
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Show the copies of the attempt's plate."""
+        from django.template.response import TemplateResponse
+
+        entry = self._get_entry(pk)
+        return TemplateResponse(
+            request,
+            "core/printqueue_exclusions.html",
+            {"entry": entry, "exclusion_choices": _exclusion_choices(entry)},
+        )
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Store the copies ticked as not ok."""
+        entry = self._get_entry(pk)
+        excluded = _posted_exclusions(request, entry)
+        if excluded is None:
+            messages.error(request, "Invalid selection of parts.")
+            return redirect("core:printqueue_exclusions", pk=entry.pk)
+        with transaction.atomic():
+            # Re-check under the row lock: the attempt may have been reviewed as failed meanwhile.
+            locked = PrintQueue.objects.select_for_update().select_related("plate__print_job").get(pk=entry.pk)
+            if not locked.can_edit_exclusions:
+                messages.warning(request, "This attempt can no longer be corrected.")
+                return redirect("core:printjob_detail", pk=entry.plate.print_job_id)
+            locked.set_excluded_plate_parts(excluded, user=request.user)
+        count = len(excluded)
+        messages.success(
+            request,
+            f"Plate {entry.plate.plate_number}: {count} part(s) marked as not ok."
+            if count
+            else f"Plate {entry.plate.plate_number}: all parts marked as ok.",
+        )
+        return redirect("core:printjob_detail", pk=entry.plate.print_job_id)
 
 
 #: If ``status_updated_at`` is older than this, the worker is

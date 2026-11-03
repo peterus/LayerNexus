@@ -146,7 +146,7 @@
               <tr>
                 <td><a href="{% url 'core:printjob_detail' row.job.pk %}" class="text-decoration-none">{{ row.job }}</a></td>
                 <td>{% if row.plate %}Plate {{ row.plate.plate_number }}{% else %}<span class="text-body-secondary">all plates</span>{% endif %}</td>
-                <td class="text-end">{{ row.copies }}{% if row.partial %} <span class="text-body-secondary small">+{{ row.partial }} partial</span>{% endif %}</td>
+                <td class="text-end">{{ row.copies }}{% if row.partial %} <span class="text-body-secondary small">+{{ row.partial }} partial</span>{% endif %}{% if row.excluded %} <span class="text-danger small printed-excluded" title="Excluded on the printer or marked as not ok — not counted">{{ row.excluded }} excluded</span>{% endif %}</td>
                 <td><small>{% if row.date %}{{ row.date|date:"Y-m-d" }}{% else %}—{% endif %}</small></td>
               </tr>
               {% endfor %}

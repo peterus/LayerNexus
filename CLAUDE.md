@@ -168,7 +168,14 @@ raw `request.user.is_staff` check.
   `services/gcode_objects.py` maps the G-code labels (`EXCLUDE_OBJECT_DEFINE NAME=Object_<N>…`) back.
   `PrintJob.plate_parts_known=False` = mapping unreliable → count printed parts with the old
   "all plates completed" rule. Unplaced copies: `PrintJob.unplaced_copies()` / warning on the job page.
-  Keep `bundle_objects()` numbering stable — the backfill migration `0040` relies on it.
+  Keep `bundle_objects()` numbering stable — the backfill migrations `0040` and `0045` rely on it.
+- **Excluded copies:** `PrintJobPlatePart.object_ids` holds the bundle object IDs of a copy on its plate.
+  The worker subscribes to Klipper's `exclude_object` and records `excluded_objects` (Klipper upper-cases
+  names: `OBJECT_<N>_ID_…`, see `parse_klipper_object_id`) via `PrintQueue.record_excluded_objects()`;
+  operators correct them on the review page / `printqueue_exclusions` (`set_excluded_plate_parts()`).
+  Both write `PrintAttemptExclusion` rows (source `klipper` / `manual`) — the single truth: an excluded
+  plate part of a passed attempt adds no meshes, so its copy is not printed (`_counting_plate_parts()`
+  annotates `excluded`). Jobs with `plate_parts_known=False` ignore exclusions (legacy rule).
 - **Sub-project aggregation:** recurse with a quantity multiplier — see
   `Project._collect_parts_with_multiplier()` (and `_collect_hardware_with_multiplier`,
   `_collect_documents`) as the reference shape.

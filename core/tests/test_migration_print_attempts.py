@@ -239,4 +239,8 @@ class PrintAttemptRollbackTests(TransactionTestCase):
         executor = MigrationExecutor(connection)
         with self.assertRaises(IrreversibleError):
             executor.migrate(BEFORE)
+        # The refused rollback already reversed the later migrations: restore the schema before cleaning up.
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
         PrintQueue.objects.all().delete()

@@ -95,6 +95,9 @@
             {% if entry.retry_count > 0 %}
               <small class="text-muted ms-1">(retry {{ entry.retry_count }}/{{ entry.max_retries }})</small>
             {% endif %}
+            {% with summary=entry.excluded_summary %}{% if summary %}
+              <span class="badge text-bg-danger ms-1 queue-excluded" title="Not counted as printed"><i class="bi bi-slash-circle me-1"></i>{{ summary }}</span>
+            {% endif %}{% endwith %}
           </td>
           <td>{{ entry.added_at|date:"Y-m-d H:i" }}</td>
           <td class="text-nowrap">
