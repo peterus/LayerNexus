@@ -232,4 +232,6 @@ version ran migrations). Prod pulls `:latest`.
 `uv lock --check` + `ruff check` + `ruff format --check` → `makemigrations --check` →
 `manage.py check --fail-level WARNING` → `manage.py test core` (coverage ≥ 55) →
 `check --deploy` + `pip-audit` on `uv.lock` (security) → Docker release build + `/health/`
-smoke test.
+smoke test. Separate workflow `pr-title.yml` (check **`PR Title`**) enforces a Conventional
+Commit PR title (types `feat fix perf refactor docs test build ci chore revert`, optional
+scope, `!` = breaking) — the title becomes the squash subject that drives the release.

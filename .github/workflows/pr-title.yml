@@ -1,0 +1,35 @@
+name: PR Title
+
+# The squash-commit subject (= PR title) drives automatic releases
+# (scripts/next_version.py), so it must be a valid Conventional Commit.
+# pull_request_target is safe here: nothing from the PR is checked out or executed,
+# the action only reads the title via the API.
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  pr-title:
+    name: PR Title
+    runs-on: ubuntu-latest
+    steps:
+      # amannn/action-semantic-pull-request v6.1.1
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            build
+            ci
+            chore
+            revert
+          requireScope: false
