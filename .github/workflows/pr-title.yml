@@ -2,10 +2,10 @@ name: PR Title
 
 # The squash-commit subject (= PR title) drives automatic releases
 # (scripts/next_version.py), so it must be a valid Conventional Commit.
-# pull_request_target is safe here: nothing from the PR is checked out or executed,
-# the action only reads the title via the API.
+# Uses plain pull_request (read-only token, no PR code is executed), so the check also
+# validates the PR that introduces or changes this workflow.
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, edited, synchronize, reopened]
 
 permissions:
