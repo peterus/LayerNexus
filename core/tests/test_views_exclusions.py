@@ -7,6 +7,8 @@ printer excluded them); after the review, passed attempts are corrected on
 
 from __future__ import annotations
 
+from unittest import mock
+
 from django.urls import reverse
 
 from core.models import Part, PrintAttemptExclusion, PrintJobPart, PrintJobPlatePart, PrintQueue
@@ -71,6 +73,17 @@ class ReviewPageExclusionTests(ExclusionViewTestBase):
         self.client.force_login(self.operator_user)
         self.client.post(self.url, {"action": "fail", "exclusions_submitted": "1"})
         self.assertEqual(self.entry.exclusions.count(), 1)
+
+    def test_failing_marks_roll_the_review_back(self) -> None:
+        """Verdict and marks are one transaction: if storing the marks fails, the attempt stays open."""
+        self.client.force_login(self.operator_user)
+        with mock.patch.object(PrintQueue, "set_excluded_plate_parts", side_effect=ValueError("gone")):
+            response = self.client.post(
+                self.url, {"action": "pass", "exclusions_submitted": "1", "excluded": [self.copies[0].pk]}
+            )
+        self.assertRedirects(response, self.url, fetch_redirect_response=False)
+        self.entry.refresh_from_db()
+        self.assertEqual(self.entry.result, "")
 
     def test_foreign_plate_part_is_rejected_without_review(self) -> None:
         other_job = make_sliced_job(name="Other")

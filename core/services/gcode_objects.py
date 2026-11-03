@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 _EXCLUDE_OBJECT_RE = re.compile(rb"^\s*EXCLUDE_OBJECT_DEFINE\b[^\n]*?\bNAME=['\"]?Object_(\d+)(?![0-9])", re.MULTILINE)
 _PRINTING_OBJECT_RE = re.compile(rb"^\s*;\s*printing object\s+['\"]?Object_(\d+)(?![0-9])", re.MULTILINE)
-_KLIPPER_OBJECT_RE = re.compile(r"^\s*['\"]?OBJECT_(\d+)(?![0-9])", re.IGNORECASE)
+_KLIPPER_OBJECT_RE = re.compile(r"^\s*['\"]?OBJECT_(\d{1,9})(?![0-9])", re.IGNORECASE)
 
 
 @dataclass(frozen=True)

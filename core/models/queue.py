@@ -22,6 +22,11 @@ if TYPE_CHECKING:
 #: by a crashed process expires after this.
 START_CLAIM_TIMEOUT = timedelta(minutes=10)
 
+#: Upper bounds for the object names a printer reports as excluded (untrusted
+#: input, see ``PrintQueue.record_excluded_objects``).
+MAX_EXCLUDED_OBJECTS = 500
+MAX_EXCLUDED_OBJECT_NAME = 255
+
 #: Queue priorities (higher runs first); shared with ``PrintJob.requeue_priority``.
 PRIORITY_CHOICES = [
     (1, "Low"),
@@ -403,7 +408,10 @@ class PrintQueue(models.Model):
         and ``PrintJobPlatePart.object_ids``) get a ``klipper`` exclusion.  Names
         already recorded are skipped, so a copy an operator un-marked stays
         un-marked; a shorter list (Klipper resets it per print) drops nothing.
-        Ignored once the attempt is resolved (conditional write in the database).
+        Only applies while the attempt is printing: the guard and the merge use
+        the row in the database, so a stale instance never writes after the end
+        or drops names recorded meanwhile.  At most :data:`MAX_EXCLUDED_OBJECTS`
+        names of up to :data:`MAX_EXCLUDED_OBJECT_NAME` characters are kept.
 
         Args:
             names: The reported object names (non-strings are ignored).
@@ -413,17 +421,22 @@ class PrintQueue(models.Model):
         """
         from core.services.gcode_objects import parse_klipper_object_id
 
-        known = {str(name).upper() for name in self.excluded_objects}
-        new_names: list[str] = []
-        for name in names:
-            if isinstance(name, str) and name and name.upper() not in known:
-                known.add(name.upper())
-                new_names.append(name)
-        if not new_names:
-            return False
-        merged = [*self.excluded_objects, *new_names]
+        candidates = [name for name in names if isinstance(name, str) and 0 < len(name) <= MAX_EXCLUDED_OBJECT_NAME]
+        if not self._new_excluded_names(self.excluded_objects, candidates):
+            return False  # nothing new for this instance: skip the database
         with transaction.atomic():
-            if not PrintQueue.objects.open().filter(pk=self.pk).update(excluded_objects=merged):
+            locked = PrintQueue.objects.select_for_update().printing().filter(pk=self.pk)
+            rows = list(locked.values_list("excluded_objects", flat=True))
+            if not rows:
+                return False
+            recorded = list(rows[0] or [])
+            new_names = self._new_excluded_names(recorded, candidates)
+            new_names = new_names[: max(MAX_EXCLUDED_OBJECTS - len(recorded), 0)]
+            if not new_names:
+                self.excluded_objects = recorded
+                return False
+            merged = [*recorded, *new_names]
+            if not PrintQueue.objects.printing().filter(pk=self.pk).update(excluded_objects=merged):
                 return False
             self.excluded_objects = merged
             object_ids = {parse_klipper_object_id(name) for name in new_names} - {None}
@@ -442,6 +455,17 @@ class PrintQueue(models.Model):
                     ignore_conflicts=True,
                 )
         return True
+
+    @staticmethod
+    def _new_excluded_names(recorded: list[Any], names: list[str]) -> list[str]:
+        """Return the ``names`` not in ``recorded`` (case-insensitive, without duplicates), in order."""
+        known = {str(name).upper() for name in recorded}
+        new_names: list[str] = []
+        for name in names:
+            if name.upper() not in known:
+                known.add(name.upper())
+                new_names.append(name)
+        return new_names
 
     def set_excluded_plate_parts(self, plate_part_ids: Iterable[int], *, user: Any = None) -> None:
         """Set which part copies of the plate were not printed ok in this attempt (manual correction).

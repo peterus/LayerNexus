@@ -625,15 +625,20 @@ class QueueEntryReviewView(PrinterControlMixin, View):
                 return redirect("core:printqueue_review", pk=entry.pk)
 
         try:
-            result = review_queue_entry(entry.pk, action == "pass")
+            # One transaction: the verdict and the copies marked as not ok land together (or not at all).
+            with transaction.atomic():
+                result = review_queue_entry(entry.pk, action == "pass")
+                if excluded is not None and result.outcome == "passed":
+                    entry.refresh_from_db()
+                    entry.set_excluded_plate_parts(excluded, user=request.user)
         except ReviewStateError:
             # Reviewed concurrently (e.g. on the printer) since the page loaded.
             messages.warning(request, "This queue entry has already been reviewed.")
             return redirect("core:printqueue_list")
-
-        if excluded is not None and result.outcome == "passed":
-            entry.refresh_from_db()
-            entry.set_excluded_plate_parts(excluded, user=request.user)
+        except ValueError:
+            # The plate's parts changed since the page loaded; nothing was saved.
+            messages.error(request, "Invalid selection of parts — the print was not reviewed.")
+            return redirect("core:printqueue_review", pk=entry.pk)
 
         if result.outcome == "passed":
             messages.success(

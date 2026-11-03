@@ -9,6 +9,8 @@ do not count as printed.
 
 from __future__ import annotations
 
+from unittest import mock
+
 from django.contrib.auth.models import User
 from django.test import TestCase
 
@@ -55,6 +57,10 @@ class ParseKlipperObjectIdTests(TestCase):
 
     def test_no_prefix_match_across_digits(self) -> None:
         self.assertEqual(parse_klipper_object_id("OBJECT_31_ID_0_COPY_0"), 31)
+
+    def test_absurdly_long_number_is_none(self) -> None:
+        """Untrusted input: a huge number must neither raise (int() digit limit) nor match."""
+        self.assertIsNone(parse_klipper_object_id(f"OBJECT_{'9' * 5000}_ID_0"))
 
 
 class PlateSharesObjectIdsTests(TestCase):
@@ -137,6 +143,31 @@ class RecordExcludedObjectsTests(ExclusionTestBase):
         self.assertFalse(PrintAttemptExclusion.objects.exists())
         attempt.refresh_from_db()
         self.assertEqual(attempt.excluded_objects, [])
+
+    def test_ignored_once_finished(self) -> None:
+        """After the printer reported the end, a late (stale) update no longer adds exclusions."""
+        attempt = add_attempt(self.plate1, None, "awaiting_review")
+        self.assertFalse(attempt.record_excluded_objects(["OBJECT_1_ID_0_COPY_0"]))
+        self.assertFalse(attempt.exclusions.exists())
+
+    def test_stale_instance_merges_with_the_database(self) -> None:
+        attempt = add_attempt(self.plate1, None, "printing")
+        stale = PrintQueue.objects.get(pk=attempt.pk)
+        attempt.record_excluded_objects(["OBJECT_1_ID_0_COPY_0"])
+        stale.record_excluded_objects(["OBJECT_2_ID_1_COPY_0"])
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.excluded_objects, ["OBJECT_1_ID_0_COPY_0", "OBJECT_2_ID_1_COPY_0"])
+        self.assertEqual(attempt.exclusions.count(), 2)
+
+    def test_names_are_bounded(self) -> None:
+        from core.models.queue import MAX_EXCLUDED_OBJECT_NAME, MAX_EXCLUDED_OBJECTS
+
+        attempt = add_attempt(self.plate1, None, "printing")
+        attempt.record_excluded_objects(["X" * (MAX_EXCLUDED_OBJECT_NAME + 1)])
+        attempt.record_excluded_objects([f"NAME_{index}" for index in range(MAX_EXCLUDED_OBJECTS + 50)])
+        attempt.refresh_from_db()
+        self.assertEqual(len(attempt.excluded_objects), MAX_EXCLUDED_OBJECTS)
+        self.assertNotIn("X" * (MAX_EXCLUDED_OBJECT_NAME + 1), attempt.excluded_objects)
 
     def test_manual_removal_is_not_undone_by_a_repeated_klipper_list(self) -> None:
         attempt = add_attempt(self.plate1, None, "printing")
@@ -246,6 +277,19 @@ class StatusSyncExclusionTests(ExclusionTestBase):
         attempt.refresh_from_db()
         self.assertTrue(attempt.is_awaiting_review)
         self.assertEqual(attempt.exclusions.count(), 1)
+
+    def test_failing_exclusion_recording_does_not_block_the_end(self) -> None:
+        attempt = add_attempt(self.plate1, None, "printing")
+        event = _status_event(
+            {"print_stats": {"state": "complete"}, "exclude_object": {"excluded_objects": ["OBJECT_1_ID_0_COPY_0"]}}
+        )
+        with (
+            mock.patch.object(PrintQueue, "record_excluded_objects", side_effect=RuntimeError("boom")),
+            self.assertLogs("core.services.printer_status_sync", "ERROR"),
+        ):
+            self.assertTrue(apply_status_event(attempt, event))
+        attempt.refresh_from_db()
+        self.assertTrue(attempt.is_awaiting_review)
 
     def test_malformed_payload_is_ignored(self) -> None:
         attempt = add_attempt(self.plate1, None, "printing")

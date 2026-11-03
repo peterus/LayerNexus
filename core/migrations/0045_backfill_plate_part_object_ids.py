@@ -19,15 +19,16 @@ missing or unreadable, labels that do not fit — its plate parts keep an empty
 ``object_ids`` (Klipper exclusions on that plate cannot be mapped, manual marks
 still work).
 
-Idempotent (plate parts with object IDs are skipped); reversing is a no-op (the
-previous migration drops the field).
+Idempotent (plate parts with object IDs are skipped), so a run interrupted
+between plates simply continues; reversing is a no-op (the previous migration
+drops the field).
 """
 
 import logging
 import mmap
 from pathlib import Path
 
-from django.db import migrations
+from django.db import migrations, transaction
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +137,8 @@ def _backfill_job(job, PrintJobPart, PrintJobPlate, PrintJobPlatePart) -> tuple[
             continue
         for key, row in rows_by_copy.items():
             row.object_ids = sorted(ids_by_copy[key])
-        PrintJobPlatePart.objects.bulk_update(list(rows_by_copy.values()), ["object_ids"])
+        with transaction.atomic():
+            PrintJobPlatePart.objects.bulk_update(list(rows_by_copy.values()), ["object_ids"])
         updated += 1
     return updated, skipped
 
@@ -164,10 +166,14 @@ def backfill_object_ids(apps, schema_editor) -> None:
 
 
 class Migration(migrations.Migration):
+    # Not atomic: the G-code scan can take a while and must not hold the SQLite write lock
+    # (web and worker both migrate on start); each plate is written in its own transaction.
+    atomic = False
+
     dependencies = [
         ("core", "0044_excluded_objects"),
     ]
 
     operations = [
-        migrations.RunPython(backfill_object_ids, migrations.RunPython.noop),
+        migrations.RunPython(backfill_object_ids, migrations.RunPython.noop, atomic=False),
     ]
