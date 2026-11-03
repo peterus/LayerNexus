@@ -15,8 +15,8 @@ The client is responsible for:
   subscriptions while the WebSocket stays open) and, as a safety net,
   whenever no status message arrived for :data:`STATUS_WATCHDOG_INTERVAL`.
 * Forwarding the subscribe response's status snapshot as a synthetic
-  ``notify_status_update`` without ``print_stats.state`` (see
-  :func:`snapshot_event`).
+  ``notify_status_update`` without ``print_stats.state`` unless it is
+  ``standby`` (see :func:`snapshot_event`).
 
 The client is **not** responsible for interpreting events — that is
 the job of :mod:`core.services.printer_status_sync`.
