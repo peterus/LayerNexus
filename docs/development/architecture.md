@@ -27,7 +27,8 @@ LayerNexus/
 ├── Dockerfile                 # Multi-stage Docker build
 ├── docker-compose.yml         # Development services
 ├── entrypoint.sh              # Container entrypoint (migrations + collectstatic)
-├── VERSION                    # Semantic version file
+├── VERSION                    # Placeholder (0.0.0) — real versions come from git tags
+├── scripts/next_version.py    # Release version calculation (Conventional Commits)
 │
 ├── layernexus/                # Django project package
 │   ├── settings.py            # Configuration via environment variables

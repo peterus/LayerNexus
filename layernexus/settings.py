@@ -196,7 +196,9 @@ ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION", "true").lower() in (
 # Application name
 APP_NAME = "LayerNexus"
 
-# Application version (read from VERSION file, overridable via env/Docker ARG)
+# Application version. Releases come from git tags: the release workflow bakes the
+# real version into the image (Docker build-arg APP_VERSION). The VERSION file only
+# holds the placeholder 0.0.0 for local runs without APP_VERSION.
 _version_file = BASE_DIR / "VERSION"
 APP_VERSION = os.environ.get(
     "APP_VERSION",

@@ -36,6 +36,21 @@ The `docker-compose.yml` mounts the project directory as a volume, so code chang
 
 ---
 
+## Pull Request Titles
+
+Releases are computed from the squash-merge commit subject, which is the PR title. The
+`PR Title` check therefore requires a [Conventional Commit](https://www.conventionalcommits.org/)
+title: `type(optional-scope)!: description`.
+
+| Type | Release |
+|---|---|
+| `feat` | minor |
+| `fix` | patch |
+| `type!:` (e.g. `feat!: ...`) | major |
+| `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert` | none |
+
+---
+
 ## Building Docker Images
 
 ### Release Build
@@ -63,7 +78,7 @@ The debug image includes:
 
 | Argument | Description | Default |
 |---|---|---|
-| `APP_VERSION` | Version string baked into the image | `dev` |
+| `APP_VERSION` | Version string baked into the image (set by the release workflow) | `dev` |
 
 ---
 
