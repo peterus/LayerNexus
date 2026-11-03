@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Parts not printed ok — {{ APP_NAME }}{% endblock %}
+{% block content %}
+<div class="container" style="max-width: 640px;">
+  <h1 class="h3 mb-4"><i class="bi bi-slash-circle me-2"></i>Parts not printed ok</h1>
+
+  <div class="card mb-4">
+    <div class="card-body">
+      <dl class="row mb-0">
+        <dt class="col-sm-4">Job</dt>
+        <dd class="col-sm-8"><a href="{% url 'core:printjob_detail' entry.print_job.pk %}">{{ entry.print_job }}</a></dd>
+        <dt class="col-sm-4">Plate</dt>
+        <dd class="col-sm-8">{{ entry.plate.plate_number }}</dd>
+        <dt class="col-sm-4">Printer</dt>
+        <dd class="col-sm-8">{{ entry.printer.name|default:"—" }}</dd>
+        <dt class="col-sm-4">Result</dt>
+        <dd class="col-sm-8">{{ entry.get_state_display }}</dd>
+        {% if entry.excluded_objects %}
+        <dt class="col-sm-4">Excluded on printer</dt>
+        <dd class="col-sm-8 small text-break">{{ entry.excluded_objects|join:", " }}</dd>
+        {% endif %}
+      </dl>
+    </div>
+  </div>
+
+  {% if not entry.print_job.plate_parts_known %}
+  <div class="alert alert-warning small">The plate assignment of this job is not reliable, so its printed parts are counted only once every plate is completed — marks here do not change the count.</div>
+  {% endif %}
+
+  <form method="post">
+    {% csrf_token %}
+    <div class="card mb-4">
+      <div class="card-body">
+        {% include "core/includes/_exclusion_checkboxes.html" %}
+      </div>
+    </div>
+    <div class="d-flex gap-2">
+      <button type="submit" class="btn btn-primary flex-fill"{% if not exclusion_choices %} disabled{% endif %}><i class="bi bi-save me-1"></i>Save</button>
+      <a href="{% url 'core:printjob_detail' entry.print_job.pk %}" class="btn btn-outline-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

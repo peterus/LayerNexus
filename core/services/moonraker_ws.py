@@ -49,6 +49,8 @@ SUBSCRIBE_OBJECTS: dict[str, list[str] | None] = {
     "display_status": None,
     "heater_bed": None,
     "extruder": None,
+    # Objects excluded mid-print (EXCLUDE_OBJECT) — those part copies are not printed.
+    "exclude_object": ["excluded_objects"],
 }
 
 #: JSON-RPC request id of our ``printer.objects.subscribe`` call.

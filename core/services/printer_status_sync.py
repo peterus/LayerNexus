@@ -71,11 +71,13 @@ def apply_status_event(entry: PrintQueue, event: dict[str, Any]) -> bool:
       the entry to ``awaiting_review`` and sets ``completed_at`` — unless
       the finished job's file is not the one this attempt printed (only
       checked when both file names are known).
-    * ``notify_status_update``: reads ``print_stats.state`` and
-      ``virtual_sdcard.progress`` and either updates the progress
-      (throttled) or, if the state ends the print (:data:`PRINT_END_STATES`;
-      ``standby`` only after recorded progress), triggers the same transition
-      as above.
+    * ``notify_status_update``: records the objects Klipper excluded
+      (``exclude_object.excluded_objects``, see
+      :meth:`PrintQueue.record_excluded_objects`), then reads
+      ``print_stats.state`` and ``virtual_sdcard.progress`` and either
+      updates the progress (throttled) or, if the state ends the print
+      (:data:`PRINT_END_STATES`; ``standby`` only after recorded progress),
+      triggers the same transition as above.
 
     Args:
         entry: The PrintQueue entry currently associated with the
@@ -97,7 +99,13 @@ def apply_status_event(entry: PrintQueue, event: dict[str, Any]) -> bool:
     if method == "notify_history_changed":
         return _handle_history_changed(entry, params)
     if method == "notify_status_update":
-        return _handle_status_update(entry, params)
+        # Exclusions first: the final update may carry the last exclusion together with the end state.
+        try:
+            excluded = _record_excluded_objects(entry, params)
+        except Exception:  # noqa: BLE001 — a bad exclusion payload must not block the end of the print
+            logger.exception("Queue entry %s: recording the excluded objects failed", entry.pk)
+            excluded = False
+        return _handle_status_update(entry, params) or excluded
 
     logger.debug("Ignoring Moonraker event: %s", method)
     return False
@@ -124,6 +132,29 @@ def _handle_history_changed(entry: PrintQueue, params: list[Any]) -> bool:
     normalized = _HISTORY_STATUS_MAP.get(raw_status, NormalizedJobStatus.STATE_COMPLETE)
 
     return _transition_to_review(entry, normalized, raw_status)
+
+
+def _record_excluded_objects(entry: PrintQueue, params: list[Any]) -> bool:
+    """Record ``exclude_object.excluded_objects`` of a status update on the printing entry.
+
+    Also handles the subscribe snapshot (a reconnect mid-print), which carries
+    the full list.  A malformed payload is ignored.
+
+    Returns:
+        True if new excluded objects were recorded.
+    """
+    if not entry.is_printing or not params or not isinstance(params[0], dict):
+        return False
+    exclude_object = params[0].get("exclude_object")
+    if not isinstance(exclude_object, dict):
+        return False
+    names = exclude_object.get("excluded_objects")
+    if not isinstance(names, list):
+        return False
+    if entry.record_excluded_objects(names):
+        logger.info("Queue entry %s: printer excluded objects %s", entry.pk, names)
+        return True
+    return False
 
 
 def _handle_status_update(entry: PrintQueue, params: list[Any]) -> bool:

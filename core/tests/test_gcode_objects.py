@@ -72,8 +72,8 @@ class AssignPlateObjectsTests(TestCase):
         self.assertEqual(
             result,
             {
-                1: [PlateCopyShare(0, 0, 1, 1), PlateCopyShare(1, 0, 1, 1)],
-                2: [PlateCopyShare(0, 1, 1, 1)],
+                1: [PlateCopyShare(0, 0, 1, 1, (1,)), PlateCopyShare(1, 0, 1, 1, (3,))],
+                2: [PlateCopyShare(0, 1, 1, 1, (2,))],
             },
         )
 
@@ -81,20 +81,27 @@ class AssignPlateObjectsTests(TestCase):
         """A two-mesh copy split over two plates has one mesh on each."""
         objects = bundle_objects([(1, 2)])  # one copy, two meshes → objects 1, 2
         result = assign_plate_objects(objects, {1: [1], 2: [2]})
-        self.assertEqual(result, {1: [PlateCopyShare(0, 0, 1, 2)], 2: [PlateCopyShare(0, 0, 1, 2)]})
+        self.assertEqual(result, {1: [PlateCopyShare(0, 0, 1, 2, (1,))], 2: [PlateCopyShare(0, 0, 1, 2, (2,))]})
 
     def test_unplaced_objects_are_absent(self) -> None:
         """Objects on no plate are simply missing from the result (no error)."""
         objects = bundle_objects([(3, 1)])
         result = assign_plate_objects(objects, {1: [1, 3]})
-        self.assertEqual(result, {1: [PlateCopyShare(0, 0, 1, 1), PlateCopyShare(0, 2, 1, 1)]})
+        self.assertEqual(result, {1: [PlateCopyShare(0, 0, 1, 1, (1,)), PlateCopyShare(0, 2, 1, 1, (3,))]})
 
     def test_single_plate_without_labels_maps_all(self) -> None:
         """Review focus 4: one plate without labels gets every object."""
         objects = bundle_objects([(2, 1), (1, 1)])
         result = assign_plate_objects(objects, {1: []})
         self.assertEqual(
-            result, {1: [PlateCopyShare(0, 0, 1, 1), PlateCopyShare(0, 1, 1, 1), PlateCopyShare(1, 0, 1, 1)]}
+            result,
+            {
+                1: [
+                    PlateCopyShare(0, 0, 1, 1, (1,)),
+                    PlateCopyShare(0, 1, 1, 1, (2,)),
+                    PlateCopyShare(1, 0, 1, 1, (3,)),
+                ]
+            },
         )
 
     def test_multi_plate_without_labels_is_unknown(self) -> None:
@@ -249,6 +256,11 @@ class SlicingCreatesPlatePartsTests(TestCase):
         self.assertTrue(self.job.plate_parts_known)
         self.assertEqual(sorted(self._entries()), [(1, "A", 0), (1, "B", 0), (2, "A", 1)])
         self.assertEqual(self.job.unplaced_copies(), {})
+        object_ids = {
+            (e.plate.plate_number, e.part.name): e.object_ids
+            for e in PrintJobPlatePart.objects.filter(plate__print_job=self.job).select_related("plate", "part")
+        }
+        self.assertEqual(object_ids, {(1, "A"): [1], (1, "B"): [3], (2, "A"): [2]})
 
     def test_bundle_order_follows_job_part_pk(self) -> None:
         """The bundle is built in ``PrintJobPart`` pk order (deterministic)."""

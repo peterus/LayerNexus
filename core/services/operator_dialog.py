@@ -162,6 +162,9 @@ def review_dialog(entry: PrintQueue) -> OperatorDialog:
     lines = [_job_label(job), f"Plate {plate.plate_number} of {job.plate_count}"]
     if entry.last_error:
         lines.append(f"Ended: {entry.last_error}")
+    excluded = entry.excluded_summary()
+    if excluded:
+        lines.append(excluded)
     return _info_dialog(
         *lines,
         buttons=(

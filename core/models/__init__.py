@@ -12,7 +12,7 @@ from core.models.parts import Part, PrintedPartRecord, PrintTimeEstimate
 from core.models.printers import CostProfile, PrinterProfile
 from core.models.printing import PrintJob, PrintJobPart, PrintJobPlate, PrintJobPlatePart
 from core.models.projects import Project
-from core.models.queue import PrintQueue, ScheduledQueueStart
+from core.models.queue import PrintAttemptExclusion, PrintQueue, ScheduledQueueStart
 from core.models.spoolman import SpoolmanFilamentMapping
 
 __all__ = [
@@ -30,6 +30,7 @@ __all__ = [
     "PrintJobPart",
     "PrintJobPlate",
     "PrintJobPlatePart",
+    "PrintAttemptExclusion",
     "PrintQueue",
     "ScheduledQueueStart",
     "PrintTimeEstimate",

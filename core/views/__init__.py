@@ -97,6 +97,7 @@ from .projects import (
 from .queue import (
     CancelQueueEntryView,
     CancelScheduledStartView,
+    PrintAttemptExclusionsView,
     PrintJobEnqueueAllView,
     PrintQueueCreateView,
     PrintQueueDeleteView,
@@ -190,6 +191,7 @@ __all__ = [
     "ProjectShoppingResetView",
     "ProjectUpdateView",
     "QueueCheckPrinterStatusView",
+    "PrintAttemptExclusionsView",
     "QueueEntryReviewView",
     "RegisterView",
     "RemovePartFromJobView",

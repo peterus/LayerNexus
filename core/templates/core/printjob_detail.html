@@ -176,7 +176,7 @@
               <div class="card-footer p-2">
                 <div class="small fw-medium mb-1"><i class="bi bi-clock-history me-1"></i>Print history</div>
                 <table class="table table-sm small mb-0 plate-attempt-history">
-                  <thead><tr><th>Printer</th><th>Started</th><th>Ended</th><th>Result</th></tr></thead>
+                  <thead><tr><th>Printer</th><th>Started</th><th>Ended</th><th>Result</th><th></th></tr></thead>
                   <tbody>
                     {% for attempt in plate.resolved_attempts %}
                     <tr>
@@ -184,6 +184,12 @@
                       <td>{% if attempt.started_at %}{{ attempt.started_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}</td>
                       <td>{% if attempt.completed_at %}{{ attempt.completed_at|date:"Y-m-d H:i" }}{% elif attempt.resolved_at %}{{ attempt.resolved_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}</td>
                       <td>{% include "core/includes/_job_status_badge.html" with status=attempt.result display=attempt.get_state_display %}</td>
+                      <td class="text-nowrap attempt-excluded">
+                        {% with summary=attempt.excluded_summary %}{% if summary %}<span class="text-danger">{{ summary }}</span>{% endif %}{% endwith %}
+                        {% if attempt.result == "passed" and perms.core.can_control_printer %}
+                        <a href="{% url 'core:printqueue_exclusions' attempt.pk %}" class="btn btn-sm btn-link p-0 ms-1 attempt-exclusions-link" title="Mark parts as not ok"><i class="bi bi-slash-circle"></i></a>
+                        {% endif %}
+                      </td>
                     </tr>
                     {% endfor %}
                   </tbody>

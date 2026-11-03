@@ -19,6 +19,7 @@ from .models import (
     OrcaMachineProfile,
     OrcaPrintPreset,
     Part,
+    PrintAttemptExclusion,
     PrintedPartRecord,
     PrinterProfile,
     PrintJob,
@@ -545,6 +546,28 @@ class PrintQueueAdminForm(forms.ModelForm):
         return plate
 
 
+@admin.register(PrintAttemptExclusion)
+class PrintAttemptExclusionAdmin(admin.ModelAdmin):
+    """Read-only list of excluded part copies; operators correct them on the job page."""
+
+    list_display = ("attempt", "plate_part", "source", "created_by", "created_at")
+    list_select_related = (
+        "attempt__plate__print_job",
+        "plate_part__part",
+        "plate_part__plate__print_job",
+        "created_by",
+    )
+    list_filter = ("source",)
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        """Exclusions come from the printer or the job page, never from the admin."""
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj: PrintAttemptExclusion | None = None) -> bool:
+        """Exclusions are immutable facts (delete and re-mark instead)."""
+        return False
+
+
 @admin.register(PrintQueue)
 class PrintQueueAdmin(admin.ModelAdmin):
     form = PrintQueueAdminForm
@@ -581,6 +604,7 @@ class PrintQueueAdmin(admin.ModelAdmin):
         "progress",
         "status_updated_at",
         "last_error",
+        "excluded_objects",
     )
     #: Frozen after creation: moving an attempt would break the retry cycle and
     #: queue order; remove it and enqueue it again instead.

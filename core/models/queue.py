@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from django.conf import settings
 from django.db import models, transaction
 from django.db.models import CheckConstraint, Count, Index, Max, OuterRef, Q, Subquery, UniqueConstraint
 from django.db.models.functions import Coalesce
@@ -19,6 +21,11 @@ if TYPE_CHECKING:
 #: busy.  Longer than the G-code upload + start timeouts; a claim left behind
 #: by a crashed process expires after this.
 START_CLAIM_TIMEOUT = timedelta(minutes=10)
+
+#: Upper bounds for the object names a printer reports as excluded (untrusted
+#: input, see ``PrintQueue.record_excluded_objects``).
+MAX_EXCLUDED_OBJECTS = 500
+MAX_EXCLUDED_OBJECT_NAME = 255
 
 #: Queue priorities (higher runs first); shared with ``PrintJob.requeue_priority``.
 PRIORITY_CHOICES = [
@@ -77,6 +84,17 @@ class PrintQueueQuerySet(models.QuerySet):
             .values("count")
         )
         return self.annotate(retry_count=Coalesce(Subquery(failed), 0))
+
+    def with_exclusion_count(self) -> PrintQueueQuerySet:
+        """Annotate the number of part copies excluded in each attempt (read via :attr:`PrintQueue.exclusion_count`)."""
+        excluded = (
+            PrintAttemptExclusion.objects.filter(attempt=OuterRef("pk"))
+            .order_by()
+            .values("attempt")
+            .annotate(count=Count("pk"))
+            .values("count")
+        )
+        return self.annotate(annotated_exclusion_count=Coalesce(Subquery(excluded), 0))
 
 
 class PrintQueue(models.Model):
@@ -195,6 +213,11 @@ class PrintQueue(models.Model):
         null=True,
         blank=True,
         help_text="Set while a print start (G-code upload) is in progress; the printer counts as busy meanwhile",
+    )
+    excluded_objects = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Object names the printer excluded during the attempt (Klipper EXCLUDE_OBJECT), as reported",
     )
 
     objects = PrintQueueQuerySet.as_manager()
@@ -343,6 +366,146 @@ class PrintQueue(models.Model):
         active = self.active_q() & ~Q(pk=self.pk)
         return PrintQueue.objects.filter(active | self.active_start_claim_q(), printer=self.printer).exists()
 
+    # ── Excluded part copies ────────────────────────────────────────────
+
+    #: Attempt states whose excluded copies an operator may correct.
+    EXCLUSION_EDITABLE_STATES: tuple[str, ...] = (STATE_AWAITING_REVIEW, RESULT_PASSED)
+
+    @property
+    def can_edit_exclusions(self) -> bool:
+        """Return True if copies of this attempt may be marked as not ok (awaiting review or passed)."""
+        return self.state in self.EXCLUSION_EDITABLE_STATES
+
+    @property
+    def exclusion_count(self) -> int:
+        """Return the number of part copies excluded in this attempt.
+
+        Uses the :meth:`PrintQueueQuerySet.with_exclusion_count` annotation or the
+        prefetched ``exclusions`` when present, else one query.
+        """
+        annotated = getattr(self, "annotated_exclusion_count", None)
+        if annotated is not None:
+            return annotated
+        if "exclusions" in getattr(self, "_prefetched_objects_cache", {}):
+            return len(self.exclusions.all())
+        return self.exclusions.count()
+
+    def excluded_summary(self) -> str:
+        """Return ``"N part(s) excluded"`` (or ``"N object(s) excluded"`` if unmapped), ``""`` if none."""
+        count = self.exclusion_count
+        if count:
+            return f"{count} part(s) excluded"
+        if self.excluded_objects:
+            return f"{len(self.excluded_objects)} object(s) excluded"
+        return ""
+
+    def record_excluded_objects(self, names: Iterable[Any]) -> bool:
+        """Record the objects the printer reports as excluded (Klipper ``exclude_object.excluded_objects``).
+
+        Names not recorded yet (compared case-insensitively) are appended to
+        :attr:`excluded_objects`, and the part copies of the plate whose object
+        IDs they name (see :func:`core.services.gcode_objects.parse_klipper_object_id`
+        and ``PrintJobPlatePart.object_ids``) get a ``klipper`` exclusion.  Names
+        already recorded are skipped, so a copy an operator un-marked stays
+        un-marked; a shorter list (Klipper resets it per print) drops nothing.
+        Only applies while the attempt is printing: the guard and the merge use
+        the row in the database, so a stale instance never writes after the end
+        or drops names recorded meanwhile.  At most :data:`MAX_EXCLUDED_OBJECTS`
+        names of up to :data:`MAX_EXCLUDED_OBJECT_NAME` characters are kept.
+
+        Args:
+            names: The reported object names (non-strings are ignored).
+
+        Returns:
+            True if new names were recorded, False otherwise.
+        """
+        from core.services.gcode_objects import parse_klipper_object_id
+
+        candidates = [name for name in names if isinstance(name, str) and 0 < len(name) <= MAX_EXCLUDED_OBJECT_NAME]
+        if not self._new_excluded_names(self.excluded_objects, candidates):
+            return False  # nothing new for this instance: skip the database
+        with transaction.atomic():
+            locked = PrintQueue.objects.select_for_update().printing().filter(pk=self.pk)
+            rows = list(locked.values_list("excluded_objects", flat=True))
+            if not rows:
+                return False
+            recorded = list(rows[0] or [])
+            new_names = self._new_excluded_names(recorded, candidates)
+            new_names = new_names[: max(MAX_EXCLUDED_OBJECTS - len(recorded), 0)]
+            if not new_names:
+                self.excluded_objects = recorded
+                return False
+            merged = [*recorded, *new_names]
+            if not PrintQueue.objects.printing().filter(pk=self.pk).update(excluded_objects=merged):
+                return False
+            self.excluded_objects = merged
+            object_ids = {parse_klipper_object_id(name) for name in new_names} - {None}
+            if object_ids and self.plate_id is not None:
+                from core.models.printing import PrintJobPlatePart
+
+                plate_parts = PrintJobPlatePart.objects.filter(plate_id=self.plate_id).only("id", "object_ids")
+                PrintAttemptExclusion.objects.bulk_create(
+                    [
+                        PrintAttemptExclusion(
+                            attempt=self, plate_part=plate_part, source=PrintAttemptExclusion.SOURCE_KLIPPER
+                        )
+                        for plate_part in plate_parts
+                        if object_ids.intersection(plate_part.object_ids or [])
+                    ],
+                    ignore_conflicts=True,
+                )
+        return True
+
+    @staticmethod
+    def _new_excluded_names(recorded: list[Any], names: list[str]) -> list[str]:
+        """Return the ``names`` not in ``recorded`` (case-insensitive, without duplicates), in order."""
+        known = {str(name).upper() for name in recorded}
+        new_names: list[str] = []
+        for name in names:
+            if name.upper() not in known:
+                known.add(name.upper())
+                new_names.append(name)
+        return new_names
+
+    def set_excluded_plate_parts(self, plate_part_ids: Iterable[int], *, user: Any = None) -> None:
+        """Set which part copies of the plate were not printed ok in this attempt (manual correction).
+
+        Copies in ``plate_part_ids`` without an exclusion get a ``manual`` one;
+        exclusions of other copies (from Klipper or manual) are removed.
+
+        Args:
+            plate_part_ids: Primary keys of ``PrintJobPlatePart`` rows of this attempt's plate.
+            user: The operator making the correction (stored on new rows).
+
+        Raises:
+            ValueError: If the attempt is neither awaiting review nor passed, or
+                an ID is not a plate part of its plate.
+        """
+        from core.models.printing import PrintJobPlatePart
+
+        if not self.can_edit_exclusions:
+            raise ValueError(f"Attempt {self.pk} is not awaiting review or passed (state: {self.state}).")
+        wanted = {int(pk) for pk in plate_part_ids}
+        plate_parts = PrintJobPlatePart.objects.filter(plate_id=self.plate_id, pk__in=wanted)
+        valid = set(plate_parts.values_list("pk", flat=True))
+        if wanted - valid:
+            raise ValueError(f"Plate parts {sorted(wanted - valid)} do not belong to attempt {self.pk}.")
+        with transaction.atomic():
+            self.exclusions.exclude(plate_part_id__in=wanted).delete()
+            existing = set(self.exclusions.values_list("plate_part_id", flat=True))
+            PrintAttemptExclusion.objects.bulk_create(
+                [
+                    PrintAttemptExclusion(
+                        attempt=self,
+                        plate_part_id=pk,
+                        source=PrintAttemptExclusion.SOURCE_MANUAL,
+                        created_by=user if getattr(user, "is_authenticated", False) else None,
+                    )
+                    for pk in sorted(wanted - existing)
+                ],
+                ignore_conflicts=True,
+            )
+
     # ── Transitions ─────────────────────────────────────────────────────
 
     def mark_started(self, *, remote_filename: str = "", when: datetime | None = None) -> None:
@@ -474,6 +637,45 @@ class PrintQueue(models.Model):
             self.result = self.RESULT_CANCELLED
             self.resolved_at = timezone.now()
             self.save(update_fields=["result", "resolved_at"])
+
+
+class PrintAttemptExclusion(models.Model):
+    """A part copy of a plate that was not printed (ok) in one print attempt.
+
+    Either excluded on the printer during the print (Klipper ``EXCLUDE_OBJECT``,
+    recorded by the worker) or marked by an operator during or after the
+    review.  An excluded copy of a passed attempt does not count as printed
+    (see :attr:`Part.printed_quantity`); a copy of several meshes is not printed
+    as soon as one of its meshes on the plate is excluded.
+    """
+
+    SOURCE_KLIPPER = "klipper"
+    SOURCE_MANUAL = "manual"
+    SOURCE_CHOICES = [
+        (SOURCE_KLIPPER, "Excluded on the printer"),
+        (SOURCE_MANUAL, "Marked by an operator"),
+    ]
+
+    attempt = models.ForeignKey(PrintQueue, on_delete=models.CASCADE, related_name="exclusions")
+    plate_part = models.ForeignKey("core.PrintJobPlatePart", on_delete=models.CASCADE, related_name="exclusions")
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="print_attempt_exclusions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["attempt", "plate_part"]
+        constraints = [
+            UniqueConstraint(fields=["attempt", "plate_part"], name="printattemptexclusion_unique_copy"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.plate_part} excluded in attempt {self.attempt_id} ({self.get_source_display()})"
 
 
 class ScheduledQueueStart(models.Model):
