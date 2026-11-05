@@ -1,13 +1,15 @@
 """OrcaSlicer profile views for the LayerNexus application."""
 
+import json
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.http import HttpRequest, HttpResponse
-from django.shortcuts import redirect
+from django.http import Http404, HttpRequest, HttpResponse
+from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
 from django.views import View
 from django.views.generic import DeleteView, DetailView, ListView
@@ -27,6 +29,9 @@ from core.models import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "OrcaMachineProfileDownloadView",
+    "OrcaFilamentProfileDownloadView",
+    "OrcaPrintPresetDownloadView",
     "OrcaMachineProfileListView",
     "OrcaMachineProfileDetailView",
     "OrcaMachineProfileImportView",
@@ -134,6 +139,50 @@ class OrcaProfileImportViewBase(OrcaProfileManageMixin, View):
                 f"Please upload the parent profile '{result.missing_parent}' next.",
             )
             return redirect(self.pending_url_name)
+
+
+# ── Base download view ───────────────────────────────────────────────────
+
+
+class OrcaProfileDownloadViewBase(LoginRequiredMixin, View):
+    """Base view serving the originally imported profile JSON as a download.
+
+    Read-only, so ``LoginRequiredMixin`` is sufficient. Subclasses set
+    ``model_class``.
+    """
+
+    model_class = None
+
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Return ``uploaded_json`` unchanged as an attachment (404 if empty)."""
+        profile = get_object_or_404(self.model_class, pk=pk)
+        if not profile.uploaded_json:
+            raise Http404("This profile has no original JSON.")
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "_", profile.orca_name or profile.name).strip("._") or "profile"
+        response = HttpResponse(
+            json.dumps(profile.uploaded_json, indent=4, ensure_ascii=False),
+            content_type="application/json",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{stem}.json"'
+        return response
+
+
+class OrcaMachineProfileDownloadView(OrcaProfileDownloadViewBase):
+    """Download an OrcaSlicer machine profile as original JSON."""
+
+    model_class = OrcaMachineProfile
+
+
+class OrcaFilamentProfileDownloadView(OrcaProfileDownloadViewBase):
+    """Download an OrcaSlicer filament profile as original JSON."""
+
+    model_class = OrcaFilamentProfile
+
+
+class OrcaPrintPresetDownloadView(OrcaProfileDownloadViewBase):
+    """Download an OrcaSlicer print preset as original JSON."""
+
+    model_class = OrcaPrintPreset
 
 
 # ── OrcaSlicer Machine Profiles (structured import with inheritance) ─────

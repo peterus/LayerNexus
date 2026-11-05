@@ -15,11 +15,18 @@
   <h1 class="h3 mb-0">
     <i class="bi bi-palette me-2"></i>{{ profile.name }}
   </h1>
-  {% if perms.core.can_manage_orca_profiles %}
-  <a href="{% url 'core:orcafilamentprofile_delete' profile.pk %}" class="btn btn-outline-danger btn-sm">
-    <i class="bi bi-trash me-1"></i>Delete
-  </a>
-  {% endif %}
+  <div class="d-flex gap-2">
+    {% if profile.uploaded_json %}
+    <a href="{% url 'core:orcafilamentprofile_download' profile.pk %}" class="btn btn-outline-secondary btn-sm">
+      <i class="bi bi-download me-1"></i>Download JSON
+    </a>
+    {% endif %}
+    {% if perms.core.can_manage_orca_profiles %}
+    <a href="{% url 'core:orcafilamentprofile_delete' profile.pk %}" class="btn btn-outline-danger btn-sm">
+      <i class="bi bi-trash me-1"></i>Delete
+    </a>
+    {% endif %}
+  </div>
 </div>
 
 {% if profile.description %}

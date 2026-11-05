@@ -5,14 +5,17 @@ from django.urls import path
 from core.views import (
     OrcaFilamentProfileDeleteView,
     OrcaFilamentProfileDetailView,
+    OrcaFilamentProfileDownloadView,
     OrcaFilamentProfileImportView,
     OrcaFilamentProfileListView,
     OrcaMachineProfileDeleteView,
     OrcaMachineProfileDetailView,
+    OrcaMachineProfileDownloadView,
     OrcaMachineProfileImportView,
     OrcaMachineProfileListView,
     OrcaPrintPresetDeleteView,
     OrcaPrintPresetDetailView,
+    OrcaPrintPresetDownloadView,
     OrcaPrintPresetImportView,
     OrcaPrintPresetListView,
 )
@@ -33,6 +36,11 @@ urlpatterns = [
         "orca-machine-profiles/<int:pk>/",
         OrcaMachineProfileDetailView.as_view(),
         name="orcamachineprofile_detail",
+    ),
+    path(
+        "orca-machine-profiles/<int:pk>/download/",
+        OrcaMachineProfileDownloadView.as_view(),
+        name="orcamachineprofile_download",
     ),
     path(
         "orca-machine-profiles/<int:pk>/delete/",
@@ -56,6 +64,11 @@ urlpatterns = [
         name="orcafilamentprofile_detail",
     ),
     path(
+        "orca-filament-profiles/<int:pk>/download/",
+        OrcaFilamentProfileDownloadView.as_view(),
+        name="orcafilamentprofile_download",
+    ),
+    path(
         "orca-filament-profiles/<int:pk>/delete/",
         OrcaFilamentProfileDeleteView.as_view(),
         name="orcafilamentprofile_delete",
@@ -75,6 +88,11 @@ urlpatterns = [
         "orca-print-presets/<int:pk>/",
         OrcaPrintPresetDetailView.as_view(),
         name="orcaprintpreset_detail",
+    ),
+    path(
+        "orca-print-presets/<int:pk>/download/",
+        OrcaPrintPresetDownloadView.as_view(),
+        name="orcaprintpreset_download",
     ),
     path(
         "orca-print-presets/<int:pk>/delete/",
