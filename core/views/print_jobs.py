@@ -897,7 +897,15 @@ class PrintJobSliceView(RoleRequiredMixin, View):
 
         with transaction.atomic():
             # Checked together with the plate delete: re-slicing deletes all
-            # plates, which must never take print attempts (history) along.
+            # plates, which must never take print attempts (history) along, nor
+            # reopen a closed job.  ``closed_at`` is re-read under lock (the job
+            # was loaded before the transaction); ``print_started`` queries anyway.
+            job.closed_at = (
+                PrintJob.objects.select_for_update().filter(pk=pk).values_list("closed_at", flat=True).first()
+            )
+            if job.is_closed:
+                messages.error(request, "This job is closed and cannot be re-sliced. Reopen it first.")
+                return redirect("core:printjob_detail", pk=pk)
             if not job.can_reslice:
                 messages.error(request, "This job has print attempts and cannot be re-sliced.")
                 return redirect("core:printjob_detail", pk=pk)

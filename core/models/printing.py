@@ -154,6 +154,18 @@ class PrintJobQuerySet(models.QuerySet):
         """Return all other jobs (drafts, slicing, ready, printing, in progress)."""
         return self.with_display_status().exclude(annotated_display_status__in=PrintJob.FINISHED_DISPLAY_STATUSES)
 
+    def blocking_part_delete(self) -> PrintJobQuerySet:
+        """Return the jobs that keep their parts from being deleted outside the print-history guard.
+
+        That is the :meth:`unfinished` jobs plus closed jobs without any print
+        attempt: like a draft they are no print history, yet their parts are
+        still referenced (``PrintJobPart.part`` is ``PROTECT``).
+        """
+        return self.with_display_status().filter(
+            ~Q(annotated_display_status__in=PrintJob.FINISHED_DISPLAY_STATUSES)
+            | Q(closed_at__isnull=False, job_has_attempts=False)
+        )
+
 
 class PrintJob(models.Model):
     """Tracks a print job that may contain one or more parts.

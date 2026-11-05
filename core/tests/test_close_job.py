@@ -7,6 +7,8 @@ on close, and its printed copies keep counting exactly as before.
 
 from __future__ import annotations
 
+from unittest import mock
+
 from django.contrib.auth.models import Group, User
 from django.test import TestCase
 from django.urls import reverse
@@ -14,6 +16,7 @@ from django.utils import timezone
 
 from core.models import Part, PrintJob, PrintJobPart, PrintJobPlate, PrintJobPlatePart, PrintQueue, Project
 from core.tests.mixins import TestDataMixin, _RBACTestBase, add_attempt, complete_plate, fail_plate, make_sliced_job
+from core.tests.test_reslice_requeue import _JobFixture
 
 
 def _display(job: PrintJob) -> str:
@@ -393,3 +396,82 @@ class CloseJobTemplateTests(_RBACTestBase):
         response = self.client.get(reverse("core:printjob_list"), {"status": PrintJob.DISPLAY_CLOSED})
         self.assertContains(response, "Closed (incomplete)")
         self.assertIn(self.job, list(response.context["print_jobs"]))
+
+
+class ClosedJobDeleteGuardTests(TestCase):
+    """A closed job keeps blocking the deletion of its parts unless it is print history."""
+
+    def setUp(self) -> None:
+        self.project = Project.objects.create(name="P")
+        self.part = Part.objects.create(name="p", project=self.project)
+
+    def _job_with_part(self) -> PrintJob:
+        job = make_sliced_job(plates=2)
+        PrintJobPart.objects.create(print_job=job, part=self.part, quantity=1)
+        return job
+
+    def test_closed_job_without_attempts_blocks_like_a_draft(self) -> None:
+        job = self._job_with_part()
+        job.close()
+        self.assertEqual(list(self.part.blocking_jobs()), [job])
+        self.assertEqual(list(self.project.blocking_jobs()), [job])
+        self.assertFalse(self.part.has_print_history())
+
+    def test_closed_job_with_history_is_guarded_as_history(self) -> None:
+        job = self._job_with_part()
+        complete_plate(job.plates.first())
+        job.close()
+        self.assertFalse(self.part.blocking_jobs().exists())
+        self.assertFalse(self.project.blocking_jobs().exists())
+        self.assertTrue(self.part.has_print_history())
+
+    def test_part_delete_page_names_the_closed_job(self) -> None:
+        job = self._job_with_part()
+        job.close()
+        user = User.objects.create_user(username="d", password="pw")
+        user.groups.add(Group.objects.get(name="Designer"))
+        self.client.force_login(user)
+        response = self.client.post(reverse("core:part_delete", kwargs={"pk": self.part.pk}), follow=True)
+        self.assertTrue(Part.objects.filter(pk=self.part.pk).exists())
+        response = self.client.get(reverse("core:part_delete", kwargs={"pk": self.part.pk}))
+        self.assertContains(response, reverse("core:printjob_detail", kwargs={"pk": job.pk}))
+
+
+class ClosedJobSliceAndQueueViewTests(_JobFixture):
+    """Re-slicing and single-plate queueing refuse a closed job, also when it closed meanwhile."""
+
+    def test_reslice_refuses_a_closed_job(self) -> None:
+        self.job.close()
+        with mock.patch("core.views.print_jobs._start_orcaslicer_worker") as worker:
+            response = self._client().post(reverse("core:printjob_slice", kwargs={"pk": self.job.pk}), follow=True)
+        worker.assert_not_called()
+        self.assertContains(response, "is closed and cannot be re-sliced")
+        self.assertEqual(PrintJob.objects.get(pk=self.job.pk).status, PrintJob.STATUS_SLICED)
+        self.assertEqual(self.job.plates.count(), 3)
+
+    def test_reslice_rechecks_a_job_closed_after_it_was_loaded(self) -> None:
+        stale = PrintJob.objects.prefetch_related("job_parts__part").get(pk=self.job.pk)
+        self.job.close()
+        with (
+            mock.patch("core.views.print_jobs.get_object_or_404", return_value=stale),
+            mock.patch("core.views.print_jobs._start_orcaslicer_worker") as worker,
+        ):
+            self._client().post(reverse("core:printjob_slice", kwargs={"pk": self.job.pk}))
+        worker.assert_not_called()
+        job = PrintJob.objects.get(pk=self.job.pk)
+        self.assertEqual(job.status, PrintJob.STATUS_SLICED)
+        self.assertTrue(job.is_closed)
+        self.assertEqual(job.plates.count(), 3)
+
+    def test_queue_create_reports_a_job_closed_meanwhile(self) -> None:
+        PrintJob.objects.filter(pk=self.job.pk).update(requeue_error="not re-queued")
+        with mock.patch("core.views.queue.PrintQueue.enqueue", side_effect=ValueError("closed")):
+            response = self._client().post(
+                reverse("core:printqueue_create"),
+                {"plate": self.plates[0].pk, "printer": self.printer.pk, "priority": 2},
+                follow=True,
+            )
+        self.assertRedirects(response, reverse("core:printqueue_list"))
+        self.assertContains(response, "is closed; its plates cannot be queued")
+        self.assertFalse(PrintQueue.objects.filter(plate=self.plates[0]).exists())
+        self.assertEqual(PrintJob.objects.get(pk=self.job.pk).requeue_error, "not re-queued")
