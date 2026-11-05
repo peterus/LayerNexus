@@ -114,12 +114,14 @@ class PrintJobQuerySet(models.QuerySet):
         )
         return queryset.annotate(
             annotated_display_status=Case(
-                When(job_has_attempts=False, then=slicing_display),
+                # Same priority as :attr:`PrintJob.display_status`: printing > completed > closed > the rest.
                 When(job_has_active_attempt=True, then=Value(PrintJob.DISPLAY_PRINTING)),
                 When(
                     Q(job_plate_count__gt=0, job_completed_plates=F("job_plate_count")),
                     then=Value(PrintJob.DISPLAY_COMPLETED),
                 ),
+                When(closed_at__isnull=False, then=Value(PrintJob.DISPLAY_CLOSED)),
+                When(job_has_attempts=False, then=slicing_display),
                 When(
                     Q(job_plate_count__gt=0, job_failed_plates__gt=0)
                     & Q(job_plate_count=F("job_completed_plates") + F("job_failed_plates")),
@@ -133,17 +135,19 @@ class PrintJobQuerySet(models.QuerySet):
     def contents_editable(self) -> PrintJobQuerySet:
         """Return jobs whose parts may still change (see :attr:`PrintJob.can_change_contents`).
 
-        That is: no print attempt yet and the slicer is not working on the job.
+        That is: not closed, no print attempt yet and the slicer is not working on the job.
         Adding a part to a sliced (or slicing-failed) job discards its plates.
         """
         from core.models.queue import PrintQueue
 
-        return self.exclude(status__in=PrintJob.SLICING_IN_PROGRESS).exclude(
-            Exists(PrintQueue.objects.filter(plate__print_job=OuterRef("pk")))
+        return (
+            self.filter(closed_at__isnull=True)
+            .exclude(status__in=PrintJob.SLICING_IN_PROGRESS)
+            .exclude(Exists(PrintQueue.objects.filter(plate__print_job=OuterRef("pk"))))
         )
 
     def finished(self) -> PrintJobQuerySet:
-        """Return jobs whose plates are all completed or failed (display ``completed`` / ``partially_failed``)."""
+        """Return jobs whose plates are all completed or failed, or that were closed (finished display statuses)."""
         return self.with_display_status().filter(annotated_display_status__in=PrintJob.FINISHED_DISPLAY_STATUSES)
 
     def unfinished(self) -> PrintJobQuerySet:
@@ -184,6 +188,7 @@ class PrintJob(models.Model):
     DISPLAY_IN_PROGRESS = "in_progress"
     DISPLAY_COMPLETED = "completed"
     DISPLAY_PARTIALLY_FAILED = "partially_failed"
+    DISPLAY_CLOSED = "closed"
     DISPLAY_CHOICES = [
         (DISPLAY_DRAFT, "Draft"),
         (DISPLAY_PENDING, "Pending"),
@@ -194,9 +199,10 @@ class PrintJob(models.Model):
         (DISPLAY_IN_PROGRESS, "In progress"),
         (DISPLAY_COMPLETED, "Completed"),
         (DISPLAY_PARTIALLY_FAILED, "Partially failed"),
+        (DISPLAY_CLOSED, "Closed (incomplete)"),
     ]
-    #: Display statuses of a finished job (every plate completed or failed).
-    FINISHED_DISPLAY_STATUSES: tuple[str, ...] = (DISPLAY_COMPLETED, DISPLAY_PARTIALLY_FAILED)
+    #: Display statuses of a finished job (every plate completed or failed, or closed by a user).
+    FINISHED_DISPLAY_STATUSES: tuple[str, ...] = (DISPLAY_COMPLETED, DISPLAY_PARTIALLY_FAILED, DISPLAY_CLOSED)
     #: Slicing statuses while the slicer works on the job (contents must not change).
     SLICING_IN_PROGRESS: tuple[str, ...] = (STATUS_PENDING, STATUS_SLICING)
 
@@ -276,6 +282,22 @@ class PrintJob(models.Model):
         blank=True,
         default="",
         help_text="Why the plates of the last re-slice were not re-queued",
+    )
+
+    # Closed by a user before every plate was printed (see :meth:`close`); the
+    # remaining plates are not printed, the job counts as finished.
+    closed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When a user closed the job before all plates were printed (empty = open)",
+    )
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="closed_print_jobs",
+        help_text="User who closed this job",
     )
 
     notes = models.TextField(blank=True)
@@ -398,14 +420,28 @@ class PrintJob(models.Model):
         return PrintQueue.objects.filter(plate__print_job=self).exists()
 
     @property
+    def is_closed(self) -> bool:
+        """Return True once a user closed the job (see :meth:`close`)."""
+        return self.closed_at is not None
+
+    @property
     def can_change_contents(self) -> bool:
-        """Return True while parts and the machine profile may change (no attempt, not slicing)."""
-        return not self.print_started and self.status not in self.SLICING_IN_PROGRESS
+        """Return True while parts and the machine profile may change (not closed, no attempt, not slicing)."""
+        return not self.is_closed and not self.print_started and self.status not in self.SLICING_IN_PROGRESS
 
     @property
     def can_reslice(self) -> bool:
-        """Return True while re-slicing would not delete print history."""
-        return not self.print_started
+        """Return True while re-slicing would not delete print history (and the job is not closed)."""
+        return not self.is_closed and not self.print_started
+
+    @property
+    def can_close(self) -> bool:
+        """Return True if the job may be closed before all of its plates are printed (see :meth:`close`).
+
+        The job must be sliced, open and not finished yet, and no plate may be
+        printing, starting or awaiting review (same rule as :attr:`can_delete`).
+        """
+        return self.status == self.STATUS_SLICED and not self.is_closed and self.can_delete and not self.is_finished
 
     @property
     def can_delete(self) -> bool:
@@ -468,7 +504,7 @@ class PrintJob(models.Model):
         """
         from core.models.queue import PrintQueue
 
-        if self.status != self.STATUS_SLICED:
+        if self.status != self.STATUS_SLICED or self.is_closed:
             return False
         plates = self._prefetched_plates()
         if plates is not None and all(plate.attempts_prefetched for plate in plates):
@@ -504,10 +540,13 @@ class PrintJob(models.Model):
     def display_status(self) -> str:
         """Return the derived display status (``DISPLAY_*``).
 
+        In this priority:
+
+        * ``printing`` – a plate is printing (or awaiting review) right now.
+        * ``completed`` – every plate has a passed attempt (even if the job was closed).
+        * ``closed`` – a user closed the job before every plate passed (:meth:`close`).
         * No print attempt yet → the slicing status (``draft`` / ``pending`` /
           ``slicing`` / ``slicing_failed``, or ``ready`` once sliced).
-        * ``printing`` – a plate is printing (or awaiting review) right now.
-        * ``completed`` – every plate has a passed attempt.
         * ``partially_failed`` – every plate is completed or failed, at least one failed.
         * ``in_progress`` – any other job with attempts (plates still to queue or waiting).
 
@@ -516,7 +555,14 @@ class PrintJob(models.Model):
         if "annotated_display_status" in self.__dict__:
             return self.annotated_display_status
         plates = list(self.plates.all())
+        if any(plate.has_active_attempt for plate in plates):
+            return self.DISPLAY_PRINTING
         states = [plate.state for plate in plates]
+        completed = states.count(PrintJobPlate.STATE_COMPLETED)
+        if states and completed == len(states):
+            return self.DISPLAY_COMPLETED
+        if self.is_closed:
+            return self.DISPLAY_CLOSED
         if not any(plate.attempts() for plate in plates):
             return {
                 self.STATUS_FAILED: self.DISPLAY_SLICING_FAILED,
@@ -524,12 +570,7 @@ class PrintJob(models.Model):
                 self.STATUS_PENDING: self.DISPLAY_PENDING,
                 self.STATUS_SLICING: self.DISPLAY_SLICING,
             }.get(self.status, self.DISPLAY_DRAFT)
-        if any(plate.has_active_attempt for plate in plates):
-            return self.DISPLAY_PRINTING
-        completed = states.count(PrintJobPlate.STATE_COMPLETED)
         failed = states.count(PrintJobPlate.STATE_FAILED)
-        if states and completed == len(states):
-            return self.DISPLAY_COMPLETED
         if states and failed and completed + failed == len(states):
             return self.DISPLAY_PARTIALLY_FAILED
         return self.DISPLAY_IN_PROGRESS
@@ -540,7 +581,7 @@ class PrintJob(models.Model):
 
     @property
     def is_finished(self) -> bool:
-        """Return True once every plate is completed or failed."""
+        """Return True once every plate is completed or failed, or the job was closed."""
         return self.display_status in self.FINISHED_DISPLAY_STATUSES
 
     @property
@@ -581,6 +622,77 @@ class PrintJob(models.Model):
         if not locked.can_change_contents:
             raise ValueError(f"Job {self.pk} cannot change its contents (print started or slicing).")
         return locked
+
+    def open_plates(self) -> list[PrintJobPlate]:
+        """Return the plates without a passed attempt (they stay unprinted when the job is closed)."""
+        return [plate for plate in self.plates.all() if plate.state != PrintJobPlate.STATE_COMPLETED]
+
+    def waiting_attempt_count(self) -> int:
+        """Return the number of the job's queue entries that are still waiting (removed by :meth:`close`)."""
+        from core.models.queue import PrintQueue
+
+        return PrintQueue.objects.waiting().filter(plate__print_job=self).count()
+
+    def close(self, user: object | None = None) -> int:
+        """Close the job before every plate is printed; its remaining plates are not printed.
+
+        Waiting queue entries of the job are removed (:meth:`PrintQueue.remove`;
+        they never started, so no history is lost) — otherwise a printer would
+        still print a plate of a job the user gave up on.  The print history and
+        the copies already printed stay as they are.  A closed job counts as
+        finished (display ``closed``), its plates cannot be queued and its
+        contents cannot change until it is reopened (:meth:`reopen`).
+
+        Checked again on the locked rows (see :attr:`can_close`).  On SQLite the
+        IMMEDIATE transaction mode takes the write lock up front, so a print
+        start cannot claim an attempt between the check and the removal.
+
+        Args:
+            user: The user closing the job (stored as ``closed_by`` if authenticated).
+
+        Returns:
+            The number of waiting queue entries removed.
+
+        Raises:
+            ValueError: If the job is gone, not sliced, already closed or
+                finished, or a plate is printing, starting or awaiting review.
+        """
+        from core.models.queue import PrintQueue
+
+        with transaction.atomic():
+            job = PrintJob.objects.select_for_update().filter(pk=self.pk).first()
+            if job is None or job.status != self.STATUS_SLICED or job.is_closed:
+                raise ValueError(f"Job {self.pk} is not a sliced, open job.")
+            attempts = list(PrintQueue.objects.select_for_update().filter(plate__print_job=job))
+            if any(attempt.blocks_job_delete for attempt in attempts):
+                raise ValueError(f"Job {self.pk} has a plate that is printing, starting or awaiting review.")
+            if job.is_finished:
+                raise ValueError(f"Job {self.pk} is already finished.")
+            waiting = [attempt for attempt in attempts if attempt.is_waiting]
+            for attempt in waiting:
+                attempt.remove()
+            job.closed_at = timezone.now()
+            job.closed_by = user if getattr(user, "is_authenticated", False) else None
+            job.save(update_fields=["closed_at", "closed_by", "updated_at"])
+        self.closed_at = job.closed_at
+        self.closed_by = job.closed_by
+        return len(waiting)
+
+    def reopen(self) -> None:
+        """Reopen a closed job: its remaining plates can be queued again.
+
+        Raises:
+            ValueError: If the job is gone or not closed.
+        """
+        with transaction.atomic():
+            job = PrintJob.objects.select_for_update().filter(pk=self.pk).first()
+            if job is None or not job.is_closed:
+                raise ValueError(f"Job {self.pk} is not closed.")
+            job.closed_at = None
+            job.closed_by = None
+            job.save(update_fields=["closed_at", "closed_by", "updated_at"])
+        self.closed_at = None
+        self.closed_by = None
 
     # ── Plate parts ─────────────────────────────────────────────────────
 
@@ -690,7 +802,7 @@ class PrintJob(models.Model):
 
         Plates that are waiting, printing, awaiting review or completed are
         skipped (see :meth:`PrintJobPlateQuerySet.queueable`); a plate queued
-        concurrently is skipped as well.  Each plate is appended at the end of
+        concurrently is skipped as well, and a closed job queues nothing.  Each plate is appended at the end of
         the printer's queue.
 
         Args:
@@ -716,6 +828,9 @@ class PrintJob(models.Model):
                 except IntegrityError:
                     # Queued concurrently (one open attempt per plate): nothing to add.
                     continue
+                except ValueError:
+                    # The job was closed concurrently: none of its plates may be queued.
+                    break
             if entries and self.requeue_error:
                 # The plates are queued now: an old "not re-queued" hint is obsolete.
                 PrintJob.objects.filter(pk=self.pk).update(requeue_error="")
@@ -914,7 +1029,7 @@ class PrintJobPlateQuerySet(models.QuerySet):
     def queueable(self) -> PrintJobPlateQuerySet:
         """Return plates that can be added to the print queue.
 
-        A plate is queueable when its job is sliced, it has G-code, and it is
+        A plate is queueable when its job is sliced and not closed, it has G-code, and it is
         neither completed nor already queued (no open attempt) — i.e. its state is
         ``not_queued`` or ``failed`` (a failed plate may be queued again; that
         manual enqueue resets its failure counter).
@@ -925,7 +1040,9 @@ class PrintJobPlateQuerySet(models.QuerySet):
         # the history), so the state CASE only runs for the remaining candidates.
         attempts = PrintQueue.objects.filter(plate=OuterRef("pk"))
         candidates = (
-            self.filter(print_job__status=PrintJob.STATUS_SLICED, gcode_file__isnull=False)
+            self.filter(
+                print_job__status=PrintJob.STATUS_SLICED, print_job__closed_at__isnull=True, gcode_file__isnull=False
+            )
             .exclude(gcode_file="")
             .exclude(Exists(attempts.filter(result=PrintQueue.RESULT_PASSED)))
             .exclude(Exists(attempts.filter(result="")))
@@ -1091,6 +1208,7 @@ class PrintJobPlate(models.Model):
             self.state in self.QUEUEABLE_STATES
             and bool(self.gcode_file)
             and self.print_job.status == PrintJob.STATUS_SLICED
+            and not self.print_job.is_closed
         )
 
     @property

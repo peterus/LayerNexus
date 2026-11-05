@@ -52,6 +52,8 @@ __all__ = [
     "CreateJobsFromProjectView",
     "PrintJobSliceView",
     "PrintJobResliceRequeueView",
+    "PrintJobCloseView",
+    "PrintJobReopenView",
     "SliceJobStatusView",
 ]
 
@@ -336,7 +338,7 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
     context_object_name = "job"
 
     def get_queryset(self):
-        return PrintJob.objects.select_related("machine_profile", "requeue_printer").prefetch_related(
+        return PrintJob.objects.select_related("machine_profile", "requeue_printer", "closed_by").prefetch_related(
             "job_parts__part__project",
             Prefetch(
                 "plates",
@@ -381,6 +383,10 @@ class PrintJobDetailView(LoginRequiredMixin, DetailView):
         context["requeue_pending"] = job.requeue_printer_id is not None and job.status in PrintJob.SLICING_IN_PROGRESS
         context["queueable_plate_count"] = sum(1 for plate in plates if plate.is_queueable)
         context["missing_machine_profile"] = job.status == PrintJob.STATUS_DRAFT and not has_machine
+        context["can_close"] = job.can_close
+        if context["can_close"]:
+            context["close_open_plates"] = job.open_plates()
+            context["close_waiting_count"] = sum(1 for plate in plates if plate.state == PrintJobPlate.STATE_WAITING)
 
         # Resolve effective print preset and filament profile from first part
         first_jp = job.job_parts.select_related("part__print_preset").first()
@@ -966,6 +972,70 @@ class PrintJobResliceRequeueView(RoleRequiredMixin, View):
             f"Re-slicing '{job}': its plates were removed from the queue and all new plates will be "
             f"appended to the queue of {printer.name} once slicing succeeds.",
         )
+        return redirect("core:printjob_detail", pk=pk)
+
+
+class PrintJobCloseView(RoleRequiredMixin, View):
+    """Close a print job before all of its plates are printed (POST only).
+
+    Allowed while :attr:`PrintJob.can_close` holds (re-checked on the locked
+    rows by :meth:`PrintJob.close`).  The job's waiting queue entries are
+    removed, so the view also needs the dequeue permission.
+    """
+
+    permission_required = ("core.change_printjob", "core.can_dequeue_job")
+    http_method_names = ["post"]
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Close the job and go back to its page.
+
+        Args:
+            request: The POST request.
+            pk: Primary key of the print job.
+
+        Returns:
+            A redirect to the job page.
+        """
+        job = get_object_or_404(PrintJob, pk=pk)
+        try:
+            removed = job.close(request.user)
+        except ValueError:
+            messages.error(
+                request,
+                f"Print job '{job}' cannot be closed: it must be sliced, open and not finished, and no plate may "
+                "be printing, starting or awaiting review.",
+            )
+            return redirect("core:printjob_detail", pk=pk)
+        logger.info("Closed job %s (%d waiting queue entries removed)", job.pk, removed)
+        detail = f"; {removed} waiting queue {'entry' if removed == 1 else 'entries'} removed" if removed else ""
+        messages.success(request, f"Print job '{job}' closed{detail}. Its unprinted plates stay open in the project.")
+        return redirect("core:printjob_detail", pk=pk)
+
+
+class PrintJobReopenView(RoleRequiredMixin, View):
+    """Reopen a closed print job, so its remaining plates can be queued again (POST only)."""
+
+    permission_required = "core.change_printjob"
+    http_method_names = ["post"]
+
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Reopen the job and go back to its page.
+
+        Args:
+            request: The POST request.
+            pk: Primary key of the print job.
+
+        Returns:
+            A redirect to the job page.
+        """
+        job = get_object_or_404(PrintJob, pk=pk)
+        try:
+            job.reopen()
+        except ValueError:
+            messages.error(request, f"Print job '{job}' is not closed.")
+            return redirect("core:printjob_detail", pk=pk)
+        logger.info("Reopened job %s", job.pk)
+        messages.success(request, f"Print job '{job}' reopened.")
         return redirect("core:printjob_detail", pk=pk)
 
 

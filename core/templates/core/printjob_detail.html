@@ -28,6 +28,9 @@
     {% if perms.core.change_printjob %}
     <a href="{% url 'core:printjob_update' job.pk %}" class="btn btn-outline-secondary"><i class="bi bi-pencil me-1"></i>Edit</a>
     {% endif %}
+    {% if can_close and perms.core.change_printjob and perms.core.can_dequeue_job %}
+    <button type="button" class="btn btn-outline-warning job-close-button" data-bs-toggle="modal" data-bs-target="#closeJobModal"><i class="bi bi-archive me-1"></i>Close job</button>
+    {% endif %}
     {% if perms.core.delete_printjob %}
     {% if job.can_delete %}
     <a href="{% url 'core:printjob_delete' job.pk %}" class="btn btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</a>
@@ -39,6 +42,22 @@
     {% endif %}
   </div>
 </div>
+
+{% if job.is_closed %}
+<div class="alert alert-secondary d-flex justify-content-between align-items-center job-closed-alert">
+  <div>
+    <i class="bi bi-archive me-1"></i>
+    Closed before all plates were printed{% if job.closed_by %} by {{ job.closed_by.username }}{% endif %} on {{ job.closed_at|date:"Y-m-d H:i" }}.
+    Its unprinted plates are not queued; their parts stay open in the project.
+  </div>
+  {% if perms.core.change_printjob %}
+  <form method="post" action="{% url 'core:printjob_reopen' job.pk %}" class="ms-3">
+    {% csrf_token %}
+    <button type="submit" class="btn btn-sm btn-outline-secondary text-nowrap job-reopen-button"><i class="bi bi-arrow-counterclockwise me-1"></i>Reopen</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
 
 {% if job.status == 'slicing' %}
 <div class="alert alert-info" id="slicing-alert">
@@ -325,6 +344,44 @@
     {% endif %}
   </div>
 </div>
+
+{% if can_close and perms.core.change_printjob and perms.core.can_dequeue_job %}
+<div class="modal fade" id="closeJobModal" tabindex="-1" aria-labelledby="closeJobModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" action="{% url 'core:printjob_close' job.pk %}">
+        {% csrf_token %}
+        <div class="modal-header">
+          <h5 class="modal-title" id="closeJobModalLabel">Close print job</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p>Close <strong>{{ job }}</strong> although not all plates are printed? It then counts as finished.</p>
+          {% if close_open_plates %}
+          <p class="mb-1">These plates stay unprinted (their parts stay open in the project):</p>
+          <ul class="close-open-plates">
+            {% for plate in close_open_plates %}
+            <li>Plate {{ plate.plate_number }} — {{ plate.get_state_display }}</li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+          {% if close_waiting_count %}
+          <div class="alert alert-warning mb-2">
+            <i class="bi bi-exclamation-triangle me-1"></i>
+            {{ close_waiting_count }} waiting queue entr{{ close_waiting_count|pluralize:"y,ies" }} of this job will be removed from the queue.
+          </div>
+          {% endif %}
+          <p class="small text-body-secondary mb-0">Printed parts keep counting. You can reopen the job later.</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-warning"><i class="bi bi-archive me-1"></i>Close job</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% load static %}

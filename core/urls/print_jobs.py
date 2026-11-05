@@ -4,11 +4,13 @@ from django.urls import path
 
 from core.views import (
     AddPartToJobView,
+    PrintJobCloseView,
     PrintJobCreateView,
     PrintJobDeleteView,
     PrintJobDetailView,
     PrintJobEnqueueAllView,
     PrintJobListView,
+    PrintJobReopenView,
     PrintJobResliceRequeueView,
     PrintJobSliceView,
     PrintJobUpdateView,
@@ -42,6 +44,16 @@ urlpatterns = [
         "jobs/<int:pk>/reslice-requeue/",
         PrintJobResliceRequeueView.as_view(),
         name="printjob_reslice_requeue",
+    ),
+    path(
+        "jobs/<int:pk>/close/",
+        PrintJobCloseView.as_view(),
+        name="printjob_close",
+    ),
+    path(
+        "jobs/<int:pk>/reopen/",
+        PrintJobReopenView.as_view(),
+        name="printjob_reopen",
     ),
     path(
         "jobs/<int:pk>/enqueue-all/",
