@@ -568,8 +568,16 @@ class PrintQueue(models.Model):
 
         Returns:
             The new open attempt.
+
+        Raises:
+            ValueError: If the plate's job was closed (see ``PrintJob.close``).
         """
+        from core.models.printing import PrintJob
+
         with transaction.atomic():
+            # Read in the transaction, not from ``plate.print_job`` (may be stale): a closed job prints nothing more.
+            if PrintJob.objects.filter(pk=plate.print_job_id, closed_at__isnull=False).exists():
+                raise ValueError(f"Plate {plate.pk} belongs to a closed print job.")
             max_pos = cls.objects.open().filter(printer=printer).aggregate(m=Max("position"))["m"] or 0
             entry = cls.objects.create(plate=plate, printer=printer, priority=priority, position=max_pos + 1)
         return entry

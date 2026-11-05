@@ -221,13 +221,13 @@ class Part(models.Model):
 
         Returns:
             Distinct queryset of :class:`~core.models.printing.PrintJob` rows that
-            are not finished (display status not in
-            :attr:`PrintJob.FINISHED_DISPLAY_STATUSES`).
+            are not finished, plus closed jobs without print attempts (see
+            :meth:`PrintJobQuerySet.blocking_part_delete`).
         """
         from core.models.printing import PrintJob
 
         # ``pk__in`` instead of a join: no row fan-out, so the display-status subqueries run once per job.
-        return PrintJob.objects.filter(pk__in=self.job_entries.values("print_job_id")).unfinished()
+        return PrintJob.objects.filter(pk__in=self.job_entries.values("print_job_id")).blocking_part_delete()
 
     def history_jobs(self) -> QuerySet[PrintJob]:
         """Return the print jobs with print attempts that contain this part (its print history).

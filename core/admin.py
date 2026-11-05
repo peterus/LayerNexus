@@ -265,7 +265,7 @@ class PrintJobAdmin(_PrintHistoryDeleteGuardMixin, admin.ModelAdmin):
         return obj.get_display_status_display()
 
     def get_readonly_fields(self, request: HttpRequest, obj: PrintJob | None = None) -> tuple[str, ...]:
-        """Freeze the machine profile unless the job is a draft, and the slicing status once printed.
+        """Freeze the machine profile unless the job is a draft, the slicing status once printed, and the closed state.
 
         A changed machine profile would leave the plates of a sliced job stale. The
         slicing status is a slicer fact; editing it on a printed job could make its
@@ -278,6 +278,8 @@ class PrintJobAdmin(_PrintHistoryDeleteGuardMixin, admin.ModelAdmin):
             readonly += ("status",)
         # Slicer fact: decides how printed parts are counted.
         readonly += ("plate_parts_known",)
+        # Only PrintJob.close()/reopen() may change these: closing also removes the waiting queue entries.
+        readonly += ("closed_at", "closed_by")
         return readonly
 
     def _history_attempts(self, objs: Iterable[PrintJob]) -> QuerySet[PrintQueue]:

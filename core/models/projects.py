@@ -318,14 +318,14 @@ class Project(models.Model):
 
         Returns:
             Distinct queryset of :class:`~core.models.printing.PrintJob` rows that
-            are not finished (display status not in
-            :attr:`PrintJob.FINISHED_DISPLAY_STATUSES`).
+            are not finished, plus closed jobs without print attempts (see
+            :meth:`PrintJobQuerySet.blocking_part_delete`).
         """
         from core.models.printing import PrintJob, PrintJobPart
 
         entries = PrintJobPart.objects.filter(part__project_id__in=self.subtree_ids() if ids is None else ids)
         # ``pk__in`` instead of a join: no row fan-out, so the display-status subqueries run once per job.
-        return PrintJob.objects.filter(pk__in=entries.values("print_job_id")).unfinished()
+        return PrintJob.objects.filter(pk__in=entries.values("print_job_id")).blocking_part_delete()
 
     def history_blocking_parts(self, ids: set[int] | None = None) -> QuerySet[Part]:
         """Return the parts of this project's subtree that have print history.

@@ -230,6 +230,10 @@ class PrintQueueCreateView(QueueManageMixin, CreateView):
             # Queued concurrently since the form was validated (one open attempt per plate).
             messages.error(self.request, f"Plate {plate.plate_number} of '{plate.print_job}' is already queued.")
             return redirect(self.success_url)
+        except ValueError:
+            # The job was closed since the form was validated.
+            messages.error(self.request, f"Print job '{plate.print_job}' is closed; its plates cannot be queued.")
+            return redirect(self.success_url)
         # A plate of the job is queued again: an old "not re-queued" hint is obsolete.
         PrintJob.objects.filter(pk=plate.print_job_id).exclude(requeue_error="").update(requeue_error="")
 

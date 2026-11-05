@@ -44,6 +44,9 @@ def job_in_display_status(display_status: str, *parts: Part) -> PrintJob:
         elif display_status == PrintJob.DISPLAY_PARTIALLY_FAILED:
             complete_plate(plate1)
             fail_plate(plate2)
+        elif display_status == PrintJob.DISPLAY_CLOSED:
+            complete_plate(plate1)
+            job.close()
         elif display_status != PrintJob.DISPLAY_READY:
             raise ValueError(f"Unknown display status: {display_status}")
     for part in parts:
