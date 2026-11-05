@@ -295,8 +295,8 @@ class ProjectDeleteView(ProjectManageMixin, DeleteView):
             if self.object.blocking_jobs(ids).exists():
                 messages.error(
                     self.request,
-                    "This project cannot be deleted while unfinished print jobs contain its parts. "
-                    "Finish or remove those jobs first.",
+                    "This project cannot be deleted while unfinished print jobs (or closed jobs without any print) "
+                    "contain its parts. Finish or delete those jobs first.",
                 )
                 return redirect("core:project_delete", pk=self.object.pk)
             parent_id = self.object.parent_id

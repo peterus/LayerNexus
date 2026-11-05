@@ -310,8 +310,8 @@ class PartDeleteView(ProjectManageMixin, DeleteView):
             if self.object.blocking_jobs().exists():
                 messages.error(
                     self.request,
-                    "This part cannot be deleted while unfinished print jobs contain it. "
-                    "Finish or remove those jobs first.",
+                    "This part cannot be deleted while unfinished print jobs (or closed jobs without any print) "
+                    "contain it. Finish or delete those jobs first.",
                 )
                 return redirect("core:part_delete", pk=self.object.pk)
             project_id = self.object.project_id

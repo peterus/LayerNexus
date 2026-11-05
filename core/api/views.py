@@ -143,8 +143,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
             "assignments. Refused with 409 while a part of the subtree has print history "
             "(reason `print_history`: it is in a job with print attempts, or has manual "
             "printed-part records) or an unfinished "
-            "print job (any display status other than completed / partially failed) contains "
-            "a part of the subtree (reason `unfinished_jobs`)."
+            "print job (any display status other than completed / partially failed / closed, or a "
+            "job closed without print attempts) contains a part of the subtree (reason `unfinished_jobs`)."
         ),
         responses={
             204: None,
@@ -397,7 +397,7 @@ class PartViewSet(viewsets.ModelViewSet):
             "history (reason `print_history`: it is in a job with print attempts, or has manual "
             "printed-part records) or an "
             "unfinished print job (any display status other than completed / partially "
-            "failed) contains it (reason `unfinished_jobs`)."
+            "failed / closed, or a job closed without print attempts) contains it (reason `unfinished_jobs`)."
         ),
         responses={
             204: None,
