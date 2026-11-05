@@ -8,6 +8,7 @@ from typing import Any
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.db.models import Model
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse_lazy
@@ -151,10 +152,10 @@ class OrcaProfileDownloadViewBase(LoginRequiredMixin, View):
     ``model_class``.
     """
 
-    model_class = None
+    model_class: type[Model] | None = None
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
-        """Return ``uploaded_json`` unchanged as an attachment (404 if empty)."""
+        """Return ``uploaded_json`` as an equivalent JSON attachment (404 if empty)."""
         profile = get_object_or_404(self.model_class, pk=pk)
         if not profile.uploaded_json:
             raise Http404("This profile has no original JSON.")

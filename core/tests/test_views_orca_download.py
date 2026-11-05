@@ -67,5 +67,19 @@ class OrcaProfileDownloadTests(TestCase):
                 empty = self._create(model, uploaded_json={})
                 url = reverse(f"core:{prefix}_download", args=[full.pk])
                 self.assertContains(self.client.get(reverse(f"core:{prefix}_detail", args=[full.pk])), url)
+                empty_url = reverse(f"core:{prefix}_download", args=[empty.pk])
                 body = self.client.get(reverse(f"core:{prefix}_detail", args=[empty.pk])).content.decode()
-                self.assertNotIn("/download/", body)
+                self.assertNotIn(empty_url, body)
+
+    def test_filename_sanitizing(self) -> None:
+        self.client.force_login(self.user)
+        cases = [
+            ("My Profile/../x", 'attachment; filename="My_Profile_.._x.json"'),
+            ("Bämbu X1", 'attachment; filename="B_mbu_X1.json"'),
+            ("///", 'attachment; filename="profile.json"'),
+        ]
+        for orca_name, expected in cases:
+            with self.subTest(orca_name=orca_name):
+                profile = self._create(OrcaMachineProfile, orca_name=orca_name)
+                response = self.client.get(reverse("core:orcamachineprofile_download", args=[profile.pk]))
+                self.assertEqual(response["Content-Disposition"], expected)
