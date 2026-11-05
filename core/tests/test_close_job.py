@@ -475,3 +475,17 @@ class ClosedJobSliceAndQueueViewTests(_JobFixture):
         self.assertContains(response, "is closed; its plates cannot be queued")
         self.assertFalse(PrintQueue.objects.filter(plate=self.plates[0]).exists())
         self.assertEqual(PrintJob.objects.get(pk=self.job.pk).requeue_error, "not re-queued")
+
+
+class ClosedJobAdminTests(TestCase):
+    """The admin cannot bypass ``close()`` / ``reopen()``."""
+
+    def test_closed_fields_are_read_only(self) -> None:
+        from django.contrib.admin import site
+
+        job = make_sliced_job(plates=1)
+        for obj in (None, job):
+            with self.subTest(obj=obj):
+                readonly = site._registry[PrintJob].get_readonly_fields(None, obj)
+                self.assertIn("closed_at", readonly)
+                self.assertIn("closed_by", readonly)
