@@ -11,6 +11,7 @@ from core.services.printer_status_sync import (
     PROGRESS_WRITE_INTERVAL,
     adopt_external_print,
     apply_status_event,
+    reported_print_filename,
 )
 from core.services.queue import busy_entry_for_printer, start_next_for_printer
 from core.tests.mixins import TestDataMixin, add_attempt, queue_state_fields
@@ -510,13 +511,32 @@ class AdoptExternalPrintTests(TestDataMixin, TestCase):
 
         self.assertEqual(adopted.pk, self.attempt.pk)
 
-    def test_first_attempt_in_queue_order_is_adopted(self):
-        PrintQueue.objects.filter(pk=self.attempt.pk).update(priority=1)
-        urgent = self._waiting_plate(3, self.FILENAME, priority=4)
+    def test_shared_file_name_adopts_plate_the_printer_started_last(self):
+        """Remote names repeat across jobs: the file on the printer is the one of the plate started last."""
+        other_job = PrintJob.objects.create(name="Steering", status=PrintJob.STATUS_SLICED, created_by=self.user)
+        other_plate = PrintJobPlate.objects.create(print_job=other_job, plate_number=2, remote_job_id=self.FILENAME)
+        add_attempt(self.plate, self.printer, "failed", when=timezone.now() - timedelta(days=2))
+        add_attempt(other_plate, self.printer, "failed", when=timezone.now() - timedelta(hours=1))
+        other_waiting = add_attempt(other_plate, self.printer, "waiting", is_retry=True, priority=1)
 
-        self.assertEqual(adopt_external_print(self.printer.pk, self._added_event()).pk, urgent.pk)
+        self.assertEqual(adopt_external_print(self.printer.pk, self._added_event()).pk, other_waiting.pk)
         self.attempt.refresh_from_db()
-        self.assertEqual(self.attempt.state, PrintQueue.STATE_WAITING)
+        self.assertIsNone(self.attempt.started_at)
+
+    def test_shared_file_name_without_history_on_printer_is_not_adopted(self):
+        self._waiting_plate(3, self.FILENAME, priority=4)
+
+        with self.assertLogs("core.services.printer_status_sync", level="WARNING"):
+            self.assertIsNone(adopt_external_print(self.printer.pk, self._added_event()))
+        self.assertFalse(PrintQueue.objects.printing().exists())
+
+    def test_shared_file_name_last_started_plate_not_waiting_is_not_adopted(self):
+        newest = PrintJobPlate.objects.create(print_job=self.job, plate_number=7, remote_job_id=self.FILENAME)
+        add_attempt(newest, self.printer, "passed")
+        self._waiting_plate(3, self.FILENAME)
+        add_attempt(self.plate, self.printer, "failed", when=timezone.now() - timedelta(days=1))
+
+        self.assertIsNone(adopt_external_print(self.printer.pk, self._added_event()))
 
     def test_after_adoption_queue_start_sees_printer_busy(self):
         adopt_external_print(self.printer.pk, self._added_event())
@@ -550,6 +570,41 @@ class AdoptExternalPrintTests(TestDataMixin, TestCase):
         other = PrintJobPlate.objects.create(print_job=self.job, plate_number=5)
         add_attempt(other, self.printer, "printing")
         self._assert_not_adopted(self._added_event())
+
+    def test_attempt_awaiting_review_does_not_block_adoption(self):
+        """The printer prints again (the bed was cleared): tracking beats leaving the print unnoticed."""
+        other = PrintJobPlate.objects.create(print_job=self.job, plate_number=5)
+        add_attempt(other, self.printer, "awaiting_review")
+
+        self.assertEqual(adopt_external_print(self.printer.pk, self._added_event()).pk, self.attempt.pk)
+
+    def test_state_without_file_name_uses_current_filename(self):
+        """A reprint of the same file: Klipper's delta carries the state only."""
+        event = {"method": "notify_status_update", "params": [{"print_stats": {"state": "printing"}}]}
+
+        self.assertIsNone(adopt_external_print(self.printer.pk, event))
+        self.assertEqual(
+            adopt_external_print(self.printer.pk, event, current_filename=self.FILENAME).pk, self.attempt.pk
+        )
+
+    def test_reported_file_name_wins_over_current_filename(self):
+        event = self._printing_event(filename="benchy.gcode")
+
+        self.assertIsNone(adopt_external_print(self.printer.pk, event, current_filename=self.FILENAME))
+
+    def test_reported_print_filename(self):
+        cases = (
+            ({"method": "notify_status_update", "params": [{"print_stats": {"filename": "a.gcode"}}]}, "a.gcode"),
+            ({"method": "notify_status_update", "params": [{"print_stats": {"filename": ""}}]}, ""),
+            ({"method": "notify_status_update", "params": [{"print_stats": {"state": "printing"}}]}, None),
+            ({"method": "notify_status_update", "params": [{"print_stats": {"filename": 3}}]}, None),
+            ({"method": "notify_status_update", "params": [{"virtual_sdcard": {"progress": 0.1}}]}, None),
+            ({"method": "notify_status_update", "params": "x"}, None),
+            ({"method": "notify_history_changed", "params": [{"print_stats": {"filename": "a.gcode"}}]}, None),
+        )
+        for event, expected in cases:
+            with self.subTest(event=event):
+                self.assertEqual(reported_print_filename(event), expected)
 
     def test_not_adopted_while_a_start_is_claimed(self):
         PrintQueue.objects.filter(pk=self.attempt.pk).update(start_claimed_at=timezone.now())

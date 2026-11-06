@@ -300,27 +300,36 @@ def _transition_to_review(entry: PrintQueue, normalized_state: str, raw_state: s
     return True
 
 
-def adopt_external_print(printer_pk: int, event: dict[str, Any]) -> PrintQueue | None:
+def adopt_external_print(printer_pk: int, event: dict[str, Any], *, current_filename: str = "") -> PrintQueue | None:
     """Adopt a print started directly on the printer for a matching waiting attempt.
 
     A print started on the printer itself (e.g. a reprint from KlipperScreen or
     Mainsail) reuses a file LayerNexus uploaded earlier.  If the event shows
     such a start — ``notify_history_changed`` with ``action="added"`` or a
-    status update with ``print_stats.state`` ``printing``/``paused`` and a file
-    name (also the resubscribe snapshot, so a worker restart mid-print catches
-    up) — the first waiting attempt of this printer in queue order whose plate's
-    remote file has the same base name is marked as started.  Nothing happens
-    while an attempt of the printer is printing or a start is claimed (that
-    print is LayerNexus' own), and no attempt is ever created.
+    status update with ``print_stats.state`` ``printing``/``paused`` (also the
+    resubscribe snapshot, so a worker restart mid-print catches up) — the
+    waiting attempt of this printer whose plate's remote file has the same base
+    name is marked as started.  Nothing happens while an attempt of the printer
+    is printing or a start is claimed (that print is LayerNexus' own), and no
+    attempt is ever created.  An attempt awaiting review does not block: the
+    printer evidently prints again, and leaving the print untracked is worse.
+
+    Remote file names are not unique (``LN_<job name>_p<plate>.gcode``, the job
+    name may repeat), so several plates can match.  The printer then holds the
+    file of the plate it started last; if that plate is not among the matches
+    the print is left alone rather than counted for the wrong job.
 
     Args:
         printer_pk: Primary key of the printer that sent the event.
         event: The raw Moonraker notification.
+        current_filename: The printer's last reported ``print_stats.filename``,
+            used when a status update carries the state but not the file name
+            (Klipper only sends changed fields).
 
     Returns:
         The adopted attempt (with ``plate__print_job`` loaded), or ``None``.
     """
-    started = _started_print(event)
+    started = _started_print(event, current_filename)
     if started is None:
         return None
     filename, when = started
@@ -335,22 +344,57 @@ def adopt_external_print(printer_pk: int, event: dict[str, Any]) -> PrintQueue |
             .exclude(plate__remote_job_id="")
             .select_related("plate__print_job")
         )
-        entry = next(
-            (candidate for candidate in candidates if PurePosixPath(candidate.plate.remote_job_id).name == base_name),
-            None,
-        )
+        matches = [
+            candidate for candidate in candidates if PurePosixPath(candidate.plate.remote_job_id).name == base_name
+        ]
+        entry = _unambiguous_match(attempts, matches, base_name)
         if entry is None:
+            if len(matches) > 1:
+                logger.warning(
+                    "Not adopting print %r on printer %s: plates %s share the file name",
+                    filename,
+                    printer_pk,
+                    [match.plate_id for match in matches],
+                )
             return None
         entry.mark_started(remote_filename=filename, when=when)
     logger.info("Queue entry %s: adopted externally started print %r on printer %s", entry.pk, filename, printer_pk)
     return entry
 
 
-def _started_print(event: dict[str, Any]) -> tuple[str, datetime | None] | None:
+def _unambiguous_match(attempts: Any, matches: list[PrintQueue], base_name: str) -> PrintQueue | None:
+    """Return the waiting attempt whose plate's file is on the printer.
+
+    Args:
+        attempts: Queryset of all attempts of the printer.
+        matches: Waiting attempts whose remote file name matches, in queue order.
+        base_name: Base name of the started file.
+
+    Returns:
+        The only match, or — for several — the one whose plate was the last
+        on this printer to start a file of that name; ``None`` if that plate is
+        not waiting or no such start is known.
+    """
+    if len(matches) <= 1:
+        return matches[0] if matches else None
+    previous_starts = (
+        attempts.filter(started_at__isnull=False, plate__remote_job_id__endswith=base_name)
+        .order_by("-started_at", "-pk")
+        .values_list("plate_id", "plate__remote_job_id")
+    )
+    last_plate_id = next(
+        (plate_id for plate_id, remote in previous_starts.iterator() if PurePosixPath(remote).name == base_name),
+        None,
+    )
+    return next((match for match in matches if match.plate_id == last_plate_id), None)
+
+
+def _started_print(event: dict[str, Any], current_filename: str = "") -> tuple[str, datetime | None] | None:
     """Return the file name and start time of a print start shown by ``event``.
 
     Args:
         event: The raw Moonraker notification.
+        current_filename: Fallback file name for a status update without one.
 
     Returns:
         ``(filename, start time or None)`` for a history ``added`` event or a
@@ -370,7 +414,7 @@ def _started_print(event: dict[str, Any]) -> tuple[str, datetime | None] | None:
         print_stats = params[0].get("print_stats")
         if not isinstance(print_stats, dict) or print_stats.get("state") not in RUNNING_PRINT_STATES:
             return None
-        filename = print_stats.get("filename")
+        filename = print_stats.get("filename", current_filename)
         duration = _finite_number(print_stats.get("total_duration"))
         when = None
         if duration is not None and duration <= MAX_ADOPTED_PRINT_AGE.total_seconds():
@@ -422,3 +466,27 @@ def _plausible_start(when: datetime | None) -> datetime | None:
     if when > now + MAX_START_TIME_SKEW or when < now - MAX_ADOPTED_PRINT_AGE:
         return None
     return min(when, now)
+
+
+def reported_print_filename(event: dict[str, Any]) -> str | None:
+    """Return ``print_stats.filename`` of a status update, ``None`` if it carries none.
+
+    The worker remembers the last value per printer: Klipper sends only changed
+    fields, so a reprint of the same file reports ``printing`` without it.
+
+    Args:
+        event: The raw Moonraker notification.
+
+    Returns:
+        The reported file name (``""`` after a reset), or ``None``.
+    """
+    if event.get("method") != "notify_status_update":
+        return None
+    params = event.get("params")
+    if not isinstance(params, list) or not params or not isinstance(params[0], dict):
+        return None
+    print_stats = params[0].get("print_stats")
+    if not isinstance(print_stats, dict):
+        return None
+    filename = print_stats.get("filename")
+    return filename if isinstance(filename, str) else None

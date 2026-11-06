@@ -512,6 +512,30 @@ class AdoptExternalPrintWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase
         self.assertEqual(await self._state(), "printing")
         self.assertAlmostEqual(self.entry.progress, 0.2)
 
+    async def test_run_printer_remembers_file_name_for_state_only_delta(self):
+        """A reprint of the same file: the snapshot names the file, the later delta only the state."""
+        events = [
+            {
+                "method": "notify_status_update",
+                "params": [{"print_stats": {"state": "complete", "filename": self.FILENAME}}],
+            },
+            {"method": "notify_status_update", "params": [{"print_stats": {"state": "printing"}}]},
+        ]
+        captured: dict = {}
+
+        class FakeWS:
+            def __init__(self, printer, on_event):
+                captured["on_event"] = on_event
+
+            async def run(self):
+                for event in events:
+                    await captured["on_event"](event)
+
+        self.printer.operator_prompts_enabled = False
+        with patch("core.management.commands.moonraker_worker.MoonrakerWebSocketClient", FakeWS):
+            await _run_printer(self.printer, stale_check_interval=3600)
+        self.assertEqual(await self._state(), "printing")
+
     async def test_unmatched_print_is_ignored(self):
         event = {
             "method": "notify_status_update",

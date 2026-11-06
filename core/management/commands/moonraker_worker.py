@@ -35,7 +35,7 @@ from core.models import PrinterProfile, PrintQueue
 from core.services.moonraker import MoonrakerClient
 from core.services.moonraker_operator_ui import MoonrakerOperatorUI
 from core.services.moonraker_ws import MoonrakerWebSocketClient
-from core.services.printer_status_sync import adopt_external_print, apply_status_event
+from core.services.printer_status_sync import adopt_external_print, apply_status_event, reported_print_filename
 from core.services.scheduled_start import run_due_scheduled_starts
 
 logger = logging.getLogger(__name__)
@@ -89,8 +89,8 @@ def _load_active_queue_entry(printer_pk: int) -> PrintQueue | None:
 
 
 @sync_to_async
-def _adopt_external_print(printer_pk: int, event: dict[str, Any]) -> PrintQueue | None:
-    return adopt_external_print(printer_pk, event)
+def _adopt_external_print(printer_pk: int, event: dict[str, Any], current_filename: str) -> PrintQueue | None:
+    return adopt_external_print(printer_pk, event, current_filename=current_filename)
 
 
 @sync_to_async
@@ -102,6 +102,7 @@ async def _handle_event_for_printer(
     printer: PrinterProfile,
     event: dict[str, Any],
     ui: MoonrakerOperatorUI | None = None,
+    current_filename: str = "",
 ) -> None:
     """Route one Moonraker notification of ``printer``.
 
@@ -110,6 +111,12 @@ async def _handle_event_for_printer(
     one, a print started on the printer for a waiting attempt is adopted first
     (see :func:`adopt_external_print`).  When an entry transitions to
     ``awaiting_review`` the review dialog is shown.
+
+    Args:
+        printer: The printer that sent the notification.
+        event: The raw Moonraker notification.
+        ui: The printer's operator UI, ``None`` if prompts are disabled.
+        current_filename: The printer's last reported ``print_stats.filename``.
     """
     if event.get("method") == "notify_gcode_response":
         if ui is not None:
@@ -118,7 +125,7 @@ async def _handle_event_for_printer(
 
     entry = await _load_active_queue_entry(printer.pk)
     if entry is None:
-        entry = await _adopt_external_print(printer.pk, event)
+        entry = await _adopt_external_print(printer.pk, event, current_filename)
     if entry is None:
         return
     await _apply_event_sync(entry, event)
@@ -145,8 +152,16 @@ async def _run_printer(printer: PrinterProfile, stale_check_interval: float = DE
             _close_stale_dialogs_loop(ui, stale_check_interval), name=f"operator_stale_{printer.pk}"
         )
 
+    # Last print_stats.filename: Klipper sends only changed fields, so a
+    # reprint of the same file reports "printing" without the file name.
+    current_filename = ""
+
     async def on_event(event: dict[str, Any]) -> None:
-        await _handle_event_for_printer(printer, event, ui)
+        nonlocal current_filename
+        reported = reported_print_filename(event)
+        if reported is not None:
+            current_filename = reported
+        await _handle_event_for_printer(printer, event, ui, current_filename)
 
     client = MoonrakerWebSocketClient(printer, on_event)
     try:
