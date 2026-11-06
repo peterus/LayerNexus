@@ -317,7 +317,10 @@ def adopt_external_print(printer_pk: int, event: dict[str, Any], *, current_file
     Remote file names are not unique (``LN_<job name>_p<plate>.gcode``, the job
     name may repeat), so several plates can match.  The printer then holds the
     file of the plate it started last; if that plate is not among the matches
-    the print is left alone rather than counted for the wrong job.
+    the print is left alone rather than counted for the wrong job.  Known
+    limit: an upload whose start then failed overwrites the file without a
+    trace in the database, so with repeated job names a later reprint can still
+    be matched to the plate that started before it.
 
     Args:
         printer_pk: Primary key of the printer that sent the event.
