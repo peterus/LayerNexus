@@ -449,6 +449,103 @@ class OperatorDialogWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
                 self.assertEqual(client_cls.return_value.run_gcode.call_count, expected_calls)
 
 
+class AdoptExternalPrintWorkerTests(IsolatedAsyncioTestCase, TransactionTestCase):
+    """The worker adopts a print started on the printer for a waiting attempt (Moonraker mocked)."""
+
+    FILENAME = "LN_Bracket_p1.gcode"
+
+    def setUp(self):
+        super().setUp()
+        from core.models import PrintJob, PrintJobPlate, PrintQueue
+
+        self.user = User.objects.create_user(username="wa", password="x")
+        self.printer = PrinterProfile.objects.create(
+            name="P1",
+            moonraker_url="http://p1:7125",
+            operator_prompts_enabled=True,
+            created_by=self.user,
+        )
+        self.job = PrintJob.objects.create(name="Bracket", status=PrintJob.STATUS_SLICED, created_by=self.user)
+        self.plate = PrintJobPlate.objects.create(print_job=self.job, plate_number=1, remote_job_id=self.FILENAME)
+        self.entry = PrintQueue.objects.create(plate=self.plate, printer=self.printer, **queue_state_fields("waiting"))
+        self.client_mock = MagicMock()
+
+    def _ui(self):
+        from core.services.moonraker_operator_ui import MoonrakerOperatorUI
+
+        return MoonrakerOperatorUI(self.printer, self.client_mock)
+
+    async def _state(self) -> str:
+        await sync_to_async(self.entry.refresh_from_db)()
+        return self.entry.state
+
+    async def test_history_added_adopts_then_finish_awaits_review(self):
+        added = {
+            "method": "notify_history_changed",
+            "params": [{"action": "added", "job": {"filename": self.FILENAME, "status": "in_progress"}}],
+        }
+        await _handle_event_for_printer(self.printer, added, self._ui())
+        self.assertEqual(await self._state(), "printing")
+        self.client_mock.run_gcode.assert_not_called()
+
+        progress = {"method": "notify_status_update", "params": [{"virtual_sdcard": {"progress": 0.5}}]}
+        await _handle_event_for_printer(self.printer, progress, self._ui())
+        self.assertEqual(await self._state(), "printing")
+        self.assertAlmostEqual(self.entry.progress, 0.5)
+
+        finished = {
+            "method": "notify_history_changed",
+            "params": [{"action": "finished", "job": {"filename": self.FILENAME, "status": "completed"}}],
+        }
+        await _handle_event_for_printer(self.printer, finished, self._ui())
+        self.assertEqual(await self._state(), "awaiting_review")
+        self.assertIn(f"LN_REVIEW ENTRY={self.entry.pk} RESULT=PASS", self.client_mock.run_gcode.call_args.args[0])
+
+    async def test_status_printing_adopts_and_records_progress(self):
+        event = {
+            "method": "notify_status_update",
+            "params": [
+                {"print_stats": {"state": "printing", "filename": self.FILENAME}, "virtual_sdcard": {"progress": 0.2}}
+            ],
+        }
+        await _handle_event_for_printer(self.printer, event, None)
+        self.assertEqual(await self._state(), "printing")
+        self.assertAlmostEqual(self.entry.progress, 0.2)
+
+    async def test_run_printer_remembers_file_name_for_state_only_delta(self):
+        """A reprint of the same file: the snapshot names the file, the later delta only the state."""
+        events = [
+            {
+                "method": "notify_status_update",
+                "params": [{"print_stats": {"state": "complete", "filename": self.FILENAME}}],
+            },
+            {"method": "notify_status_update", "params": [{"print_stats": {"state": "printing"}}]},
+        ]
+        captured: dict = {}
+
+        class FakeWS:
+            def __init__(self, printer, on_event):
+                captured["on_event"] = on_event
+
+            async def run(self):
+                for event in events:
+                    await captured["on_event"](event)
+
+        self.printer.operator_prompts_enabled = False
+        with patch("core.management.commands.moonraker_worker.MoonrakerWebSocketClient", FakeWS):
+            await _run_printer(self.printer, stale_check_interval=3600)
+        self.assertEqual(await self._state(), "printing")
+
+    async def test_unmatched_print_is_ignored(self):
+        event = {
+            "method": "notify_status_update",
+            "params": [{"print_stats": {"state": "printing", "filename": "benchy.gcode"}}],
+        }
+        await _handle_event_for_printer(self.printer, event, self._ui())
+        self.assertEqual(await self._state(), "waiting")
+        self.client_mock.run_gcode.assert_not_called()
+
+
 class OperatorUIImportBoundaryTests(SimpleTestCase):
     """Moonraker/Klipper-specific UI code must only be imported by the worker."""
 
