@@ -35,7 +35,7 @@ from core.models import PrinterProfile, PrintQueue
 from core.services.moonraker import MoonrakerClient
 from core.services.moonraker_operator_ui import MoonrakerOperatorUI
 from core.services.moonraker_ws import MoonrakerWebSocketClient
-from core.services.printer_status_sync import apply_status_event
+from core.services.printer_status_sync import adopt_external_print, apply_status_event
 from core.services.scheduled_start import run_due_scheduled_starts
 
 logger = logging.getLogger(__name__)
@@ -89,6 +89,11 @@ def _load_active_queue_entry(printer_pk: int) -> PrintQueue | None:
 
 
 @sync_to_async
+def _adopt_external_print(printer_pk: int, event: dict[str, Any]) -> PrintQueue | None:
+    return adopt_external_print(printer_pk, event)
+
+
+@sync_to_async
 def _apply_event_sync(entry: PrintQueue, event: dict[str, Any]) -> None:
     apply_status_event(entry, event)
 
@@ -101,8 +106,10 @@ async def _handle_event_for_printer(
     """Route one Moonraker notification of ``printer``.
 
     G-code responses go to the operator UI (if enabled) and never touch the
-    status sync; everything else updates the printing queue entry.  When an
-    entry transitions to ``awaiting_review`` the review dialog is shown.
+    status sync; everything else updates the printing queue entry.  Without
+    one, a print started on the printer for a waiting attempt is adopted first
+    (see :func:`adopt_external_print`).  When an entry transitions to
+    ``awaiting_review`` the review dialog is shown.
     """
     if event.get("method") == "notify_gcode_response":
         if ui is not None:
@@ -110,6 +117,8 @@ async def _handle_event_for_printer(
         return
 
     entry = await _load_active_queue_entry(printer.pk)
+    if entry is None:
+        entry = await _adopt_external_print(printer.pk, event)
     if entry is None:
         return
     await _apply_event_sync(entry, event)

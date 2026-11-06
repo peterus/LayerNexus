@@ -330,6 +330,25 @@ class SnapshotEventTests(TestCase):
             {"print_stats": {"state": "standby"}, "virtual_sdcard": {"progress": 0}},
         )
 
+    def test_keeps_running_states(self) -> None:
+        """``printing`` / ``paused`` never end an attempt; the worker adopts such a running print on catch-up."""
+        for state in ("printing", "paused"):
+            with self.subTest(state=state):
+                result = {"eventtime": 5.0, "status": {"print_stats": {"state": state, "filename": "a.gcode"}}}
+
+                self.assertEqual(
+                    snapshot_event(result)["params"][0],
+                    {"print_stats": {"state": state, "filename": "a.gcode"}},
+                )
+
+    def test_drops_end_states(self) -> None:
+        """``complete`` / ``cancelled`` / ``error`` may be stale after a restart and must not end a print."""
+        for state in ("complete", "cancelled", "error"):
+            with self.subTest(state=state):
+                result = {"eventtime": 5.0, "status": {"print_stats": {"state": state, "filename": "a.gcode"}}}
+
+                self.assertEqual(snapshot_event(result)["params"][0], {"print_stats": {"filename": "a.gcode"}})
+
     def test_drops_print_stats_state_keeps_rest(self) -> None:
         result = {
             "eventtime": 5.0,
@@ -357,7 +376,7 @@ class SnapshotEventTests(TestCase):
 
     def test_nothing_left_returns_none(self) -> None:
         self.assertIsNone(snapshot_event({"eventtime": 1.0, "status": {}}))
-        self.assertIsNone(snapshot_event({"eventtime": 1.0, "status": {"print_stats": {"state": "printing"}}}))
+        self.assertIsNone(snapshot_event({"eventtime": 1.0, "status": {"print_stats": {"state": "complete"}}}))
 
     def test_malformed_status_returns_none(self) -> None:
         self.assertIsNone(snapshot_event({}))
@@ -423,7 +442,7 @@ class ResubscribeTests(IsolatedAsyncioTestCase):
         )
 
     async def test_subscribe_response_only_state_forwards_nothing(self) -> None:
-        await self._listen(FakeWebSocket([_subscribe_response({"print_stats": {"state": "printing"}})]))
+        await self._listen(FakeWebSocket([_subscribe_response({"print_stats": {"state": "complete"}})]))
 
         self.assertEqual(self.events, [])
 
